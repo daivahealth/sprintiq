@@ -1,0 +1,225 @@
+// SprintIQ Prisma schema (ADR-0005).
+// One Postgres schema (public); bounded-context separation is LOGICAL via table
+// prefixes (@@map). No cross-context foreign keys — references across contexts
+// use internal ids resolved through services/events (keeps contexts extractable,
+// ADR-0001). Every domain model carries tenantId (row-level tenancy); ids are
+// ULIDs generated in app code (newId()).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// BC-2 Identity, Tenancy & Access
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id        String   @id
+  name      String
+  plan      String   @default("trial")
+  region    String?
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("tenant")
+}
+
+model User {
+  id           String   @id
+  tenantId     String
+  email        String
+  displayName  String
+  passwordHash String?
+  ssoSubject   String?
+  roles        String[] @default([])
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("identity_user")
+}
+
+// ---------------------------------------------------------------------------
+// BC-0 Source-System Registry & Connection Health
+// ---------------------------------------------------------------------------
+
+model Connection {
+  id                String    @id
+  tenantId          String
+  sourceSystem      String
+  name              String
+  config            Json
+  secretRef         String?
+  webhookSecretRef  String?
+  syncCursors       Json
+  rateLimitState    Json
+  status            String    @default("pending")
+  lastSyncAt        DateTime?
+  syncLagSeconds    Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([tenantId, sourceSystem])
+  @@map("connections_connection")
+}
+
+// ---------------------------------------------------------------------------
+// BC-1 Collectors & Ingestion — append-only, replayable raw-event store
+// ---------------------------------------------------------------------------
+
+model RawEvent {
+  id               String    @id
+  tenantId         String
+  connectionId     String
+  sourceSystem     String
+  collectionMode   String
+  eventType        String
+  idempotencyKey   String
+  occurredAt       DateTime
+  collectedAt      DateTime
+  envelope         Json
+  processingStatus String    @default("received")
+  processedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, processingStatus])
+  @@map("collectors_raw_event")
+}
+
+// ---------------------------------------------------------------------------
+// BC-16 Audit & Lineage
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id
+  tenantId   String?
+  actorType  String
+  actorId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// BC-3 Planning (Jira domain)
+// ---------------------------------------------------------------------------
+
+model Story {
+  id          String   @id
+  tenantId    String
+  connectionId String
+  externalKey String // e.g. PAY-2231
+  projectKey  String
+  type        String   @default("story") // story | bug | task | spike
+  status      String
+  storyPoints Int?
+  title       String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, externalKey])
+  @@index([tenantId, projectKey])
+  @@map("planning_story")
+}
+
+// ---------------------------------------------------------------------------
+// BC-4 Source Control (Git domain)
+// ---------------------------------------------------------------------------
+
+model PullRequest {
+  id             String    @id
+  tenantId       String
+  connectionId   String
+  repoFullName   String // e.g. acme/payments
+  externalNumber String
+  title          String
+  branch         String
+  baseBranch     String?
+  state          String // open | merged | closed
+  authorLogin    String?
+  additions      Int       @default(0)
+  deletions      Int       @default(0)
+  changedFiles   Int       @default(0)
+  commitMessages String[]  @default([])
+  openedAt       DateTime?
+  firstReviewAt  DateTime?
+  approvedAt     DateTime?
+  mergedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([tenantId, repoFullName, externalNumber])
+  @@index([tenantId, repoFullName])
+  @@map("code_pull_request")
+}
+
+// ---------------------------------------------------------------------------
+// BC-5 Correlation & Delivery Graph
+// ---------------------------------------------------------------------------
+
+model CorrelationLink {
+  id            String   @id
+  tenantId      String
+  edgeType      String // e.g. pr_implements_story
+  fromType      String
+  fromId        String
+  toType        String
+  toId          String
+  confidence    Float
+  method        String // regex | heuristic | ml | manual | structural
+  evidence      Json?
+  sourceEventId String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, edgeType])
+  @@map("correlation_link")
+}
+
+model Orphan {
+  id         String    @id
+  tenantId   String
+  nodeType   String
+  nodeRef    String
+  reason     String // no_key | ambiguous_key | unknown_project
+  detectedAt DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([tenantId, nodeType])
+  @@map("correlation_orphan")
+}
+
+// ---------------------------------------------------------------------------
+// BC-8 Metrics & Aggregation
+// ---------------------------------------------------------------------------
+
+model MetricValue {
+  id          String   @id
+  tenantId    String
+  metricKey   String
+  scopeType   String // developer | team | repo | project | org | sprint
+  scopeId     String
+  periodStart DateTime
+  periodEnd   DateTime
+  value       Float
+  sampleSize  Int      @default(0)
+  lineage     Json?
+  computedAt  DateTime @default(now())
+
+  @@index([tenantId, metricKey, scopeType, scopeId])
+  @@map("metrics_value")
+}
