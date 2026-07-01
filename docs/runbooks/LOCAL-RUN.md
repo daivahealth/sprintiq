@@ -44,7 +44,7 @@ curl -s localhost:3000/health
 ```bash
 # a) login → JWT
 TOKEN=$(curl -s -X POST localhost:3000/api/auth/login -H 'Content-Type: application/json' \
-  -d '{"tenantId":"tenant_seed","email":"admin@seed.test","password":"password123"}' \
+  -d '{"email":"admin@seed.test","password":"password123"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['accessToken'])")
 
 # b) (optional) create the story so the PR LINKS instead of orphaning

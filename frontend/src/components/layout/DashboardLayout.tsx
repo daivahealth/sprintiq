@@ -1,29 +1,57 @@
-import type { ReactNode } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useEffect, type ReactNode } from 'react';
+import { NavLink, Navigate, useNavigate } from 'react-router-dom';
+import { useMe } from '../../lib/api/useMe';
 import { useAuthStore } from '../../lib/stores/auth-store';
 import { cn } from '../../lib/utils';
+import { Spinner } from '../ui';
 
 const NAV = [{ to: '/', label: 'Delivery', end: true }];
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
+  const tenant = useAuthStore((s) => s.tenant);
   const clear = useAuthStore((s) => s.clear);
+  const setIdentity = useAuthStore((s) => s.setIdentity);
+
+  // Validate the token + resolve the active tenant on load.
+  const me = useMe();
+  useEffect(() => {
+    if (me.data) {
+      setIdentity(me.data.user, me.data.tenant);
+    }
+  }, [me.data, setIdentity]);
 
   const logout = () => {
     clear();
     navigate('/login');
   };
 
+  if (me.isError) {
+    // Token rejected (client already cleared auth on 401).
+    return <Navigate to="/login" replace />;
+  }
+  if (me.isLoading) {
+    return (
+      <div className="grid min-h-full place-items-center">
+        <Spinner />
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-full">
       <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-200 bg-white p-4 md:flex">
-        <div className="mb-6 flex items-center gap-2 px-2">
+        <div className="mb-1 flex items-center gap-2 px-2">
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-sm font-bold text-white">
             IQ
           </span>
           <span className="text-lg font-semibold text-slate-800">SprintIQ</span>
         </div>
+        {/* Active tenant — one tenant's data at a time. */}
+        <p className="mb-6 truncate px-2 text-xs font-medium text-slate-400">
+          {tenant?.name ?? '—'}
+        </p>
         <nav className="space-y-1">
           {NAV.map((item) => (
             <NavLink
@@ -51,7 +79,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
           <h1 className="text-sm font-medium text-slate-500">
-            Engineering Intelligence Platform
+            {tenant?.name ? `${tenant.name} · Delivery` : 'Engineering Intelligence Platform'}
           </h1>
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-600">{user?.email}</span>

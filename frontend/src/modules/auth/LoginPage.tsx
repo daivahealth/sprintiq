@@ -11,15 +11,15 @@ export function LoginPage() {
   const authed = useAuthStore((s) => s.isAuthenticated());
   const setAuth = useAuthStore((s) => s.setAuth);
 
-  const [tenantId, setTenantId] = useState('tenant_seed');
   const [email, setEmail] = useState('admin@seed.test');
   const [password, setPassword] = useState('');
 
   const login = useMutation({
     mutationFn: () =>
-      api.post<LoginResponse>('/api/auth/login', { tenantId, email, password }),
+      api.post<LoginResponse>('/api/auth/login', { email, password }),
     onSuccess: (res) => {
-      setAuth(res.accessToken, res.user);
+      // Tenant is resolved server-side from the user — no tenant id at login.
+      setAuth(res.accessToken, res.user, res.tenant);
       navigate('/', { replace: true });
     },
   });
@@ -47,13 +47,6 @@ export function LoginPage() {
         </div>
 
         <form onSubmit={onSubmit} className="space-y-4">
-          <Field label="Tenant ID">
-            <Input
-              value={tenantId}
-              onChange={(e) => setTenantId(e.target.value)}
-              autoComplete="organization"
-            />
-          </Field>
           <Field label="Email">
             <Input
               type="email"

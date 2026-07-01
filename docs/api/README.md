@@ -201,7 +201,7 @@ SprintIQ delivers notifications **natively** — no external automation hop. BC-
 
 The frontend talks to a read-optimized BFF (BC-13), separate from collectors.
 
-- Auth: end-user JWT (BC-2); RBAC-scoped; tenant resolved from the token.
+- **Auth:** `POST /api/auth/login` takes **email + password only** (no tenant id — email is globally unique; the tenant is resolved from the user and embedded in the returned JWT, ADR-0006). `GET /api/auth/me` returns the current user + active tenant. All other endpoints are JWT-scoped; tenant is derived from the signed token, never a client header.
 - Read-heavy: metrics series, dashboard widgets, risk feed, delivery-graph queries, agent chat.
 - Writes are limited to user/governance actions: recommendation decisions, saved views, config, connection management, approving agent actions.
 - Detailed BFF endpoints are specified per-module under `docs/features/` as they are built.
