@@ -25,6 +25,8 @@ export const configuration = () => ({
   auth: {
     jwtSecret: process.env.JWT_SECRET ?? 'change-me-in-prod',
     jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '3600s',
+    // Platform bootstrap token for tenant provisioning (no tenant/user exists yet).
+    provisioningToken: process.env.PROVISIONING_TOKEN ?? '',
   },
 
   collectors: {

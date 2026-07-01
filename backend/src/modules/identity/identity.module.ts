@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { AdminController } from './admin.controller';
 import { AuthController } from './auth.controller';
 import { IdentityService } from './identity.service';
 
@@ -16,7 +17,7 @@ import { IdentityService } from './identity.service';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, AdminController],
   providers: [IdentityService],
   exports: [IdentityService],
 })

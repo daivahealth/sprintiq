@@ -1,7 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { Connection } from '@prisma/client';
+import { Connection, Prisma } from '@prisma/client';
+import { newId } from '../../common/id';
 import { PrismaService } from '../../database/prisma.service';
 import { SourceSystem } from './connection.types';
+
+export interface CreateConnectionInput {
+  sourceSystem: SourceSystem;
+  name: string;
+  config?: Record<string, unknown>;
+  secretRef?: string;
+  webhookSecretRef?: string;
+}
 
 /**
  * BC-0 registry of source connections + health. Collectors resolve which tenant
@@ -13,6 +22,27 @@ export class ConnectionsService {
 
   findById(id: string): Promise<Connection | null> {
     return this.prisma.connection.findUnique({ where: { id } });
+  }
+
+  create(tenantId: string, input: CreateConnectionInput): Promise<Connection> {
+    return this.prisma.connection.create({
+      data: {
+        id: newId(),
+        tenantId,
+        sourceSystem: input.sourceSystem,
+        name: input.name,
+        config: (input.config ?? {}) as Prisma.InputJsonValue,
+        secretRef: input.secretRef,
+        webhookSecretRef: input.webhookSecretRef,
+        syncCursors: {},
+        rateLimitState: {},
+        status: 'active',
+      },
+    });
+  }
+
+  listByTenant(tenantId: string): Promise<Connection[]> {
+    return this.prisma.connection.findMany({ where: { tenantId } });
   }
 
   findActiveBySource(source: SourceSystem): Promise<Connection[]> {
