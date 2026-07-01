@@ -3,6 +3,7 @@
 
 # Local Claude tooling (keep local settings out of VCS)
 .claude/settings.local.json
+.claude/launch.json
 
 # Node (sub-projects carry their own lockfiles; nothing node-y at repo root)
 /node_modules/
