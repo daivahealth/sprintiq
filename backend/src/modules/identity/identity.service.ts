@@ -11,21 +11,32 @@ export interface CreateUserInput {
   roles?: string[];
 }
 
-/** BC-2 identity: tenant/user provisioning, lookups, and credential checks. */
+/**
+ * BC-2 identity. Email is globally unique (ADR-0006): a user belongs to exactly
+ * one tenant, so login resolves the tenant from the user — no tenant id at login.
+ */
 @Injectable()
 export class IdentityService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findByEmail(tenantId: string, email: string): Promise<User | null> {
-    return this.prisma.user.findFirst({ where: { tenantId, email } });
+  findByEmail(email: string): Promise<User | null> {
+    return this.prisma.user.findUnique({ where: { email } });
   }
 
+  getUserById(id: string): Promise<User | null> {
+    return this.prisma.user.findUnique({ where: { id } });
+  }
+
+  getTenant(id: string): Promise<Tenant | null> {
+    return this.prisma.tenant.findUnique({ where: { id } });
+  }
+
+  /** Verify credentials by email; the returned user carries its tenantId. */
   async validateCredentials(
-    tenantId: string,
     email: string,
     password: string,
   ): Promise<User | null> {
-    const user = await this.findByEmail(tenantId, email);
+    const user = await this.findByEmail(email);
     if (!user || !user.passwordHash || user.status !== 'active') {
       return null;
     }
@@ -53,7 +64,8 @@ export class IdentityService {
   }
 
   async createUser(tenantId: string, input: CreateUserInput): Promise<User> {
-    const existing = await this.findByEmail(tenantId, input.email);
+    // Email is globally unique — a person maps to a single tenant.
+    const existing = await this.findByEmail(input.email);
     if (existing) {
       throw new ConflictException('A user with that email already exists.');
     }

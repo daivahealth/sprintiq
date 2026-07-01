@@ -24,7 +24,8 @@ A credential on one plane grants nothing on another. A source's webhook secret c
 ## 2. Application authentication
 
 - **AuthN:** JWT (short-lived access token + refresh). Enterprise tenants use **SSO via SAML/OIDC**; the IdP subject maps to a `user.sso_subject`.
-- **Token claims:** `sub` (user_id), `tenant_id`, `roles`, `org_id?`, `exp`. Tenant and roles come from the token and are re-validated server-side, never trusted from request bodies.
+- **Login is email + password only — no tenant id.** Email is globally unique; a user belongs to exactly one tenant, so the server resolves the tenant from the user and mints a token carrying it (ADR-0006). `GET /api/auth/me` returns the current user + active tenant for the SPA to validate the session on load.
+- **Token claims:** `sub` (user_id), `tenant_id`, `roles`, `exp`. Tenant and roles come from the **signed token** and are re-validated server-side — **never** trusted from request bodies or client-supplied headers (e.g. `X-Tenant-Id` is not honored; that would be spoofable and enable cross-tenant reads). The token is the secure carrier of "which tenant / which user" on every request.
 - **Password auth** (non-SSO tenants): bcrypt hashing; standard lockout/rate-limit on login.
 - **Session/audit:** every login, refresh, and logout is audit-logged (BC-16).
 

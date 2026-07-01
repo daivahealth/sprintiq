@@ -64,7 +64,7 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 | `tenant` | `id`, `name`, `plan`, `region`, `status` | Top isolation boundary. |
 | `organization` | `id`, `tenant_id`, `name` | A tenant may map orgs/divisions. |
 | `team` | `id`, `tenant_id`, `org_id`, `name` | Primary aggregation unit for metrics. |
-| `user` | `id`, `tenant_id`, `email`, `display_name`, `status`, `sso_subject?` | Platform users (the people who log in). |
+| `user` | `id`, `tenant_id`, `email` (**globally unique**), `display_name`, `status`, `sso_subject?`, `roles[]` | Platform users (the people who log in). Email is globally unique — a user belongs to exactly one tenant, so login resolves the tenant from the user (ADR-0006). |
 | `role` / `user_role` | RBAC | Roles: developer, team_lead, scrum_master, eng_manager, product_owner, cto, exec, admin. |
 | `developer_identity` | `id`, `tenant_id`, `canonical_developer_id`, `source_system`, `source_login`, `email?`, `confidence`, `linked_user_id?` | **Identity resolution**: maps many source logins (Git author, Jira account, SSO) to one canonical developer. |
 | `developer` | `id`, `tenant_id`, `display_name`, `primary_team_id?` | Canonical person referenced by the graph & metrics. May or may not be a platform `user`. |

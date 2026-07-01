@@ -33,7 +33,9 @@ model Tenant {
 model User {
   id           String   @id
   tenantId     String
-  email        String
+  // Email is globally unique: a user belongs to exactly one tenant, and login
+  // resolves the tenant from the user (no tenant id at login) — see ADR-0006.
+  email        String   @unique
   displayName  String
   passwordHash String?
   ssoSubject   String?
@@ -42,7 +44,6 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@unique([tenantId, email])
   @@index([tenantId])
   @@map("identity_user")
 }
