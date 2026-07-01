@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+.env.*.local
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# tsc -b emit from vite.config.ts
+vite.config.js
+vite.config.d.ts
