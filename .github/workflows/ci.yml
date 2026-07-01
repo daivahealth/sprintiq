@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # npm ci runs the postinstall `prisma generate` (no DB needed).
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:ci
+
+      - name: Build
+        run: npm run build
+
+      # Unit + tenant-isolation tests are pure / mock-Prisma — no database required.
+      - name: Test
+        run: npm test
