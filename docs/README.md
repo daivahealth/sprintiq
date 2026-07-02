@@ -15,7 +15,7 @@ Canonical documentation for **SprintIQ** — the AI-powered Engineering Intellig
 | **Architecture** | [`architecture/`](architecture/) | Master architecture, [data model & delivery graph](architecture/DATA-MODEL.md), technical design. |
 | **Decisions (ADR)** | [`ADR/`](ADR/) | Architecture decision records — the *why*. See the [ADR index](ADR/README.md). |
 | **API & Integration** | [`api/`](api/) | The [collector webhook + polling + notification contract](api/README.md), endpoint semantics, per-provider signature verification. |
-| **Features** | [`features/`](features/) | [Metric catalog](features/METRICS.md), [rule/risk pack](features/RULES.md), [AI agent specs](features/AI-AGENTS.md), dashboards. *(grows per module)* |
+| **Features** | [`features/`](features/) | [Metric catalog](features/METRICS.md), [rule/risk pack](features/RULES.md), [AI agent specs](features/AI-AGENTS.md), [frontend & dashboards plan](features/DASHBOARDS.md). |
 | **Development** | [`development/`](development/) | [Onboarding](development/DEVELOPER-ONBOARDING.md), local workflow, commands, coding patterns. |
 | **Deployment** | [`deployment/`](deployment/) | [Deployment & collector operations](deployment/README.md) — Docker, Kubernetes, ingress, secrets, scaling. |
 | **Security** | [`security/`](security/) | [Auth, RBAC & multi-tenancy](security/AUTH-AND-RBAC.md), audit. |

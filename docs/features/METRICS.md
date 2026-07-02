@@ -295,4 +295,4 @@ All composites are **weighted, normalized blends** of section metrics. Every `co
 
 ## 10. Change policy
 
-Adding or changing a metric: update this catalog (definition + formula + window + scopes + source), register it in `metric_definition`, ensure lineage + metric_health, add tests (including tenant isolation), and align dashboards/rules/agents that consume it. Ethics review required for any new individual-scope or people metric.
+Adding or changing a metric: update this catalog (definition + formula + window + scopes + source), register it in `metric_definition`, ensure lineage + metric_health, add tests (including tenant isolation), and align dashboards/rules/agents that consume it. Any metric exposed to the UI also registers a widget spec in the frontend widget registry ([DASHBOARDS.md §5](DASHBOARDS.md)). Ethics review required for any new individual-scope or people metric.
