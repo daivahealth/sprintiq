@@ -3,6 +3,7 @@
 # can run just the datastores here and run the app on the host with `npm run start:dev`.
 #
 #   docker compose up -d postgres redis        # datastores only (recommended for dev)
+#   docker compose up -d postgres pgadmin      # DB + pgAdmin (http://localhost:5050)
 #   docker compose up -d                        # full stack incl. api
 #
 # See docs/runbooks/LOCAL-RUN.md.
@@ -34,6 +35,24 @@ services:
       timeout: 5s
       retries: 10
 
+  pgadmin:
+    image: dpage/pgadmin4:8.12
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@sprintiq.io
+      PGADMIN_DEFAULT_PASSWORD: admin
+      # Desktop mode: skip the pgAdmin login + master password for local dev.
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - '5050:80'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - sprintiq_pgadmin:/var/lib/pgadmin
+      # Pre-register the "SprintIQ Postgres" server (host = the postgres service).
+      - ./deploy/pgadmin/servers.json:/pgadmin4/servers.json:ro
+
   api:
     build: ./backend
     environment:
@@ -56,3 +75,4 @@ services:
 
 volumes:
   sprintiq_pg:
+  sprintiq_pgadmin:

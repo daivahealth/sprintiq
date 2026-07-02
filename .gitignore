@@ -14,5 +14,8 @@
 .env.local
 .env.*.local
 
+# Local compose overrides (per-machine host-port remaps etc.)
+docker-compose.override.yml
+
 # Logs
 *.log
