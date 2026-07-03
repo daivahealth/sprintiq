@@ -8,6 +8,7 @@ import {
   useProjectActivity,
 } from './useInsights';
 import { CommitChart } from './CommitChart';
+import { ProjectActivityChart } from './ProjectActivityChart';
 import { BarList, ErrorCard, LoadingCard, Stat } from './widgets';
 
 const WINDOWS: { key: ActivityWindow; label: string }[] = [
@@ -84,15 +85,9 @@ export function ProjectActivityBoard() {
         <Card className="space-y-5">
           <div>
             <h4 className="mb-2 text-sm font-medium text-slate-600">
-              Commits per project
+              Activity timeline (commits per day by project)
             </h4>
-            <BarList
-              rows={rows.map((r) => ({
-                label: r.projectKey,
-                value: r.commits,
-                secondary: `${r.locChanged} LOC`,
-              }))}
-            />
+            <ProjectActivityChart rows={rows} windowDays={WINDOW_DAYS[window]} />
           </div>
 
           {rows.length > 0 && (

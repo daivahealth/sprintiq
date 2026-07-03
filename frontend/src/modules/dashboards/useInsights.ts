@@ -120,6 +120,8 @@ export interface ProjectActivityRow {
   activeRepos: number;
   topRepo: string | null;
   contributors: number;
+  /** Per-day activity (sparse: only days with commits). */
+  dailySeries: { date: string; commits: number; locChanged: number }[];
 }
 
 export interface DeveloperActivityView {
