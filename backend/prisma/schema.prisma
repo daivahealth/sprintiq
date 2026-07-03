@@ -121,21 +121,69 @@ model AuditLog {
 // ---------------------------------------------------------------------------
 
 model Story {
-  id          String   @id
-  tenantId    String
-  connectionId String
-  externalKey String // e.g. PAY-2231
-  projectKey  String
-  type        String   @default("story") // story | bug | task | spike
-  status      String
-  storyPoints Int?
-  title       String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               String    @id
+  tenantId         String
+  connectionId     String
+  externalKey      String // e.g. PAY-2231
+  projectKey       String
+  // story | bug | task | spike | subtask | epic — epics and subtasks are rows
+  // in this table so every work-item granularity is queryable (detailing).
+  type             String    @default("story")
+  status           String
+  storyPoints      Int?
+  title            String
+  // Hierarchy + planning attribution (the "detailing" dimensions):
+  epicKey          String? // external key of the parent epic (type='epic' row)
+  parentKey        String? // parent story external key (for subtasks)
+  sprintExternalId String? // Sprint.externalId this item is committed to
+  releases         String[]  @default([]) // Jira fixVersion names
+  assigneeLogin    String?
+  assigneeName     String?
+  priority         String?
+  resolvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@unique([tenantId, externalKey])
   @@index([tenantId, projectKey])
+  @@index([tenantId, epicKey])
+  @@index([tenantId, sprintExternalId])
   @@map("planning_story")
+}
+
+model Sprint {
+  id           String    @id
+  tenantId     String
+  connectionId String
+  externalId   String // Jira sprint id (as string)
+  name         String
+  state        String    @default("active") // future | active | closed
+  projectKey   String
+  startAt      DateTime?
+  endAt        DateTime?
+  goal         String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId, projectKey, state])
+  @@map("planning_sprint")
+}
+
+model Release {
+  id           String    @id
+  tenantId     String
+  connectionId String
+  name         String // Jira fixVersion name
+  projectKey   String
+  released     Boolean   @default(false)
+  releaseDate  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([tenantId, projectKey, name])
+  @@index([tenantId, projectKey])
+  @@map("planning_release")
 }
 
 // ---------------------------------------------------------------------------

@@ -122,8 +122,8 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 
 ### loc_added_deleted
 - **Definition:** lines added/deleted — **diagnostic only**.
-- **Formula:** `Σ additions`, `Σ deletions`. **Window:** rolling. **Scopes:** repo, team. **Source:** `commit`/`file_change`.
-- **Notes:** **never** a performance or productivity metric (hard rule). Used only for churn/size context.
+- **Formula:** `Σ additions`, `Σ deletions`. **Window:** rolling. **Scopes:** repo, project, team, developer* (supportive activity context only). **Source:** `commit`/`file_change`; current dashboard implementation uses merged PR additions/deletions by PR author until commit/file-change facts land.
+- **Notes:** **never** a performance or productivity metric (hard rule). Used only for churn/size/activity context; never ranked or scored.
 
 ### code_churn
 - **Definition:** share of recently-written code that is rewritten/deleted soon after.
@@ -195,6 +195,12 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 ### defect_density
 - **Definition:** bugs relative to size/output.
 - **Formula:** `count(bug stories) / KLOC` (or per N delivered stories). **Window:** rolling 90d. **Scopes:** repo, team, project. **Source:** `story(type=bug)`, churn.
+
+### bug_count
+- **Definition:** bug work items in the selected delivery scope.
+- **Formula:** `count(distinct story where type=bug)`; repo scope uses PR→story correlation, project scope uses project stories.
+- **Window:** period / rolling. **Scopes:** repo, project, team. **Source:** `story(type=bug)`, graph (`pr_implements_story`).
+- **Notes:** dashboard context metric for "bug-wise" slicing; current implementation windows by `story.updatedAt` until status-history/resolution timestamps are modeled.
 
 ### escaped_defects
 - **Definition:** bugs discovered after release.

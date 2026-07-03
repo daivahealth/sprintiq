@@ -27,6 +27,7 @@ Each ADR follows: **Status · Context · Decision · Consequences · Alternative
 | [0004](0004-data-access-and-tenancy.md) | Data access (TypeORM), schema-per-context, row-level tenancy | Superseded by 0005 |
 | [0005](0005-prisma-single-schema.md) | Prisma ORM, single schema with table-prefix context boundaries | Accepted |
 | [0006](0006-identity-and-tenant-resolution.md) | Global-unique email identity; tenant resolved from the JWT | Accepted |
+| [0007](0007-vite-spa-over-nextjs.md) | Frontend stays a Vite SPA (Next.js evaluated and declined) | Accepted |
 
 ## Conventions
 

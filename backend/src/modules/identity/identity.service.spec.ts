@@ -17,7 +17,7 @@ describe('IdentityService', () => {
   it('looks up a user by email alone (no tenant needed)', async () => {
     const { svc, prisma } = build(null);
     await svc.findByEmail('a@b.com');
-    expect((prisma.user.findUnique as jest.Mock)).toHaveBeenCalledWith({
+    expect(prisma.user.findUnique as jest.Mock).toHaveBeenCalledWith({
       where: { email: 'a@b.com' },
     });
   });
@@ -51,6 +51,8 @@ describe('IdentityService', () => {
 
   it('rejects an unknown email', async () => {
     const { svc } = build(null);
-    expect(await svc.validateCredentials('nope@b.com', 'password123')).toBeNull();
+    expect(
+      await svc.validateCredentials('nope@b.com', 'password123'),
+    ).toBeNull();
   });
 });
