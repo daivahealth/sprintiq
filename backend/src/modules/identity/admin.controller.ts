@@ -1,4 +1,12 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ArrayNotEmpty,
   IsArray,
@@ -51,6 +59,13 @@ class CreateUserDto {
   roles?: string[];
 }
 
+class UpdateUserRolesDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsIn(ROLE_VALUES, { each: true })
+  roles!: string[];
+}
+
 /**
  * BC-2 administration. Tenant provisioning is bootstrap-token guarded (no tenant
  * exists yet); user creation is JWT + admin-role guarded and tenant-scoped.
@@ -71,6 +86,29 @@ export class AdminController {
   }
 
   @Roles(Role.ADMIN)
+  @Get('roles')
+  roles() {
+    return {
+      roles: ROLE_VALUES.map((role) => ({ key: role, label: roleLabel(role) })),
+    };
+  }
+
+  @Roles(Role.ADMIN)
+  @Get('users')
+  async listUsers(@CurrentUser() user: AuthUser) {
+    const users = await this.identity.listTenantUsers(user.tenantId);
+    return {
+      users: users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        displayName: u.displayName,
+        roles: u.roles,
+        status: u.status,
+      })),
+    };
+  }
+
+  @Roles(Role.ADMIN)
   @Post('users')
   async createUser(@CurrentUser() user: AuthUser, @Body() dto: CreateUserDto) {
     const created = await this.identity.createUser(user.tenantId, dto);
@@ -81,4 +119,32 @@ export class AdminController {
       roles: created.roles,
     };
   }
+
+  @Roles(Role.ADMIN)
+  @Patch('users/:id/roles')
+  async updateUserRoles(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateUserRolesDto,
+  ) {
+    const updated = await this.identity.updateUserRoles(
+      user.tenantId,
+      id,
+      dto.roles,
+    );
+    return {
+      id: updated.id,
+      email: updated.email,
+      displayName: updated.displayName,
+      roles: updated.roles,
+      status: updated.status,
+    };
+  }
+}
+
+function roleLabel(role: Role): string {
+  return role
+    .split('_')
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(' ');
 }

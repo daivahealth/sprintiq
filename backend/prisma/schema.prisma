@@ -72,6 +72,22 @@ model Connection {
   @@map("connections_connection")
 }
 
+model TenantConfiguration {
+  id         String   @id
+  tenantId   String
+  namespace  String
+  key        String   @default("default")
+  values     Json
+  secretRefs Json
+  status     String   @default("active")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, namespace, key])
+  @@index([tenantId, namespace])
+  @@map("tenant_configuration")
+}
+
 // ---------------------------------------------------------------------------
 // BC-1 Collectors & Ingestion — append-only, replayable raw-event store
 // ---------------------------------------------------------------------------

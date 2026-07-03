@@ -31,7 +31,7 @@ trigger (user msg | schedule | rule_finding)
 [6] Persist               → agent_run (audit/cost) + memory write (episodic/decision)
 ```
 
-- **Model:** latest capable Claude model by default (per-tenant tier configurable); cheaper tier for routine summarization.
+- **Model:** latest capable Claude model by default; per-tenant provider/model/budget overrides are read from `tenant_configuration` namespace `llm`, with API keys referenced by secret ref only.
 - **Determinism:** numeric content is deterministic (from tools); the LLM composes explanation/narrative around it.
 - **Failure mode:** if grounding/evidence is insufficient, the agent **says so and declines** rather than guessing (no hallucinated metrics).
 

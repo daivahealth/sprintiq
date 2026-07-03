@@ -77,6 +77,8 @@ Server aggregates, client renders; one batch request per table (never N-per-cell
 
 Developer-wise views are labeled activity context; no leaderboards; person-level bug attribution is not surfaced; individual detail only in self-service contexts (AUTH-AND-RBAC §5).
 
+Tenant admins also see separate **Users & Roles** and **Configuration** navigation items. They are not metric dashboards and are guarded by the same `admin` role as the admin API; all user-role and tenant-configuration reads/writes remain tenant-scoped.
+
 ## 9. Next increments (ordered)
 
 1. **Assignment admin UI** — per-tenant role→dashboard overrides (persisted), replacing the static default registry.

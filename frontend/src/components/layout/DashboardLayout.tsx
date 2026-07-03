@@ -18,6 +18,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   // Role-assigned dashboards drive the nav (no persona pages).
   const assignments = useAssignments();
   const nav = assignments.data?.dashboards ?? [];
+  const isAdmin = user?.roles.includes("admin") ?? false;
   useEffect(() => {
     if (me.data) {
       setIdentity(me.data.user, me.data.tenant);
@@ -75,6 +76,36 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
           ))}
           {assignments.isLoading && (
             <p className="px-3 py-2 text-xs text-slate-400">Loading…</p>
+          )}
+          {isAdmin && (
+            <>
+              <NavLink
+                to="/admin/users"
+                className={({ isActive }) =>
+                  cn(
+                    "block rounded-md px-3 py-2 text-sm font-medium",
+                    isActive
+                      ? "bg-brand-fg text-brand"
+                      : "text-slate-600 hover:bg-slate-100",
+                  )
+                }
+              >
+                Users & Roles
+              </NavLink>
+              <NavLink
+                to="/admin/configuration"
+                className={({ isActive }) =>
+                  cn(
+                    "block rounded-md px-3 py-2 text-sm font-medium",
+                    isActive
+                      ? "bg-brand-fg text-brand"
+                      : "text-slate-600 hover:bg-slate-100",
+                  )
+                }
+              >
+                Configuration
+              </NavLink>
+            </>
           )}
         </nav>
         <p className="mt-auto px-2 text-xs text-slate-400">

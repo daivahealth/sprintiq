@@ -115,7 +115,7 @@ PUBLIC_WEBHOOK_BASE_URL=https://hooks.sprintiq.io   # used when registering sour
 SECRETS_PROVIDER=vault|aws-kms|gcp-sm
 ```
 
-**Source credentials & webhook secrets** are **not** global env — they are **per-tenant, per-connection** records in BC-0 (`connection.secret_ref`, `connection.webhook_secret_ref`) pointing into the secret store. Rotation updates the referenced secret without code change. See [security/AUTH-AND-RBAC.md §7](../security/AUTH-AND-RBAC.md).
+**Source credentials & webhook secrets** are **not** global env. Tenant-wide defaults/policy live in `tenant_configuration` (`values` + `secret_refs`); concrete collector registrations remain **per-tenant, per-connection** records in BC-0 (`connection.secret_ref`, `connection.webhook_secret_ref`) pointing into the secret store. Rotation updates the referenced secret without code change. See [security/AUTH-AND-RBAC.md §7](../security/AUTH-AND-RBAC.md).
 
 ---
 

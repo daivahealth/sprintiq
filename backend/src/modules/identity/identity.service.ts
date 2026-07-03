@@ -1,5 +1,11 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Tenant, User } from '@prisma/client';
+import { Role } from '../../common/auth/role.enum';
 import { newId } from '../../common/id';
 import { PrismaService } from '../../database/prisma.service';
 import { hashPassword, verifyPassword } from './password.util';
@@ -29,6 +35,13 @@ export class IdentityService {
 
   getTenant(id: string): Promise<Tenant | null> {
     return this.prisma.tenant.findUnique({ where: { id } });
+  }
+
+  listTenantUsers(tenantId: string): Promise<User[]> {
+    return this.prisma.user.findMany({
+      where: { tenantId },
+      orderBy: { email: 'asc' },
+    });
   }
 
   /** Verify credentials by email; the returned user carries its tenantId. */
@@ -78,6 +91,40 @@ export class IdentityService {
         passwordHash: await hashPassword(input.password),
         roles: input.roles ?? ['developer'],
       },
+    });
+  }
+
+  async updateUserRoles(
+    tenantId: string,
+    userId: string,
+    roles: string[],
+  ): Promise<User> {
+    const uniqueRoles = [...new Set(roles)];
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found in this tenant.');
+    }
+
+    if (
+      user.status === 'active' &&
+      user.roles.includes(Role.ADMIN) &&
+      !uniqueRoles.includes(Role.ADMIN)
+    ) {
+      const adminCount = await this.prisma.user.count({
+        where: { tenantId, status: 'active', roles: { has: Role.ADMIN } },
+      });
+      if (adminCount <= 1) {
+        throw new BadRequestException(
+          'At least one active tenant admin must remain.',
+        );
+      }
+    }
+
+    return this.prisma.user.update({
+      where: { id: user.id },
+      data: { roles: uniqueRoles },
     });
   }
 }

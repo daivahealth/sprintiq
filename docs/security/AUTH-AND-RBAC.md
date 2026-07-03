@@ -52,6 +52,7 @@ Authorization is **role-based**, evaluated per request against `tenant_id` + sco
 - **Permission checks** at the controller/resolver layer (guards), plus **scope checks** (does this role have access to *this team/repo/project*?).
 - **Default deny.** New endpoints declare required role + scope explicitly.
 - Roles are tenant-local; there is **no super-role that crosses tenants** in the application plane. Platform operations use separate, audited, break-glass tooling outside normal RBAC.
+- Tenant admins manage application roles through the tenant-scoped admin API/UI. `GET /api/admin/users` lists only users in the caller's tenant, `GET /api/admin/roles` exposes the allowed role catalog, and `PATCH /api/admin/users/{id}/roles` updates a tenant user's role set. The API rejects cross-tenant user ids and prevents removing the tenant's last `admin`.
 
 ---
 
@@ -98,6 +99,7 @@ Summarized here; full contract in [api/README.md](../api/README.md):
 - **Source API access (pollers/clients):** OAuth app / GitHub App installation / PAT per connection; least-privilege scopes; automatic token refresh; rate-limit backoff.
 - **Outbound delivery:** native delivery to Slack/Teams/email via provider tokens/incoming-webhooks. SprintIQ decides *whether* to notify (preferences/throttle/quiet-hours); the delivery client decides only *how*. Delivery results are audit-logged.
 - **Secrets:** all source credentials and webhook secrets stored via a secret reference (vault/KMS), never in plaintext columns, never logged; rotation supported.
+- **Tenant configuration:** admin-managed GitHub, Jira, LLM, notification, metric, and security settings are stored in `tenant_configuration`. Plain settings go in JSON `values`; secret material is never stored directly and must be represented as `secretRefs` pointing to the secret store.
 
 ---
 
