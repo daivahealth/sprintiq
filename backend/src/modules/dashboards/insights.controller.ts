@@ -152,6 +152,16 @@ export class InsightsController {
       .then((items) => ({ items, computedAt: new Date().toISOString() }));
   }
 
+  /**
+   * Health of EVERY active sprint in scope — one card per project's concurrent
+   * sprint lifecycle, ranked worst-pace-first (multi-project default view).
+   */
+  @Get('sprint-health/active')
+  async activeSprintsHealth(@Query('projects') projects?: string) {
+    const rows = await this.insights.activeSprintsHealth(parseList(projects));
+    return { rows, computedAt: new Date().toISOString() };
+  }
+
   @Get('sprint-health')
   async sprintHealth(@Query('sprint') sprint?: string) {
     const view = await this.insights.sprintHealth(

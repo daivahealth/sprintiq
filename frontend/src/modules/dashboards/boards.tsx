@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
+import { MultiSelect } from '../../components/multi-select';
 import { Badge, Card } from '../../components/ui';
 import { useScope } from '../../lib/scope';
 import { formatHours, timeAgo } from '../../lib/utils';
 import { ScopeBar } from './ScopeBar';
+import { useProjects } from './useCatalog';
 import {
+  type SprintPace,
+  useActiveSprintsHealth,
   useEfficiency,
   useForecast,
   useProductivity,
@@ -53,72 +57,199 @@ function useSprintSelection() {
   return { sprints, sprint, setSprint, loading: catalog.isLoading };
 }
 
+const PACE_TONE: Record<SprintPace, 'good' | 'warn' | 'bad' | 'neutral'> = {
+  'on-track': 'good',
+  'at-risk': 'warn',
+  behind: 'bad',
+  unknown: 'neutral',
+};
+
+function PaceBadge({ pace }: { pace: SprintPace }) {
+  return <Badge tone={PACE_TONE[pace]}>{pace}</Badge>;
+}
+
+/**
+ * Multi-project sprint lifecycles: the default view is ONE CARD PER ACTIVE
+ * SPRINT (each project runs its own cadence), ranked worst-pace-first. Pace is
+ * cadence-normalized (completion% vs elapsed% of that sprint's own window).
+ * Click a card — or pick any sprint incl. closed ones — for the detail.
+ */
 export function SprintHealthBoard() {
+  const { scope, setScope } = useScope();
+  const [projectSearch, setProjectSearch] = useState('');
+  const projects = useProjects(projectSearch);
+  const active = useActiveSprintsHealth(scope.projects);
   const { sprints, sprint, setSprint } = useSprintSelection();
-  const query = useSprintHealth(sprint);
-  const d = query.data;
+  const detail = useSprintHealth(sprint);
+  const d = detail.data;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Sprint Health"
-        subtitle="Committed vs completed, code linkage, and by-type progress for one sprint."
+        subtitle="Every project runs its own sprint lifecycle — all concurrent active sprints at a glance, worst pace first. Click one to drill in."
       />
+
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
-        <SprintPicker sprints={sprints} selected={sprint} onChange={setSprint} />
+        <MultiSelect
+          label="Projects"
+          options={(projects.data?.items ?? []).map((p) => p.key)}
+          selected={scope.projects}
+          onChange={(next) => setScope({ projects: next, repos: [] })}
+          onSearch={setProjectSearch}
+          loading={projects.isLoading}
+          emptyText="No projects found"
+        />
+        <SprintPicker
+          sprints={sprints}
+          selected={sprint}
+          onChange={setSprint}
+        />
       </div>
-      {query.isLoading && sprint && <LoadingCard />}
-      {query.isError && <ErrorCard error={query.error} />}
+
+      {active.isLoading && <LoadingCard />}
+      {active.isError && <ErrorCard error={active.error} />}
+      {active.data && (
+        <div>
+          <h4 className="mb-2 text-sm font-medium text-slate-600">
+            Active sprints ({active.data.rows.length})
+          </h4>
+          {active.data.rows.length === 0 ? (
+            <Card>
+              <p className="py-4 text-center text-sm text-slate-400">
+                No active sprints in scope.
+              </p>
+            </Card>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {active.data.rows.map((row) => (
+                <button
+                  key={row.sprint.externalId}
+                  type="button"
+                  onClick={() => setSprint(row.sprint.externalId)}
+                  className={cnCard(sprint === row.sprint.externalId)}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="truncate font-medium text-slate-700">
+                      {row.sprint.projectKey} · {row.sprint.name}
+                    </span>
+                    <PaceBadge pace={row.pace} />
+                  </div>
+                  <PaceBar
+                    completionPct={row.completionPct}
+                    elapsedPct={row.elapsedPct}
+                  />
+                  <div className="flex justify-between text-xs text-slate-500">
+                    <span>
+                      {row.completionPct === null
+                        ? 'no estimated pts'
+                        : `${row.completionPct}% done`}
+                      {row.elapsedPct !== null &&
+                        ` · ${row.elapsedPct}% elapsed`}
+                    </span>
+                    <span>
+                      {row.daysRemaining !== null && `${row.daysRemaining}d left`}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {row.itemsDone}/{row.itemsTotal} items ·{' '}
+                    {row.codeLinkagePct === null
+                      ? 'no code linkage'
+                      : `${row.codeLinkagePct}% linked to code`}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {detail.isLoading && sprint && <LoadingCard />}
+      {detail.isError && <ErrorCard error={detail.error} />}
       {d && (
-        <>
-          <Card className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-slate-800">
-                {d.sprint.projectKey} · {d.sprint.name}
-              </h3>
+        <Card className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">
+              {d.sprint.projectKey} · {d.sprint.name}
+            </h3>
+            <span className="space-x-2">
               <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
                 {d.sprint.state}
               </Badge>
-            </div>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <Stat
-                label="Completion"
-                value={d.completionPct === null ? '—' : `${d.completionPct}%`}
-                hint={`${d.completedPoints}/${d.committedPoints} pts`}
-              />
-              <Stat
-                label="Items done"
-                value={`${d.itemsDone}/${d.itemsTotal}`}
-              />
-              <Stat
-                label="Code linkage"
-                value={d.codeLinkagePct === null ? '—' : `${d.codeLinkagePct}%`}
-                hint={`${d.itemsWithCode} items with linked PRs`}
-              />
-              <Stat
-                label="Days remaining"
-                value={d.daysRemaining ?? '—'}
-                hint={
-                  d.unestimatedItems > 0
-                    ? `${d.unestimatedItems} unestimated`
-                    : undefined
-                }
-              />
-            </div>
-            <div>
-              <h4 className="mb-2 text-sm font-medium text-slate-600">
-                Progress by work-item type
-              </h4>
-              <BarList
-                rows={d.byType.map((t) => ({
-                  label: t.type,
-                  value: t.done,
-                  secondary: `/ ${t.total}`,
-                }))}
-              />
-            </div>
-          </Card>
-        </>
+              <PaceBadge pace={d.pace} />
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Stat
+              label="Completion"
+              value={d.completionPct === null ? '—' : `${d.completionPct}%`}
+              hint={`${d.completedPoints}/${d.committedPoints} pts`}
+            />
+            <Stat
+              label="Sprint elapsed"
+              value={d.elapsedPct === null ? '—' : `${d.elapsedPct}%`}
+              hint={`${d.itemsDone}/${d.itemsTotal} items done`}
+            />
+            <Stat
+              label="Code linkage"
+              value={d.codeLinkagePct === null ? '—' : `${d.codeLinkagePct}%`}
+              hint={`${d.itemsWithCode} items with linked PRs`}
+            />
+            <Stat
+              label="Days remaining"
+              value={d.daysRemaining ?? '—'}
+              hint={
+                d.unestimatedItems > 0
+                  ? `${d.unestimatedItems} unestimated`
+                  : undefined
+              }
+            />
+          </div>
+          <div>
+            <h4 className="mb-2 text-sm font-medium text-slate-600">
+              Progress by work-item type
+            </h4>
+            <BarList
+              rows={d.byType.map((t) => ({
+                label: t.type,
+                value: t.done,
+                secondary: `/ ${t.total}`,
+              }))}
+            />
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function cnCard(selected: boolean): string {
+  return [
+    'space-y-2 rounded-xl border bg-white p-4 text-left shadow-sm transition hover:border-brand/60',
+    selected ? 'border-brand ring-2 ring-brand/20' : 'border-slate-200',
+  ].join(' ');
+}
+
+/** Completion vs elapsed on one track — the cadence-normalized pace visual. */
+function PaceBar({
+  completionPct,
+  elapsedPct,
+}: {
+  completionPct: number | null;
+  elapsedPct: number | null;
+}) {
+  return (
+    <div className="relative h-3 overflow-hidden rounded bg-slate-100">
+      <div
+        className="h-full rounded bg-brand"
+        style={{ width: `${completionPct ?? 0}%` }}
+      />
+      {elapsedPct !== null && (
+        <div
+          className="absolute top-0 h-full w-0.5 bg-slate-500"
+          style={{ left: `${elapsedPct}%` }}
+          title={`${elapsedPct}% of sprint elapsed`}
+        />
       )}
     </div>
   );

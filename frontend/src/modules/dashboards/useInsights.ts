@@ -41,11 +41,16 @@ export interface SprintSummary {
   endAt: string | null;
 }
 
+export type SprintPace = 'on-track' | 'at-risk' | 'behind' | 'unknown';
+
 export interface SprintHealthView {
   sprint: SprintSummary;
   committedPoints: number;
   completedPoints: number;
   completionPct: number | null;
+  /** How far through its OWN window the sprint is — normalizes cadences. */
+  elapsedPct: number | null;
+  pace: SprintPace;
   itemsTotal: number;
   itemsDone: number;
   unestimatedItems: number;
@@ -175,6 +180,19 @@ export function useSprintCatalog(projects: string[]) {
     queryFn: () =>
       api.get<{ items: SprintCatalogItem[] }>(`/api/catalog/sprints?${params}`),
     staleTime: 60_000,
+  });
+}
+
+/** All concurrent active sprints in scope (one per project lifecycle). */
+export function useActiveSprintsHealth(projects: string[]) {
+  const params = new URLSearchParams();
+  if (projects.length > 0) params.set('projects', projects.join(','));
+  return useQuery({
+    queryKey: ['sprint-health-active', projects.join(',')],
+    queryFn: () =>
+      api.get<{ rows: SprintHealthView[]; computedAt: string }>(
+        `/api/dashboards/sprint-health/active?${params}`,
+      ),
   });
 }
 

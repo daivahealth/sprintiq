@@ -35,11 +35,20 @@ export interface SprintSummary {
   endAt: string | null;
 }
 
+/**
+ * Cadence-normalized pace: completion% compared against elapsed% of the
+ * sprint's OWN window, so a 1-week and a 3-week sprint are comparable even
+ * though every project runs its own sprint lifecycle.
+ */
+export type SprintPace = 'on-track' | 'at-risk' | 'behind' | 'unknown';
+
 export interface SprintHealthView {
   sprint: SprintSummary;
   committedPoints: number;
   completedPoints: number;
   completionPct: number | null;
+  elapsedPct: number | null;
+  pace: SprintPace;
   itemsTotal: number;
   itemsDone: number;
   unestimatedItems: number;
@@ -176,8 +185,45 @@ export class InsightsService {
     if (!sprint) {
       return null;
     }
+    return this.buildSprintHealth(tenantId, sprint);
+  }
+
+  /**
+   * Health for EVERY active sprint in scope — the multi-project answer: each
+   * project runs its own sprint lifecycle, so the default view is one card per
+   * concurrent active sprint, ranked worst-pace-first.
+   */
+  async activeSprintsHealth(
+    projectKeys: string[],
+  ): Promise<SprintHealthView[]> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const sprints = await this.planning.listSprints(
+      tenantId,
+      projectKeys,
+      'active',
+    );
+    const views = await Promise.all(
+      sprints.map((s) => this.buildSprintHealth(tenantId, s)),
+    );
+    const paceRank: Record<SprintPace, number> = {
+      behind: 0,
+      'at-risk': 1,
+      unknown: 2,
+      'on-track': 3,
+    };
+    return views.sort(
+      (a, b) =>
+        paceRank[a.pace] - paceRank[b.pace] ||
+        (a.completionPct ?? 0) - (b.completionPct ?? 0),
+    );
+  }
+
+  private async buildSprintHealth(
+    tenantId: string,
+    sprint: Sprint,
+  ): Promise<SprintHealthView> {
     const items = (
-      await this.planning.listItemsForSprint(tenantId, sprintExternalId)
+      await this.planning.listItemsForSprint(tenantId, sprint.externalId)
     ).filter((i) => i.type !== 'epic');
     const views = await this.toViews(tenantId, items);
 
@@ -195,11 +241,16 @@ export class InsightsService {
       byTypeMap.set(v.type, t);
     }
 
+    const completionPct = pct(completedPoints, committedPoints);
+    const elapsedPct = sprintElapsedPct(sprint);
+
     return {
       sprint: toSprintSummary(sprint),
       committedPoints,
       completedPoints,
-      completionPct: pct(completedPoints, committedPoints),
+      completionPct,
+      elapsedPct,
+      pace: paceOf(sprint.state, completionPct, elapsedPct),
       itemsTotal: views.length,
       itemsDone: done.length,
       unestimatedItems: views.length - estimable.length,
@@ -702,6 +753,32 @@ function toSprintSummary(sprint: Sprint): SprintSummary {
 
 function pct(part: number, total: number): number | null {
   return total > 0 ? Number(((part / total) * 100).toFixed(1)) : null;
+}
+
+/** How far through its OWN window this sprint is (normalizes cadences). */
+function sprintElapsedPct(sprint: Sprint): number | null {
+  if (!sprint.startAt || !sprint.endAt || sprint.endAt <= sprint.startAt) {
+    return null;
+  }
+  const span = sprint.endAt.getTime() - sprint.startAt.getTime();
+  const elapsed = Date.now() - sprint.startAt.getTime();
+  return Number(Math.min(100, Math.max(0, (elapsed / span) * 100)).toFixed(1));
+}
+
+/** Pace = completion vs elapsed; ≤10pt gap on-track, ≤30 at-risk, else behind. */
+function paceOf(
+  state: string,
+  completionPct: number | null,
+  elapsedPct: number | null,
+): SprintPace {
+  if (state !== 'active' || completionPct === null || elapsedPct === null) {
+    return 'unknown';
+  }
+  const gap = elapsedPct - completionPct;
+  if (gap <= 10) {
+    return 'on-track';
+  }
+  return gap <= 30 ? 'at-risk' : 'behind';
 }
 
 function percentile(sortedAsc: number[], p: number): number | null {

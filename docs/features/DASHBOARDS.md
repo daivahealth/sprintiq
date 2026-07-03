@@ -46,7 +46,7 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 | Dashboard | Route | Reads | Core content |
 |---|---|---|---|
 | **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table |
-| **Sprint Health** | `/sprint-health` | `dashboards/sprint-health` | committed vs completed pts, completion %, code-linkage %, days remaining, by-type progress |
+| **Sprint Health** | `/sprint-health` | `dashboards/sprint-health/active` + `dashboards/sprint-health` | **multi-project default: one card per concurrent active sprint** (each project runs its own lifecycle), ranked worst-pace-first with **cadence-normalized pace** (completion % vs elapsed % of that sprint's own window → on-track/at-risk/behind); click to drill into committed vs completed, code linkage, by-type progress |
 | **Sprint Risk** | `/sprint-risk` | `dashboards/sprint-risk` | open items **without linked code** (at-risk pts), open bugs, unestimated work — each row with its PRs |
 | **Velocity** | `/velocity` | `dashboards/velocity` | completed vs committed points per closed sprint |
 | **Forecasting** | `/forecast` | `dashboards/forecast` | avg velocity (last 3 closed) vs remaining backlog → sprints needed + projected date; unestimated items flagged |
