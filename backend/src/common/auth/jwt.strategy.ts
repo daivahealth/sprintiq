@@ -6,6 +6,7 @@ import {
   AuthUser,
   TenantContextService,
 } from '../tenancy/tenant-context.service';
+import { PrismaService } from '../../database/prisma.service';
 
 export interface JwtPayload {
   sub: string; // user id
@@ -24,6 +25,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     config: ConfigService,
     private readonly tenantContext: TenantContextService,
+    private readonly prisma: PrismaService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -32,15 +34,25 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  validate(payload: JwtPayload): AuthUser {
+  async validate(payload: JwtPayload): Promise<AuthUser> {
     if (!payload?.tenantId || !payload?.sub) {
       throw new UnauthorizedException('Token missing tenant or subject.');
     }
+    const currentUser = await this.prisma.user.findFirst({
+      where: {
+        id: payload.sub,
+        tenantId: payload.tenantId,
+        status: 'active',
+      },
+    });
+    if (!currentUser) {
+      throw new UnauthorizedException('User is not active in this tenant.');
+    }
     const user: AuthUser = {
-      userId: payload.sub,
-      tenantId: payload.tenantId,
-      email: payload.email,
-      roles: payload.roles ?? [],
+      userId: currentUser.id,
+      tenantId: currentUser.tenantId,
+      email: currentUser.email,
+      roles: currentUser.roles,
     };
     // Bind tenant for the rest of the request (visible to all async work).
     this.tenantContext.setUser(user);

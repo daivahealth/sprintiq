@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Connection } from '@prisma/client';
-import { PlanningStoryPayload } from '../../../common/events/contracts';
+import {
+  PlanningSprintRef,
+  PlanningStoryPayload,
+} from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
 import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
@@ -11,11 +14,16 @@ const TYPE_MAP: Record<string, string> = {
   Bug: 'bug',
   Task: 'task',
   Spike: 'spike',
+  Epic: 'epic',
+  'Sub-task': 'subtask',
+  Subtask: 'subtask',
 };
 
 /**
  * Native Jira collector (BC-1): normalizes issue webhooks into the canonical
- * `planning.issue.*` envelope so stories exist for correlation to link PRs to.
+ * `planning.issue.*` envelope, including the detailing dimensions — epic/parent
+ * hierarchy, sprint, fixVersions (releases), assignee, priority, resolution —
+ * so every work-item granularity is queryable downstream (DASHBOARDS.md).
  * (Poller/backfill via Jira REST is added next; the slice covers webhooks.)
  */
 @Injectable()
@@ -40,14 +48,44 @@ export class JiraCollector extends BaseSourceCollector {
 
     const fields = issue.fields ?? {};
     const projectKey: string = fields.project?.key ?? issue.key.split('-')[0];
+    const issueTypeName: string = fields.issuetype?.name ?? 'Story';
+    const isSubtask = Boolean(fields.issuetype?.subtask);
+    const type = isSubtask ? 'subtask' : (TYPE_MAP[issueTypeName] ?? 'story');
+
+    // Parent resolution: Jira's `parent` is the epic for stories (team-managed)
+    // or the parent story for subtasks; classic epics arrive via `epic` field.
+    const parent = fields.parent;
+    const parentIsEpic =
+      parent?.fields?.issuetype?.name === 'Epic' ||
+      TYPE_MAP[parent?.fields?.issuetype?.name ?? ''] === 'epic';
+    const epicKey: string | undefined =
+      fields.epic?.key ??
+      (typeof fields.epicKey === 'string' ? fields.epicKey : undefined) ??
+      (parentIsEpic ? parent?.key : undefined);
+    const parentKey: string | undefined =
+      isSubtask && parent?.key ? parent.key : undefined;
+
     const payload: PlanningStoryPayload = {
       externalKey: issue.key,
       projectKey,
-      type: TYPE_MAP[fields.issuetype?.name] ?? 'story',
+      type,
       status: fields.status?.name ?? 'unknown',
       storyPoints:
         typeof fields.storyPoints === 'number' ? fields.storyPoints : undefined,
       title: fields.summary ?? '',
+      epicKey,
+      parentKey,
+      sprint: parseSprint(fields.sprint),
+      releases: Array.isArray(fields.fixVersions)
+        ? fields.fixVersions
+            .map((v: { name?: string }) => v?.name)
+            .filter((n: unknown): n is string => typeof n === 'string')
+        : undefined,
+      assigneeLogin:
+        fields.assignee?.name ?? fields.assignee?.accountId ?? undefined,
+      assigneeName: fields.assignee?.displayName ?? undefined,
+      priority: fields.priority?.name ?? undefined,
+      resolvedAt: fields.resolutiondate ?? undefined,
     };
     const occurredAt: string = fields.updated ?? this.nowIso();
 
@@ -76,4 +114,23 @@ export class JiraCollector extends BaseSourceCollector {
     // TODO: Jira REST search since cursor (backfill/reconciliation).
     return [];
   }
+}
+
+/** Accepts the normalized `fields.sprint` object (id/name/state/dates). */
+function parseSprint(raw: unknown): PlanningSprintRef | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const s = raw as Record<string, unknown>;
+  if (s.id === undefined || typeof s.name !== 'string') {
+    return undefined;
+  }
+  return {
+    externalId: String(s.id),
+    name: s.name,
+    state: typeof s.state === 'string' ? s.state : undefined,
+    startAt: typeof s.startDate === 'string' ? s.startDate : undefined,
+    endAt: typeof s.endDate === 'string' ? s.endDate : undefined,
+    goal: typeof s.goal === 'string' ? s.goal : undefined,
+  };
 }

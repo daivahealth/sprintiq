@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Connection } from '@prisma/client';
-import { CodePullRequestPayload } from '../../../common/events/contracts';
+import {
+  CodeCommitPayload,
+  CodePullRequestPayload,
+} from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
 import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
@@ -25,8 +28,12 @@ export class GithubCollector extends BaseSourceCollector {
     rawBody: Buffer,
     headers: Record<string, unknown>,
   ): Promise<CanonicalEnvelope[]> {
-    if (headers['x-github-event'] !== 'pull_request') {
-      return []; // slice handles PR events; other event types added later
+    const eventName = headers['x-github-event'];
+    if (eventName === 'push') {
+      return this.normalizePush(connection, rawBody);
+    }
+    if (eventName !== 'pull_request') {
+      return []; // other event types added as collectors mature
     }
     const body = JSON.parse(rawBody.toString('utf8'));
     const pr = body.pull_request;
@@ -64,6 +71,61 @@ export class GithubCollector extends BaseSourceCollector {
         payload,
       ),
     ];
+  }
+
+  /**
+   * `push` webhook → one `code.commit.pushed` envelope per commit. GitHub push
+   * payloads carry file lists but NOT per-commit LOC — additions/deletions stay
+   * 0 until the poller enriches them from the commit-detail API (documented in
+   * the contract). Deterministic idempotency: repo+sha.
+   */
+  private normalizePush(
+    connection: Connection,
+    rawBody: Buffer,
+  ): CanonicalEnvelope[] {
+    const body = JSON.parse(rawBody.toString('utf8'));
+    const repoFullName: string | undefined = body.repository?.full_name;
+    const commits: Array<Record<string, unknown>> = Array.isArray(body.commits)
+      ? body.commits
+      : [];
+    if (!repoFullName || commits.length === 0) {
+      return [];
+    }
+    return commits
+      .filter((c) => typeof c.id === 'string')
+      .map((c) => {
+        const author = (c.author ?? {}) as Record<string, unknown>;
+        const files = ['added', 'removed', 'modified']
+          .map((k) => (Array.isArray(c[k]) ? (c[k] as unknown[]).length : 0))
+          .reduce((a, b) => a + b, 0);
+        const payload: CodeCommitPayload = {
+          repoFullName,
+          sha: c.id as string,
+          message: typeof c.message === 'string' ? c.message : '',
+          authorLogin:
+            typeof author.username === 'string' ? author.username : undefined,
+          authorName: typeof author.name === 'string' ? author.name : undefined,
+          authorEmail:
+            typeof author.email === 'string' ? author.email : undefined,
+          authoredAt:
+            typeof c.timestamp === 'string' ? c.timestamp : this.nowIso(),
+          filesChanged: files,
+        };
+        return {
+          schemaVersion: '1.0',
+          eventId: newId(),
+          idempotencyKey: `github:${repoFullName}:commit:${payload.sha}`,
+          sourceSystem: 'github',
+          connectionId: connection.id,
+          collectionMode: 'webhook' as const,
+          eventType: EventTypes.CODE_COMMIT_PUSHED,
+          occurredAt: payload.authoredAt,
+          collectedAt: this.nowIso(),
+          externalRefs: { repo: repoFullName, sha: payload.sha },
+          actor: { sourceLogin: payload.authorLogin },
+          data: payload as unknown as Record<string, unknown>,
+        };
+      });
   }
 
   async poll(connection: Connection): Promise<CanonicalEnvelope[]> {

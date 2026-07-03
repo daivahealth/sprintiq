@@ -13,6 +13,7 @@ import { HealthModule } from './health/health.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { ConnectionsModule } from './modules/connections/connections.module';
+import { ConfigurationsModule } from './modules/configurations/configurations.module';
 
 // Collection + intelligence pipeline
 import { CollectorsModule } from './collectors/collectors.module';
@@ -51,6 +52,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 
     IdentityModule,
     ConnectionsModule,
+    ConfigurationsModule,
 
     CollectorsModule,
     CorrelationModule,

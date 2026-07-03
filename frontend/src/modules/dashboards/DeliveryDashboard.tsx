@@ -1,19 +1,23 @@
-import { FormEvent, useState } from 'react';
-import { Badge, Button, Card, Input, Spinner } from '../../components/ui';
-import { ApiError } from '../../lib/api/client';
-import type { PrCycleTime } from '../../lib/api/types';
-import { formatHours, timeAgo } from '../../lib/utils';
-import { usePrCycleTime } from './usePrCycleTime';
+import { Card, Spinner } from "../../components/ui";
+import { ApiError } from "../../lib/api/client";
+import { useScope } from "../../lib/scope";
+import { timeAgo } from "../../lib/utils";
+import { MetricRowsTable, tableTitle } from "./MetricRowsTable";
+import { ScopeBar } from "./ScopeBar";
+import { useBatchMetrics } from "./useBatchMetrics";
 
+/**
+ * Delivery dashboard on the scope system (DASHBOARDS.md): pick any combination
+ * of projects × repos × time in the Scope Bar; PR cycle time renders grouped by
+ * repo with per-row metric health. Seed of the Repo Explorer (Phase F2).
+ */
 export function DeliveryDashboard() {
-  const [repoInput, setRepoInput] = useState('acme/payments');
-  const [repo, setRepo] = useState('acme/payments');
-  const query = usePrCycleTime(repo);
-
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    setRepo(repoInput.trim());
-  };
+  const { scope, from } = useScope();
+  const query = useBatchMetrics(
+    ["pr_cycle_time", "loc_added_deleted", "bug_count"],
+    scope,
+    from,
+  );
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -24,81 +28,57 @@ export function DeliveryDashboard() {
         </p>
       </div>
 
-      <form onSubmit={onSubmit} className="flex items-end gap-3">
-        <div className="w-72">
-          <label className="mb-1 block text-sm font-medium text-slate-600">
-            Repository
-          </label>
-          <Input
-            value={repoInput}
-            onChange={(e) => setRepoInput(e.target.value)}
-            placeholder="owner/name"
-          />
-        </div>
-        <Button type="submit">Load</Button>
-      </form>
+      <ScopeBar />
 
       {query.isLoading && (
         <Card className="flex items-center gap-2 text-sm text-slate-500">
-          <Spinner /> Loading metric…
+          <Spinner /> Loading metrics…
         </Card>
       )}
 
       {query.isError && (
         <Card className="text-sm text-rose-600">
-          {(query.error as ApiError)?.status === 400
-            ? 'Enter a repository as owner/name.'
-            : ((query.error as ApiError)?.message ?? 'Failed to load metric.')}
+          {(query.error as ApiError)?.message ?? "Failed to load metrics."}
         </Card>
       )}
 
-      {query.data && <PrCycleTimeCard data={query.data} />}
-    </div>
-  );
-}
+      {query.data && (
+        <Card className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-slate-800">
+                {tableTitle(query.data.groupBy)}
+              </h3>
+              <p className="text-sm text-slate-500">
+                delivery, change-volume, and bug context · last {scope.days}d ·
+                grouped by {query.data.groupBy}
+              </p>
+            </div>
+            <span className="text-xs text-slate-400">
+              {query.data.rows.length} {query.data.groupBy}
+              {query.data.rows.length === 1 ? "" : "s"} in scope · computed{" "}
+              {timeAgo(query.data.computedAt)}
+            </span>
+          </div>
 
-function PrCycleTimeCard({ data }: { data: PrCycleTime }) {
-  // Metric-health transparency: small samples are low-confidence (see the
-  // frontend rules — always show how trustworthy a number is).
-  const health =
-    data.sampleSize === 0
-      ? { tone: 'bad' as const, label: 'No data' }
-      : data.sampleSize < 5
-        ? { tone: 'warn' as const, label: 'Low confidence' }
-        : { tone: 'good' as const, label: 'Healthy' };
+          {query.data.rows.length === 0 ? (
+            <p className="py-6 text-center text-sm text-slate-400">
+              No repositories in this scope — widen the filters or check
+              collector/linkage coverage.
+            </p>
+          ) : (
+            <MetricRowsTable
+              rows={query.data.rows}
+              groupBy={query.data.groupBy}
+            />
+          )}
 
-  return (
-    <Card className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="font-semibold text-slate-800">PR Cycle Time</h3>
-          <p className="text-sm text-slate-500">
-            {data.repo} · open → merge
+          <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
+            Source: correlated merged PRs and bug stories (lineage-traced) · LOC
+            is change volume/context, not productivity
           </p>
-        </div>
-        <Badge tone={health.tone}>{health.label}</Badge>
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <Stat label="p50 (median)" value={formatHours(data.p50Hours)} />
-        <Stat label="p85" value={formatHours(data.p85Hours)} />
-        <Stat label="Merged PRs" value={String(data.sampleSize)} />
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-100 pt-3 text-xs text-slate-400">
-        <span>Sample size: {data.sampleSize}</span>
-        <span>Computed {timeAgo(data.computedAt)}</span>
-        <span>Source: correlated merged PRs (lineage-traced)</span>
-      </div>
-    </Card>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-slate-50 p-4">
-      <div className="text-2xl font-semibold text-slate-800">{value}</div>
-      <div className="text-xs text-slate-500">{label}</div>
+        </Card>
+      )}
     </div>
   );
 }

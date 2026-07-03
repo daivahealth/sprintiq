@@ -1,11 +1,10 @@
-import { useEffect, type ReactNode } from 'react';
-import { NavLink, Navigate, useNavigate } from 'react-router-dom';
-import { useMe } from '../../lib/api/useMe';
-import { useAuthStore } from '../../lib/stores/auth-store';
-import { cn } from '../../lib/utils';
-import { Spinner } from '../ui';
-
-const NAV = [{ to: '/', label: 'Delivery', end: true }];
+import { useEffect, type ReactNode } from "react";
+import { NavLink, Navigate, useNavigate } from "react-router-dom";
+import { useMe } from "../../lib/api/useMe";
+import { useAuthStore } from "../../lib/stores/auth-store";
+import { cn } from "../../lib/utils";
+import { useAssignments } from "../../modules/dashboards/useInsights";
+import { Spinner } from "../ui";
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -16,6 +15,10 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
 
   // Validate the token + resolve the active tenant on load.
   const me = useMe();
+  // Role-assigned dashboards drive the nav (no persona pages).
+  const assignments = useAssignments();
+  const nav = assignments.data?.dashboards ?? [];
+  const isAdmin = user?.roles.includes("admin") ?? false;
   useEffect(() => {
     if (me.data) {
       setIdentity(me.data.user, me.data.tenant);
@@ -24,7 +27,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
 
   const logout = () => {
     clear();
-    navigate('/login');
+    navigate("/login");
   };
 
   if (me.isError) {
@@ -50,26 +53,60 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         </div>
         {/* Active tenant — one tenant's data at a time. */}
         <p className="mb-6 truncate px-2 text-xs font-medium text-slate-400">
-          {tenant?.name ?? '—'}
+          {tenant?.name ?? "—"}
         </p>
         <nav className="space-y-1">
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
+              key={item.key}
+              to={item.path}
+              end={item.path === "/"}
+              title={item.description}
               className={({ isActive }) =>
                 cn(
-                  'block rounded-md px-3 py-2 text-sm font-medium',
+                  "block rounded-md px-3 py-2 text-sm font-medium",
                   isActive
-                    ? 'bg-brand-fg text-brand'
-                    : 'text-slate-600 hover:bg-slate-100',
+                    ? "bg-brand-fg text-brand"
+                    : "text-slate-600 hover:bg-slate-100",
                 )
               }
             >
-              {item.label}
+              {item.title}
             </NavLink>
           ))}
+          {assignments.isLoading && (
+            <p className="px-3 py-2 text-xs text-slate-400">Loading…</p>
+          )}
+          {isAdmin && (
+            <>
+              <NavLink
+                to="/admin/users"
+                className={({ isActive }) =>
+                  cn(
+                    "block rounded-md px-3 py-2 text-sm font-medium",
+                    isActive
+                      ? "bg-brand-fg text-brand"
+                      : "text-slate-600 hover:bg-slate-100",
+                  )
+                }
+              >
+                Users & Roles
+              </NavLink>
+              <NavLink
+                to="/admin/configuration"
+                className={({ isActive }) =>
+                  cn(
+                    "block rounded-md px-3 py-2 text-sm font-medium",
+                    isActive
+                      ? "bg-brand-fg text-brand"
+                      : "text-slate-600 hover:bg-slate-100",
+                  )
+                }
+              >
+                Configuration
+              </NavLink>
+            </>
+          )}
         </nav>
         <p className="mt-auto px-2 text-xs text-slate-400">
           Engineering Intelligence
@@ -79,7 +116,9 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
           <h1 className="text-sm font-medium text-slate-500">
-            {tenant?.name ? `${tenant.name} · Delivery` : 'Engineering Intelligence Platform'}
+            {tenant?.name
+              ? `${tenant.name} · Engineering Intelligence`
+              : "Engineering Intelligence Platform"}
           </h1>
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-600">{user?.email}</span>

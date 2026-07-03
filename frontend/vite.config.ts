@@ -6,7 +6,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5173,
+    // Respect an externally assigned port (e.g. preview tooling); default 5173.
+    port: Number(process.env.PORT) || 5173,
     proxy: {
       '/api': { target: 'http://localhost:3000', changeOrigin: true },
       '/health': { target: 'http://localhost:3000', changeOrigin: true },
