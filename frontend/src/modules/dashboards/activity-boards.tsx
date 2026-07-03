@@ -7,6 +7,7 @@ import {
   useDeveloperCatalog,
   useProjectActivity,
 } from './useInsights';
+import { CommitChart } from './CommitChart';
 import { BarList, ErrorCard, LoadingCard, Stat } from './widgets';
 
 const WINDOWS: { key: ActivityWindow; label: string }[] = [
@@ -14,6 +15,13 @@ const WINDOWS: { key: ActivityWindow; label: string }[] = [
   { key: 'week', label: 'This week' },
   { key: 'month', label: 'This month' },
 ];
+
+/** Mirrors the backend ACTIVITY_WINDOWS mapping (insights.controller). */
+const WINDOW_DAYS: Record<ActivityWindow, number> = {
+  day: 1,
+  week: 7,
+  month: 30,
+};
 
 function WindowToggle({
   value,
@@ -231,13 +239,9 @@ export function DeveloperActivityBoard() {
               <h4 className="mb-2 text-sm font-medium text-slate-600">
                 Commits per day
               </h4>
-              <BarList
-                color="bg-emerald-500"
-                rows={d.dailySeries.map((s) => ({
-                  label: s.date,
-                  value: s.commits,
-                  secondary: `${s.locChanged} LOC`,
-                }))}
+              <CommitChart
+                series={d.dailySeries}
+                windowDays={WINDOW_DAYS[window]}
               />
             </div>
           </Card>
