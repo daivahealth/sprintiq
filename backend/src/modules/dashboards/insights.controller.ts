@@ -173,6 +173,13 @@ export class InsightsController {
     return view;
   }
 
+  /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */
+  @Get('sprint-risk/active')
+  async activeSprintsRisk(@Query('projects') projects?: string) {
+    const rows = await this.insights.activeSprintsRisk(parseList(projects));
+    return { rows, computedAt: new Date().toISOString() };
+  }
+
   @Get('sprint-risk')
   async sprintRisk(@Query('sprint') sprint?: string) {
     const view = await this.insights.sprintRisk(requireParam(sprint, 'sprint'));

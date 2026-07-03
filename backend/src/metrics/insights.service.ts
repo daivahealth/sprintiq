@@ -272,8 +272,37 @@ export class InsightsService {
     if (!sprint) {
       return null;
     }
+    return this.buildSprintRisk(tenantId, sprint);
+  }
+
+  /**
+   * Risk for EVERY active sprint in scope (multi-project lifecycles), ranked
+   * most-at-risk-first — the default view mirrors activeSprintsHealth.
+   */
+  async activeSprintsRisk(projectKeys: string[]): Promise<SprintRiskView[]> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const sprints = await this.planning.listSprints(
+      tenantId,
+      projectKeys,
+      'active',
+    );
+    const views = await Promise.all(
+      sprints.map((s) => this.buildSprintRisk(tenantId, s)),
+    );
+    return views.sort(
+      (a, b) =>
+        b.atRiskPoints - a.atRiskPoints ||
+        b.openWithoutCode.length - a.openWithoutCode.length ||
+        b.openBugs - a.openBugs,
+    );
+  }
+
+  private async buildSprintRisk(
+    tenantId: string,
+    sprint: Sprint,
+  ): Promise<SprintRiskView> {
     const items = (
-      await this.planning.listItemsForSprint(tenantId, sprintExternalId)
+      await this.planning.listItemsForSprint(tenantId, sprint.externalId)
     ).filter((i) => i.type !== 'epic');
     const views = await this.toViews(tenantId, items);
     const open = views.filter((v) => !v.done);

@@ -8,6 +8,7 @@ import { useProjects } from './useCatalog';
 import {
   type SprintPace,
   useActiveSprintsHealth,
+  useActiveSprintsRisk,
   useEfficiency,
   useForecast,
   useProductivity,
@@ -255,7 +256,16 @@ function PaceBar({
   );
 }
 
+/**
+ * Multi-project sprint lifecycles: default is ONE RISK CARD PER ACTIVE SPRINT
+ * in scope, ranked most-at-risk-first; project picker filters scope; click a
+ * card (or pick any sprint incl. closed) to drill into the item table.
+ */
 export function SprintRiskBoard() {
+  const { scope, setScope } = useScope();
+  const [projectSearch, setProjectSearch] = useState('');
+  const projects = useProjects(projectSearch);
+  const active = useActiveSprintsRisk(scope.projects);
   const { sprints, sprint, setSprint } = useSprintSelection();
   const query = useSprintRisk(sprint);
   const d = query.data;
@@ -264,15 +274,101 @@ export function SprintRiskBoard() {
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Sprint Risk"
-        subtitle="Open work without linked code, open bugs, and unestimated items."
+        subtitle="Every project runs its own sprint lifecycle — risk across all concurrent active sprints, worst first. Click one to drill in."
       />
+
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
+        <MultiSelect
+          label="Projects"
+          options={(projects.data?.items ?? []).map((p) => p.key)}
+          selected={scope.projects}
+          onChange={(next) => setScope({ projects: next, repos: [] })}
+          onSearch={setProjectSearch}
+          loading={projects.isLoading}
+          emptyText="No projects found"
+        />
         <SprintPicker sprints={sprints} selected={sprint} onChange={setSprint} />
       </div>
+
+      {active.isLoading && <LoadingCard />}
+      {active.isError && <ErrorCard error={active.error} />}
+      {active.data && (
+        <div>
+          <h4 className="mb-2 text-sm font-medium text-slate-600">
+            Active sprints ({active.data.rows.length})
+          </h4>
+          {active.data.rows.length === 0 ? (
+            <Card>
+              <p className="py-4 text-center text-sm text-slate-400">
+                No active sprints in scope.
+              </p>
+            </Card>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {active.data.rows.map((row) => (
+                <button
+                  key={row.sprint.externalId}
+                  type="button"
+                  onClick={() => setSprint(row.sprint.externalId)}
+                  className={cnCard(sprint === row.sprint.externalId)}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="truncate font-medium text-slate-700">
+                      {row.sprint.projectKey} · {row.sprint.name}
+                    </span>
+                    <Badge
+                      tone={
+                        row.openWithoutCode.length === 0
+                          ? 'good'
+                          : row.atRiskPoints > 0
+                            ? 'bad'
+                            : 'warn'
+                      }
+                    >
+                      {row.openWithoutCode.length === 0
+                        ? 'no risk items'
+                        : `${row.openWithoutCode.length} at risk`}
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div>
+                      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+                        {row.atRiskPoints}
+                      </div>
+                      <div className="text-slate-400">at-risk pts</div>
+                    </div>
+                    <div>
+                      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+                        {row.openBugs}
+                      </div>
+                      <div className="text-slate-400">open bugs</div>
+                    </div>
+                    <div>
+                      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+                        {row.unestimatedOpen}
+                      </div>
+                      <div className="text-slate-400">unestimated</div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {query.isLoading && sprint && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {d && (
         <Card className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">
+              {d.sprint.projectKey} · {d.sprint.name}
+            </h3>
+            <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
+              {d.sprint.state}
+            </Badge>
+          </div>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat label="Open items w/o code" value={d.openWithoutCode.length} />
             <Stat label="At-risk points" value={d.atRiskPoints} />

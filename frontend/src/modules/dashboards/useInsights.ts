@@ -205,6 +205,19 @@ export function useSprintHealth(sprint: string | null) {
   });
 }
 
+/** Risk across all concurrent active sprints in scope, worst-first. */
+export function useActiveSprintsRisk(projects: string[]) {
+  const params = new URLSearchParams();
+  if (projects.length > 0) params.set('projects', projects.join(','));
+  return useQuery({
+    queryKey: ['sprint-risk-active', projects.join(',')],
+    queryFn: () =>
+      api.get<{ rows: SprintRiskView[]; computedAt: string }>(
+        `/api/dashboards/sprint-risk/active?${params}`,
+      ),
+  });
+}
+
 export function useSprintRisk(sprint: string | null) {
   return useQuery({
     queryKey: ['sprint-risk', sprint],
