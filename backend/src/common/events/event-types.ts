@@ -8,6 +8,7 @@ export const EventTypes = {
   CODE_PR_UPDATED: 'code.pull_request.updated',
   CODE_PR_MERGED: 'code.pull_request.merged',
   CODE_PR_CLOSED: 'code.pull_request.closed',
+  CODE_COMMIT_PUSHED: 'code.commit.pushed',
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
 } as const;

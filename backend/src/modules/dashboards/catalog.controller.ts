@@ -72,6 +72,16 @@ export class CatalogController {
     };
   }
 
+  /** Distinct commit/PR authors — the developer-activity picker. */
+  @Get('developers')
+  async developers(
+    @CurrentUser() user: AuthUser,
+    @Query('search') search?: string,
+  ) {
+    const logins = await this.code.listDeveloperLogins(user.tenantId, search);
+    return { items: logins.map((login) => ({ login })) };
+  }
+
   /** Releases (Jira fixVersions) for release-wise detailing filters. */
   @Get('releases')
   async releases(

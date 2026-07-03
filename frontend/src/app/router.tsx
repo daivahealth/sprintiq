@@ -4,6 +4,10 @@ import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { useAuthStore } from '../lib/stores/auth-store';
 import { LoginPage } from '../modules/auth/LoginPage';
 import {
+  DeveloperActivityBoard,
+  ProjectActivityBoard,
+} from '../modules/dashboards/activity-boards';
+import {
   EfficiencyBoard,
   ForecastBoard,
   ProductivityBoard,
@@ -41,6 +45,8 @@ export function AppRouter() {
       <Route path="/forecast" element={<Page><ForecastBoard /></Page>} />
       <Route path="/productivity" element={<Page><ProductivityBoard /></Page>} />
       <Route path="/efficiency" element={<Page><EfficiencyBoard /></Page>} />
+      <Route path="/project-activity" element={<Page><ProjectActivityBoard /></Page>} />
+      <Route path="/developer-activity" element={<Page><DeveloperActivityBoard /></Page>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

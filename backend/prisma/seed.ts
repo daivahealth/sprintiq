@@ -236,6 +236,63 @@ async function main() {
     }
   }
 
+  // ---- Commits: GitHub-style activity (today / this week / this month) ----
+  const hours = (n: number) => new Date(now - n * 3_600_000);
+  type C = {
+    sha: string;
+    repo: string;
+    msg: string;
+    author: string;
+    name: string;
+    at: Date;
+    add: number;
+    del: number;
+    files: number;
+  };
+  const commits: C[] = [
+    // Today — payments hot
+    { sha: 'a1f2c3d4e5f60789a1f2c3d4e5f60789a1f2c3d4', repo: REPO_PAY, msg: 'PAY-2231 idempotency guard', author: 'jdoe', name: 'Jane Doe', at: hours(2), add: 120, del: 30, files: 4 },
+    { sha: 'b2e3d4c5f6a70891b2e3d4c5f6a70891b2e3d4c5', repo: REPO_PAY, msg: 'PAY-2231 retry backoff', author: 'jdoe', name: 'Jane Doe', at: hours(5), add: 80, del: 12, files: 3 },
+    { sha: 'c3d4e5f6a7b80912c3d4e5f6a7b80912c3d4e5f6', repo: REPO_PAY, msg: 'PAY-2234 retry unit tests', author: 'asmith', name: 'Alex Smith', at: hours(7), add: 210, del: 5, files: 6 },
+    { sha: 'd4e5f6a7b8c90123d4e5f6a7b8c90123d4e5f6a7', repo: REPO_WEB, msg: 'OPS-2 alert routing wip', author: 'kchan', name: 'Ken Chan', at: hours(3), add: 60, del: 20, files: 2 },
+    // This week
+    { sha: 'e5f6a7b8c9d01234e5f6a7b8c9d01234e5f6a7b8', repo: REPO_PAY, msg: 'PAY-2232 webhook receipts', author: 'asmith', name: 'Alex Smith', at: days(-2), add: 150, del: 40, files: 5 },
+    { sha: 'f6a7b8c9d0e12345f6a7b8c9d0e12345f6a7b8c9', repo: REPO_PAY, msg: 'PAY-2232 receipt storage', author: 'asmith', name: 'Alex Smith', at: days(-3), add: 95, del: 15, files: 3 },
+    { sha: 'a7b8c9d0e1f23456a7b8c9d0e1f23456a7b8c9d0', repo: REPO_WEB, msg: 'OPS-1 deploy tool cli', author: 'kchan', name: 'Ken Chan', at: days(-2), add: 300, del: 80, files: 9 },
+    { sha: 'b8c9d0e1f2a34567b8c9d0e1f2a34567b8c9d0e1', repo: REPO_WEB, msg: 'chore: tidy logging', author: 'kchan', name: 'Ken Chan', at: days(-1), add: 25, del: 60, files: 3 },
+    // Earlier this month
+    { sha: 'c9d0e1f2a3b45678c9d0e1f2a3b45678c9d0e1f2', repo: REPO_PAY, msg: 'PAY-2210 capture retries', author: 'jdoe', name: 'Jane Doe', at: days(-17), add: 220, del: 45, files: 7 },
+    { sha: 'd0e1f2a3b4c56789d0e1f2a3b4c56789d0e1f2a3', repo: REPO_PAY, msg: 'PAY-2211 refund api', author: 'asmith', name: 'Alex Smith', at: days(-16), add: 340, del: 110, files: 11 },
+    { sha: 'e1f2a3b4c5d67890e1f2a3b4c5d67890e1f2a3b4', repo: REPO_PAY, msg: 'PAY-2212 fix double charge', author: 'jdoe', name: 'Jane Doe', at: days(-14), add: 40, del: 22, files: 2 },
+  ];
+  for (const c of commits) {
+    await prisma.commit.upsert({
+      where: {
+        tenantId_repoFullName_sha: {
+          tenantId: TENANT_ID,
+          repoFullName: c.repo,
+          sha: c.sha,
+        },
+      },
+      create: {
+        id: `commit_${c.sha.slice(0, 8)}`,
+        tenantId: TENANT_ID,
+        connectionId: CONNECTION_ID,
+        repoFullName: c.repo,
+        sha: c.sha,
+        message: c.msg,
+        authorLogin: c.author,
+        authorName: c.name,
+        authorEmail: `${c.author}@acme.dev`,
+        authoredAt: c.at,
+        additions: c.add,
+        deletions: c.del,
+        filesChanged: c.files,
+      },
+      update: { authoredAt: c.at, additions: c.add, deletions: c.del },
+    });
+  }
+
   /* eslint-disable no-console */
   console.log('Seeded detailing dataset:');
   console.log(`  login          = ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);

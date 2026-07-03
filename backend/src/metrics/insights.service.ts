@@ -103,6 +103,46 @@ export interface EfficiencyView {
   };
 }
 
+export interface ProjectActivityRow {
+  projectKey: string; // '(unlinked repos)' bucket for repos mapped to no project
+  commits: number;
+  locChanged: number;
+  additions: number;
+  deletions: number;
+  activeRepos: number;
+  topRepo: string | null;
+  contributors: number;
+}
+
+export interface DeveloperActivityView {
+  developer: string;
+  totals: {
+    commits: number;
+    additions: number;
+    deletions: number;
+    locChanged: number;
+    filesChanged: number;
+    prsAuthored: number;
+    activeRepos: number;
+  };
+  activeProjects: string[]; // via repo→project graph mapping
+  byRepo: {
+    repo: string;
+    commits: number;
+    locChanged: number;
+    lastCommitAt: string;
+  }[];
+  dailySeries: { date: string; commits: number; locChanged: number }[];
+  recentCommits: {
+    sha: string;
+    repo: string;
+    message: string;
+    authoredAt: string;
+    additions: number;
+    deletions: number;
+  }[];
+}
+
 const DEFAULT_SPRINT_DAYS = 14;
 
 /**
@@ -391,6 +431,184 @@ export class InsightsService {
         prsTotal: prs.length,
       },
     };
+  }
+
+  /**
+   * Most-active projects for a window (day/week/month): commits + LOC across
+   * every repo mapped to the project via the delivery graph. Repos linked to no
+   * project are reported honestly in an "(unlinked repos)" bucket.
+   */
+  async projectActivity(from: Date, to?: Date): Promise<ProjectActivityRow[]> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const repoToProjects = await this.repoToProjects(tenantId);
+    const commits = await this.code.listCommits(tenantId, {
+      from,
+      to: to ?? new Date(),
+    });
+
+    interface Acc {
+      commits: number;
+      additions: number;
+      deletions: number;
+      repoCommits: Map<string, number>;
+      contributors: Set<string>;
+    }
+    const acc = new Map<string, Acc>();
+    const ensure = (key: string): Acc => {
+      const cur =
+        acc.get(key) ??
+        ({
+          commits: 0,
+          additions: 0,
+          deletions: 0,
+          repoCommits: new Map(),
+          contributors: new Set(),
+        } as Acc);
+      acc.set(key, cur);
+      return cur;
+    };
+
+    for (const c of commits) {
+      const projects = repoToProjects.get(c.repoFullName) ?? [
+        '(unlinked repos)',
+      ];
+      for (const project of projects) {
+        const a = ensure(project);
+        a.commits += 1;
+        a.additions += c.additions;
+        a.deletions += c.deletions;
+        a.repoCommits.set(
+          c.repoFullName,
+          (a.repoCommits.get(c.repoFullName) ?? 0) + 1,
+        );
+        if (c.authorLogin) {
+          a.contributors.add(c.authorLogin);
+        }
+      }
+    }
+
+    return [...acc.entries()]
+      .map(([projectKey, a]) => ({
+        projectKey,
+        commits: a.commits,
+        additions: a.additions,
+        deletions: a.deletions,
+        locChanged: a.additions + a.deletions,
+        activeRepos: a.repoCommits.size,
+        topRepo:
+          [...a.repoCommits.entries()].sort((x, y) => y[1] - x[1])[0]?.[0] ??
+          null,
+        contributors: a.contributors.size,
+      }))
+      .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
+  }
+
+  /** GitHub-style activity profile for one developer (activity context, not ranking). */
+  async developerActivity(
+    developer: string,
+    from: Date,
+    to?: Date,
+  ): Promise<DeveloperActivityView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const end = to ?? new Date();
+    const commits = await this.code.listCommits(tenantId, {
+      authorLogin: developer,
+      from,
+      to: end,
+    });
+    const prs = await this.code.listPullRequestsByAuthor(
+      tenantId,
+      developer,
+      from,
+      end,
+    );
+
+    const byRepo = new Map<
+      string,
+      { commits: number; loc: number; last: Date }
+    >();
+    const byDay = new Map<string, { commits: number; loc: number }>();
+    let additions = 0;
+    let deletions = 0;
+    let filesChanged = 0;
+    for (const c of commits) {
+      additions += c.additions;
+      deletions += c.deletions;
+      filesChanged += c.filesChanged;
+      const r = byRepo.get(c.repoFullName) ?? {
+        commits: 0,
+        loc: 0,
+        last: c.authoredAt,
+      };
+      r.commits += 1;
+      r.loc += c.additions + c.deletions;
+      if (c.authoredAt > r.last) r.last = c.authoredAt;
+      byRepo.set(c.repoFullName, r);
+
+      const day = c.authoredAt.toISOString().slice(0, 10);
+      const d = byDay.get(day) ?? { commits: 0, loc: 0 };
+      d.commits += 1;
+      d.loc += c.additions + c.deletions;
+      byDay.set(day, d);
+    }
+
+    const repoToProjects = await this.repoToProjects(tenantId);
+    const activeProjects = new Set<string>();
+    for (const repo of byRepo.keys()) {
+      for (const project of repoToProjects.get(repo) ?? []) {
+        activeProjects.add(project);
+      }
+    }
+
+    return {
+      developer,
+      totals: {
+        commits: commits.length,
+        additions,
+        deletions,
+        locChanged: additions + deletions,
+        filesChanged,
+        prsAuthored: prs.length,
+        activeRepos: byRepo.size,
+      },
+      activeProjects: [...activeProjects].sort(),
+      byRepo: [...byRepo.entries()]
+        .map(([repo, r]) => ({
+          repo,
+          commits: r.commits,
+          locChanged: r.loc,
+          lastCommitAt: r.last.toISOString(),
+        }))
+        .sort((a, b) => b.commits - a.commits),
+      dailySeries: [...byDay.entries()]
+        .map(([date, d]) => ({ date, commits: d.commits, locChanged: d.loc }))
+        .sort((a, b) => a.date.localeCompare(b.date)),
+      recentCommits: commits.slice(0, 20).map((c) => ({
+        sha: c.sha.slice(0, 7),
+        repo: c.repoFullName,
+        message: c.message.split('\n')[0],
+        authoredAt: c.authoredAt.toISOString(),
+        additions: c.additions,
+        deletions: c.deletions,
+      })),
+    };
+  }
+
+  /** repo → project keys via the delivery graph (cached per call, N≤60 projects). */
+  private async repoToProjects(
+    tenantId: string,
+  ): Promise<Map<string, string[]>> {
+    const projects = await this.planning.listProjectKeys(tenantId);
+    const map = new Map<string, string[]>();
+    for (const project of projects) {
+      const repos = await this.correlation.reposLinkedToProjects(tenantId, [
+        project,
+      ]);
+      for (const repo of repos) {
+        map.set(repo, [...(map.get(repo) ?? []), project]);
+      }
+    }
+    return map;
   }
 
   // ---- helpers -------------------------------------------------------------

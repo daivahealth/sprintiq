@@ -217,6 +217,29 @@ model PullRequest {
   @@map("code_pull_request")
 }
 
+model Commit {
+  id           String   @id
+  tenantId     String
+  connectionId String
+  repoFullName String
+  sha          String
+  message      String
+  authorLogin  String?
+  authorName   String?
+  authorEmail  String?
+  authoredAt   DateTime
+  additions    Int      @default(0)
+  deletions    Int      @default(0)
+  filesChanged Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, repoFullName, sha])
+  @@index([tenantId, authorLogin, authoredAt])
+  @@index([tenantId, repoFullName, authoredAt])
+  @@map("code_commit")
+}
+
 // ---------------------------------------------------------------------------
 // BC-5 Correlation & Delivery Graph
 // ---------------------------------------------------------------------------

@@ -104,6 +104,48 @@ export interface EfficiencyView {
 
 export interface SprintCatalogItem extends SprintSummary {}
 
+export type ActivityWindow = 'day' | 'week' | 'month';
+
+export interface ProjectActivityRow {
+  projectKey: string;
+  commits: number;
+  locChanged: number;
+  additions: number;
+  deletions: number;
+  activeRepos: number;
+  topRepo: string | null;
+  contributors: number;
+}
+
+export interface DeveloperActivityView {
+  developer: string;
+  totals: {
+    commits: number;
+    additions: number;
+    deletions: number;
+    locChanged: number;
+    filesChanged: number;
+    prsAuthored: number;
+    activeRepos: number;
+  };
+  activeProjects: string[];
+  byRepo: {
+    repo: string;
+    commits: number;
+    locChanged: number;
+    lastCommitAt: string;
+  }[];
+  dailySeries: { date: string; commits: number; locChanged: number }[];
+  recentCommits: {
+    sha: string;
+    repo: string;
+    message: string;
+    authoredAt: string;
+    additions: number;
+    deletions: number;
+  }[];
+}
+
 // ---- Hooks ------------------------------------------------------------------
 
 function scopeParams(scope: Scope, from?: string): URLSearchParams {
@@ -195,6 +237,41 @@ export function useEfficiency(scope: Scope, from: string) {
     queryKey: ['efficiency', params.toString()],
     queryFn: () =>
       api.get<EfficiencyView>(`/api/dashboards/efficiency?${params}`),
+  });
+}
+
+export function useProjectActivity(window: ActivityWindow) {
+  return useQuery({
+    queryKey: ['project-activity', window],
+    queryFn: () =>
+      api.get<{ window: string; rows: ProjectActivityRow[]; computedAt: string }>(
+        `/api/dashboards/project-activity?window=${window}`,
+      ),
+  });
+}
+
+export function useDeveloperCatalog(search: string) {
+  return useQuery({
+    queryKey: ['catalog', 'developers', search],
+    queryFn: () =>
+      api.get<{ items: { login: string }[] }>(
+        `/api/catalog/developers${search ? `?search=${encodeURIComponent(search)}` : ''}`,
+      ),
+    staleTime: 60_000,
+  });
+}
+
+export function useDeveloperActivity(
+  developer: string | null,
+  window: ActivityWindow,
+) {
+  return useQuery({
+    queryKey: ['developer-activity', developer, window],
+    queryFn: () =>
+      api.get<DeveloperActivityView>(
+        `/api/dashboards/developer-activity?developer=${encodeURIComponent(developer!)}&window=${window}`,
+      ),
+    enabled: Boolean(developer),
   });
 }
 

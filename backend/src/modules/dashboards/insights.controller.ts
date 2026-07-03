@@ -76,7 +76,30 @@ export const DASHBOARD_REGISTRY: {
     description: 'PR + story cycle times and Jira↔GitHub traceability.',
     roles: ALL_ROLES,
   },
+  {
+    key: 'project-activity',
+    title: 'Project Activity',
+    path: '/project-activity',
+    description:
+      'Most-active projects (commits + LOC across mapped repos) by day/week/month.',
+    roles: ALL_ROLES,
+  },
+  {
+    key: 'developer-activity',
+    title: 'Developer Activity',
+    path: '/developer-activity',
+    description:
+      'Per-developer commit history, repos, lines committed, active projects.',
+    roles: ALL_ROLES,
+  },
 ];
+
+/** Activity windows for the Project Activity board. */
+const ACTIVITY_WINDOWS: Record<string, number> = {
+  day: 1,
+  week: 7,
+  month: 30,
+};
 
 /** BC-13 insight endpoints backing the common dashboards. JWT + tenant-scoped. */
 @Controller('dashboards')
@@ -213,6 +236,34 @@ export class InsightsController {
       parseDate(to),
     );
     return { ...view, computedAt: new Date().toISOString() };
+  }
+
+  /** Most-active projects for day|week|month (commits/LOC over mapped repos). */
+  @Get('project-activity')
+  async projectActivity(@Query('window') window = 'week') {
+    const days = ACTIVITY_WINDOWS[window];
+    if (!days) {
+      throw new BadRequestException(
+        `Unsupported window: ${window}. Supported: ${Object.keys(ACTIVITY_WINDOWS).join(', ')}.`,
+      );
+    }
+    const rows = await this.insights.projectActivity(
+      new Date(Date.now() - days * 86_400_000),
+    );
+    return { window, rows, computedAt: new Date().toISOString() };
+  }
+
+  /** GitHub-style per-developer activity (commit history, repos, LOC, projects). */
+  @Get('developer-activity')
+  async developerActivity(
+    @Query('developer') developer?: string,
+    @Query('window') window = 'month',
+  ) {
+    const days = ACTIVITY_WINDOWS[window] ?? 30;
+    return this.insights.developerActivity(
+      requireParam(developer, 'developer'),
+      new Date(Date.now() - days * 86_400_000),
+    );
   }
 
   private async resolveRepos(

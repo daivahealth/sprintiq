@@ -1,11 +1,25 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { PullRequest } from '@prisma/client';
-import { CodePullRequestPayload } from '../../common/events/contracts';
-import { CODE_PR_EVENT_TYPES } from '../../common/events/event-types';
+import { Commit, PullRequest } from '@prisma/client';
+import {
+  CodeCommitPayload,
+  CodePullRequestPayload,
+} from '../../common/events/contracts';
+import {
+  CODE_PR_EVENT_TYPES,
+  EventTypes,
+} from '../../common/events/event-types';
 import { DomainEvent } from '../../common/events/domain-event';
 import { EventBus } from '../../common/events/event-bus';
 import { newId } from '../../common/id';
 import { PrismaService } from '../../database/prisma.service';
+
+/** Filters for commit activity reads (project/developer activity boards). */
+export interface CommitFilters {
+  repos?: string[];
+  authorLogin?: string;
+  from?: Date;
+  to?: Date;
+}
 
 /**
  * BC-4 Source Control (Git domain). Consumes code.pull_request.* events and
@@ -27,6 +41,45 @@ export class CodeService implements OnModuleInit {
         this.handlePullRequest(e),
       );
     }
+    this.eventBus.subscribe<CodeCommitPayload>(
+      EventTypes.CODE_COMMIT_PUSHED,
+      (e) => this.handleCommit(e),
+    );
+  }
+
+  private async handleCommit(
+    event: DomainEvent<CodeCommitPayload>,
+  ): Promise<void> {
+    const c = event.payload;
+    const fields = {
+      connectionId: event.connectionId ?? '',
+      message: c.message,
+      authorLogin: c.authorLogin ?? null,
+      authorName: c.authorName ?? null,
+      authorEmail: c.authorEmail ?? null,
+      authoredAt: new Date(c.authoredAt),
+      additions: c.additions ?? 0,
+      deletions: c.deletions ?? 0,
+      filesChanged: c.filesChanged ?? 0,
+    };
+    await this.prisma.commit.upsert({
+      where: {
+        tenantId_repoFullName_sha: {
+          tenantId: event.tenantId,
+          repoFullName: c.repoFullName,
+          sha: c.sha,
+        },
+      },
+      create: {
+        id: newId(),
+        tenantId: event.tenantId,
+        repoFullName: c.repoFullName,
+        sha: c.sha,
+        ...fields,
+      },
+      update: fields,
+    });
+    this.logger.debug(`upserted commit ${c.repoFullName}@${c.sha.slice(0, 7)}`);
   }
 
   private async handlePullRequest(
@@ -185,6 +238,77 @@ export class CodeService implements OnModuleInit {
         },
       },
     });
+  }
+
+  /** PRs authored by one developer within a window (developer activity board). */
+  listPullRequestsByAuthor(
+    tenantId: string,
+    authorLogin: string,
+    from?: Date,
+    to?: Date,
+  ): Promise<PullRequest[]> {
+    return this.prisma.pullRequest.findMany({
+      where: {
+        tenantId,
+        authorLogin,
+        openedAt: {
+          ...(from ? { gte: from } : {}),
+          ...(to ? { lte: to } : {}),
+        },
+      },
+      orderBy: { openedAt: 'desc' },
+      take: 500,
+    });
+  }
+
+  /** Commit activity read (project/developer activity boards). */
+  listCommits(tenantId: string, filters: CommitFilters): Promise<Commit[]> {
+    return this.prisma.commit.findMany({
+      where: {
+        tenantId,
+        ...(filters.repos && filters.repos.length > 0
+          ? { repoFullName: { in: filters.repos } }
+          : {}),
+        ...(filters.authorLogin ? { authorLogin: filters.authorLogin } : {}),
+        authoredAt: {
+          ...(filters.from ? { gte: filters.from } : {}),
+          ...(filters.to ? { lte: filters.to } : {}),
+        },
+      },
+      orderBy: { authoredAt: 'desc' },
+      take: 2000,
+    });
+  }
+
+  /** Distinct commit/PR authors — the developer picker catalog. */
+  async listDeveloperLogins(
+    tenantId: string,
+    search?: string,
+  ): Promise<string[]> {
+    const needle = search?.toLowerCase();
+    const [commitAuthors, prAuthors] = await Promise.all([
+      this.prisma.commit.findMany({
+        where: { tenantId, authorLogin: { not: null } },
+        distinct: ['authorLogin'],
+        select: { authorLogin: true },
+        take: 500,
+      }),
+      this.prisma.pullRequest.findMany({
+        where: { tenantId, authorLogin: { not: null } },
+        distinct: ['authorLogin'],
+        select: { authorLogin: true },
+        take: 500,
+      }),
+    ]);
+    const logins = new Set<string>();
+    for (const row of [...commitAuthors, ...prAuthors]) {
+      if (row.authorLogin) {
+        logins.add(row.authorLogin);
+      }
+    }
+    return [...logins]
+      .filter((l) => !needle || l.toLowerCase().includes(needle))
+      .sort();
   }
 
   /** Distinct repositories known to this tenant (catalog for pickers/explorer). */
