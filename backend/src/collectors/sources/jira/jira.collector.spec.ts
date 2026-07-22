@@ -14,6 +14,9 @@ function baseConnection(overrides: Partial<Connection> = {}): Connection {
       siteUrl: 'https://acme.atlassian.net',
       email: 'admin@acme.com',
       projectKey: 'PAY',
+      // Pre-resolved as "no such field" by default so existing tests don't
+      // need to stub `client.getFields` — see the dedicated resolution tests.
+      sprintFieldId: null,
     },
     secretRef: 'JIRA_API_TOKEN',
     webhookSecretRef: null,
@@ -51,10 +54,14 @@ describe('JiraCollector.poll', () => {
   let collector: JiraCollector;
 
   beforeEach(() => {
-    client = { searchIssues: jest.fn() } as unknown as jest.Mocked<JiraClient>;
+    client = {
+      searchIssues: jest.fn(),
+      getFields: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<JiraClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
       setRateLimitState: jest.fn().mockResolvedValue(undefined),
+      updateConfig: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     secrets = {
       resolve: jest.fn().mockResolvedValue('tok'),
@@ -86,7 +93,6 @@ describe('JiraCollector.poll', () => {
         issue('PAY-1', { updated: '2026-06-01T00:00:00.000Z' }),
         issue('PAY-2', { updated: '2026-06-02T00:00:00.000Z' }),
       ],
-      total: 2,
     });
 
     const envelopes = await collector.poll(baseConnection());
@@ -103,29 +109,40 @@ describe('JiraCollector.poll', () => {
       Record<string, unknown>,
     ];
     expect(cursors.updatedCursor).toBe('2026-06-02T00:00:00.000Z');
-    expect(cursors.resumeStartAt).toBeUndefined();
+    expect(cursors.resumePageToken).toBeUndefined();
   });
 
-  it('resumes a paged backfill from resumeStartAt across ticks', async () => {
+  it('resumes a paged backfill from resumePageToken across ticks', async () => {
     client.searchIssues.mockResolvedValue({
       issues: [issue('PAY-1'), issue('PAY-2')],
-      total: 500,
+      nextPageToken: 'tok_next',
     });
 
-    const connection = baseConnection({ syncCursors: { resumeStartAt: 100 } });
+    const connection = baseConnection({
+      syncCursors: { resumePageToken: 'tok_100' },
+    });
     await collector.poll(connection);
 
     expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
-      startAt: 100,
+      pageToken: 'tok_100',
     });
-    // 3 page-budget fetches: 100 -> 102 -> 104
-    expect(client.searchIssues.mock.calls.map((c) => c[3].startAt)).toEqual([
-      100, 102, 104,
+    // 3 page-budget fetches, each continuing from the previous response's nextPageToken
+    expect(client.searchIssues.mock.calls.map((c) => c[3].pageToken)).toEqual([
+      'tok_100',
+      'tok_next',
+      'tok_next',
     ]);
+
+    const [, cursors] = connections.setSyncCursors.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    // budget exhausted mid-pass — resumes from the last token next tick
+    expect(cursors.resumePageToken).toBe('tok_next');
   });
 
   it('switches to incremental JQL floor once backfillDone (updatedCursor present)', async () => {
-    client.searchIssues.mockResolvedValue({ issues: [], total: 0 });
+    client.searchIssues.mockResolvedValue({ issues: [] });
     const connection = baseConnection({
       syncCursors: { updatedCursor: '2026-06-15T12:00:00.000Z' },
     });
@@ -137,16 +154,15 @@ describe('JiraCollector.poll', () => {
     expect(jql).toContain('project = "PAY"');
   });
 
-  it('stops and persists resetAt on a 429, preserving resumeStartAt', async () => {
+  it('stops and persists resetAt on a 429, preserving resumePageToken', async () => {
     const resetAt = new Date(Date.now() + 30_000);
     client.searchIssues.mockResolvedValue({
       issues: [],
-      total: 0,
       rateLimitedUntil: resetAt,
     });
 
     const envelopes = await collector.poll(
-      baseConnection({ syncCursors: { resumeStartAt: 50 } }),
+      baseConnection({ syncCursors: { resumePageToken: 'tok_50' } }),
     );
 
     expect(envelopes).toEqual([]);
@@ -157,7 +173,106 @@ describe('JiraCollector.poll', () => {
       string,
       Record<string, unknown>,
     ];
-    expect(cursors.resumeStartAt).toBe(50);
+    expect(cursors.resumePageToken).toBe('tok_50');
+  });
+
+  it('resolves the site-specific Sprint custom-field id once and caches it on the connection', async () => {
+    client.getFields.mockResolvedValue([
+      { id: 'summary', name: 'Summary' },
+      {
+        id: 'customfield_10020',
+        name: 'Sprint',
+        schema: { custom: 'com.pyxis.greenhopper.jira:gh-sprint' },
+      },
+    ]);
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('PAY-1', {
+          customfield_10020: [
+            { id: 5, name: 'Sprint 5', state: 'active', goal: 'ship it' },
+          ],
+        }),
+      ],
+    });
+
+    const connection = baseConnection({
+      config: {
+        siteUrl: 'https://acme.atlassian.net',
+        email: 'admin@acme.com',
+        // sprintFieldId omitted — forces resolution via getFields
+      },
+    });
+    const envelopes = await collector.poll(connection);
+
+    expect(client.getFields).toHaveBeenCalledWith(
+      'https://acme.atlassian.net',
+      'admin@acme.com',
+      'tok',
+    );
+    expect(connections.updateConfig).toHaveBeenCalledWith('conn_1', {
+      config: expect.objectContaining({ sprintFieldId: 'customfield_10020' }),
+      status: 'active',
+    });
+    // the resolved field id is requested alongside the base fields and read back
+    expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
+      fields: expect.arrayContaining(['summary', 'customfield_10020']),
+    });
+    expect(envelopes[0].data).toMatchObject({
+      sprint: { externalId: '5', name: 'Sprint 5', goal: 'ship it' },
+    });
+  });
+
+  it('does not re-query getFields once sprintFieldId has been resolved (including "no such field")', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(baseConnection()); // default config has sprintFieldId: null
+
+    expect(client.getFields).not.toHaveBeenCalled();
+    expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
+      fields: [
+        'summary',
+        'status',
+        'issuetype',
+        'project',
+        'storyPoints',
+        'epic',
+        'epicKey',
+        'parent',
+        'fixVersions',
+        'assignee',
+        'priority',
+        'resolutiondate',
+        'updated',
+      ],
+    });
+  });
+
+  it("picks the active sprint out of the field's array, falling back to the most recent one", async () => {
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('PAY-1', {
+          customfield_10020: [
+            { id: 1, name: 'Sprint 1', state: 'closed' },
+            { id: 2, name: 'Sprint 2', state: 'closed' },
+          ],
+        }),
+      ],
+    });
+
+    const envelopes = await collector.poll(
+      baseConnection({
+        config: {
+          siteUrl: 'https://acme.atlassian.net',
+          email: 'admin@acme.com',
+          sprintFieldId: 'customfield_10020',
+        },
+      }),
+    );
+
+    // no sprint is active — falls back to the last (most recent) entry
+    expect(envelopes[0].data).toMatchObject({
+      sprint: { externalId: '2', name: 'Sprint 2' },
+    });
   });
 
   it('maps subtask/epic hierarchy the same way normalizeWebhook does', async () => {

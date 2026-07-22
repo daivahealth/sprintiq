@@ -1,5 +1,20 @@
-import { Body, Controller, Get, Put } from '@nestjs/common';
-import { IsArray, IsIn, IsObject, IsOptional, IsString } from 'class-validator';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Post,
+  Put,
+} from '@nestjs/common';
+import {
+  IsArray,
+  IsIn,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
@@ -53,11 +68,19 @@ class UpsertConfigurationDto {
   expectedUpdatedAt?: string;
 }
 
+class SyncGithubOrgDto {
+  /** Overrides the github namespace's own backfillDays for this sync only. */
+  @IsOptional()
+  @IsNumber()
+  backfillDays?: number;
+}
+
 @Controller('admin/configurations')
 export class ConfigurationsController {
   constructor(
     private readonly configurations: ConfigurationsService,
     private readonly secrets: SecretsService,
+    private readonly githubOrgSync: GithubOrgSyncService,
   ) {}
 
   @Roles(Role.ADMIN)
@@ -104,6 +127,58 @@ export class ConfigurationsController {
       { actorId: user.userId },
     );
     return this.toView(config);
+  }
+
+  /**
+   * Discovers every repo in the tenant's configured GitHub org and registers
+   * a Connection per repo (skipping ones already registered, and archived/
+   * disabled repos) so the regular scheduler picks each one up. Complements
+   * the single-default-repo bridge above — this is "sync the whole org."
+   * The token is resolved server-side and never appears in the response.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/sync-org')
+  async syncGithubOrg(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: SyncGithubOrgDto,
+  ) {
+    const configs = await this.configurations.listTenantConfigurations(
+      user.tenantId,
+    );
+    const github = configs.find(
+      (c) => c.namespace === 'github' && c.key === 'default',
+    );
+    const values = (github?.values ?? {}) as Record<string, unknown>;
+    const secretRefs = (github?.secretRefs ?? {}) as Record<string, unknown>;
+    const organization =
+      typeof values.organization === 'string' ? values.organization : undefined;
+    const tokenRef =
+      typeof secretRefs.tokenRef === 'string' ? secretRefs.tokenRef : undefined;
+
+    if (!github || github.status !== 'active' || !organization || !tokenRef) {
+      throw new BadRequestException(
+        'Configure GitHub (organization + token secret ref, saved as active) before syncing the whole org.',
+      );
+    }
+
+    const token = await this.secrets.resolve(user.tenantId, tokenRef);
+    if (!token) {
+      throw new BadRequestException(
+        `No value is stored (or set via env var) for secret ref "${tokenRef}" yet — paste the token in the Configuration screen, or set the env var, first.`,
+      );
+    }
+
+    const backfillDays =
+      dto.backfillDays ??
+      (typeof values.backfillDays === 'number' ? values.backfillDays : 90);
+
+    return this.githubOrgSync.syncOrgRepos(
+      user.tenantId,
+      organization,
+      tokenRef,
+      token,
+      backfillDays,
+    );
   }
 
   private toView(config: TenantConfigurationView) {

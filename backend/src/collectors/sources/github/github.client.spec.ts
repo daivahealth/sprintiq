@@ -111,4 +111,24 @@ describe('GithubClient', () => {
     const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
     expect(url).toContain('since=2026-01-01T00%3A00%3A00.000Z');
   });
+
+  it('lists org repos with type=all (so private repos the token can see are included)', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: [
+          { full_name: 'athmahealth/api', archived: false, disabled: false },
+        ],
+      }),
+    ) as unknown as typeof fetch;
+
+    const page = await client.listOrgReposPage('athmahealth', 'tok', 1);
+
+    expect(page.items).toEqual([
+      { full_name: 'athmahealth/api', archived: false, disabled: false },
+    ]);
+    const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+    expect(url).toBe(
+      'https://api.github.com/orgs/athmahealth/repos?type=all&per_page=100&page=1',
+    );
+  });
 });

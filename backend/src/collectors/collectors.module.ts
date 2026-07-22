@@ -3,6 +3,7 @@ import { ConnectionsModule } from '../modules/connections/connections.module';
 import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
+import { GithubOrgSyncService } from './sources/github/github-org-sync.service';
 import { GithubClient } from './sources/github/github.client';
 import { GithubCollector } from './sources/github/github.collector';
 import { JiraClient } from './sources/jira/jira.client';
@@ -26,10 +27,11 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     CollectorRegistry,
     GithubClient,
     GithubCollector,
+    GithubOrgSyncService,
     JiraClient,
     JiraCollector,
     CollectorSchedulerService,
   ],
-  exports: [IngestionService],
+  exports: [IngestionService, GithubOrgSyncService],
 })
 export class CollectorsModule {}

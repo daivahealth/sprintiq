@@ -24,6 +24,12 @@ export interface GithubCommit {
   author: { login?: string } | null;
 }
 
+export interface GithubRepo {
+  full_name: string;
+  archived: boolean;
+  disabled: boolean;
+}
+
 export interface GithubPage<T> {
   items: T[];
   hasNextPage: boolean;
@@ -50,6 +56,17 @@ export class GithubClient {
   ): Promise<GithubPage<GithubPull>> {
     const url = `${this.baseUrl}/repos/${repoFullName}/pulls?state=all&sort=updated&direction=desc&per_page=${perPage}&page=${page}`;
     return this.getPage<GithubPull>(url, token);
+  }
+
+  /** `type=all` includes private repos the token can see — required for org-wide sync. */
+  async listOrgReposPage(
+    org: string,
+    token: string,
+    page: number,
+    perPage = 100,
+  ): Promise<GithubPage<GithubRepo>> {
+    const url = `${this.baseUrl}/orgs/${org}/repos?type=all&per_page=${perPage}&page=${page}`;
+    return this.getPage<GithubRepo>(url, token);
   }
 
   /** `since` is an ISO timestamp — GitHub's commits endpoint filters natively. */

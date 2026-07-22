@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Connection } from '@prisma/client';
 import {
   PlanningSprintRef,
@@ -14,7 +14,10 @@ import {
   EnvelopeActor,
 } from '../../ingestion/canonical-envelope';
 import { BaseSourceCollector } from '../../framework/source-collector';
-import { JiraClient, JiraSearchIssue } from './jira.client';
+import { BASE_SEARCH_FIELDS, JiraClient, JiraSearchIssue } from './jira.client';
+
+/** Jira Software's Sprint field always carries this custom-field schema type, regardless of its per-site numeric id. */
+const SPRINT_FIELD_CUSTOM_TYPE = 'com.pyxis.greenhopper.jira:gh-sprint';
 
 const TYPE_MAP: Record<string, string> = {
   Story: 'story',
@@ -33,8 +36,8 @@ const PAGE_SIZE = 50;
 const DEFAULT_BACKFILL_DAYS = 90;
 
 interface JiraSyncCursors {
-  /** `startAt` to resume from within the current cursor's JQL pass. */
-  resumeStartAt?: number;
+  /** `nextPageToken` to resume from within the current cursor's JQL pass. */
+  resumePageToken?: string;
   /** Watermark: `updated >=` floor for the JQL search; advances once a full pass completes. */
   updatedCursor?: string;
 }
@@ -49,6 +52,7 @@ interface JiraSyncCursors {
 @Injectable()
 export class JiraCollector extends BaseSourceCollector {
   readonly source = 'jira';
+  private readonly logger = new Logger(JiraCollector.name);
 
   constructor(
     private readonly client: JiraClient,
@@ -74,7 +78,14 @@ export class JiraCollector extends BaseSourceCollector {
         ? EventTypes.PLANNING_STORY_CREATED
         : EventTypes.PLANNING_STORY_UPDATED;
 
-    const payload = this.mapIssueToPayload(issue.key, issue.fields ?? {});
+    const sprintFieldId = (
+      connection.config as { sprintFieldId?: string | null } | null
+    )?.sprintFieldId;
+    const payload = this.mapIssueToPayload(
+      issue.key,
+      issue.fields ?? {},
+      sprintFieldId,
+    );
     const occurredAt: string = issue.fields?.updated ?? this.nowIso();
 
     return [
@@ -106,6 +117,8 @@ export class JiraCollector extends BaseSourceCollector {
       email?: string;
       projectKey?: string;
       backfillSince?: string;
+      /** Site-specific custom-field id for Sprint; `null` once resolved as absent. */
+      sprintFieldId?: string | null;
     };
     if (!config.siteUrl || !config.email) {
       return [];
@@ -129,6 +142,15 @@ export class JiraCollector extends BaseSourceCollector {
       return [];
     }
 
+    const sprintFieldId = await this.resolveSprintFieldId(
+      connection,
+      config,
+      apiToken,
+    );
+    const fields = sprintFieldId
+      ? [...BASE_SEARCH_FIELDS, sprintFieldId]
+      : BASE_SEARCH_FIELDS;
+
     const cursors: JiraSyncCursors = {
       ...((connection.syncCursors as JiraSyncCursors | null) ?? {}),
     };
@@ -144,7 +166,7 @@ export class JiraCollector extends BaseSourceCollector {
     const jql = `${jqlParts.join(' AND ')} ORDER BY updated ASC`;
 
     const envelopes: CanonicalEnvelope[] = [];
-    let startAt = cursors.resumeStartAt ?? 0;
+    let pageToken = cursors.resumePageToken;
     let lastSeenUpdatedAt: string | undefined;
     let rateLimitedUntil: Date | undefined;
     let passComplete = false;
@@ -154,35 +176,37 @@ export class JiraCollector extends BaseSourceCollector {
         config.siteUrl,
         config.email,
         apiToken,
-        { jql, startAt, maxResults: PAGE_SIZE },
+        { jql, maxResults: PAGE_SIZE, fields, pageToken },
       );
       if (page.rateLimitedUntil) {
         rateLimitedUntil = page.rateLimitedUntil;
         break;
       }
       for (const issue of page.issues) {
-        envelopes.push(this.fromPolledIssue(connection, issue, mode));
+        envelopes.push(
+          this.fromPolledIssue(connection, issue, mode, sprintFieldId),
+        );
         const updated = issue.fields?.updated;
         if (typeof updated === 'string') {
           lastSeenUpdatedAt = updated;
         }
       }
-      startAt += page.issues.length;
-      if (page.issues.length === 0 || startAt >= page.total) {
+      pageToken = page.nextPageToken;
+      if (!pageToken) {
         passComplete = true;
         break;
       }
     }
 
     if (rateLimitedUntil) {
-      cursors.resumeStartAt = startAt;
+      cursors.resumePageToken = pageToken;
     } else if (passComplete) {
-      cursors.resumeStartAt = undefined;
+      cursors.resumePageToken = undefined;
       // A `>=` floor re-includes the boundary issue next pass — harmless,
       // the idempotency key on (issueKey, eventType, updated) dedupes it.
       cursors.updatedCursor = lastSeenUpdatedAt ?? new Date().toISOString();
     } else {
-      cursors.resumeStartAt = startAt; // budget exhausted — resume next tick
+      cursors.resumePageToken = pageToken; // budget exhausted — resume next tick
     }
 
     await this.connections.setSyncCursors(
@@ -197,12 +221,59 @@ export class JiraCollector extends BaseSourceCollector {
     return envelopes;
   }
 
+  /**
+   * Resolves and caches (on `connection.config`) the site-specific custom-
+   * field id backing Sprint — Jira Software always exposes it via the
+   * `com.pyxis.greenhopper.jira:gh-sprint` schema type, but its numeric id
+   * (e.g. `customfield_10020`) differs per site, so `"sprint"` as a literal
+   * field id never matches on a real Jira Cloud instance.
+   */
+  private async resolveSprintFieldId(
+    connection: Connection,
+    config: { siteUrl?: string; email?: string; sprintFieldId?: string | null },
+    apiToken: string,
+  ): Promise<string | null> {
+    if (config.sprintFieldId !== undefined) {
+      return config.sprintFieldId;
+    }
+    const allFields = await this.client.getFields(
+      config.siteUrl as string,
+      config.email as string,
+      apiToken,
+    );
+    const candidates = allFields.filter(
+      (f) => f.schema?.custom === SPRINT_FIELD_CUSTOM_TYPE,
+    );
+    const sprintField =
+      candidates[0] ?? allFields.find((f) => f.name.toLowerCase() === 'sprint');
+    const resolved = sprintField?.id ?? null;
+    this.logger.log(
+      `Resolved Jira Sprint field for ${config.siteUrl}: ${resolved ?? 'none found'}` +
+        (candidates.length > 1
+          ? ` (${candidates.length} sprint-type fields present: ${candidates.map((f) => f.id).join(', ')} — using the first)`
+          : ''),
+    );
+    await this.connections.updateConfig(connection.id, {
+      config: {
+        ...((connection.config as Record<string, unknown>) ?? {}),
+        sprintFieldId: resolved,
+      },
+      status: connection.status,
+    });
+    return resolved;
+  }
+
   private fromPolledIssue(
     connection: Connection,
     issue: JiraSearchIssue,
     mode: CollectionMode,
+    sprintFieldId?: string | null,
   ): CanonicalEnvelope {
-    const payload = this.mapIssueToPayload(issue.key, issue.fields ?? {});
+    const payload = this.mapIssueToPayload(
+      issue.key,
+      issue.fields ?? {},
+      sprintFieldId,
+    );
     const occurredAt =
       typeof issue.fields?.updated === 'string'
         ? issue.fields.updated
@@ -247,6 +318,7 @@ export class JiraCollector extends BaseSourceCollector {
   private mapIssueToPayload(
     issueKey: string,
     fields: Record<string, unknown>,
+    sprintFieldId?: string | null,
   ): PlanningStoryPayload {
     const project = fields.project as { key?: string } | undefined;
     const issuetype = fields.issuetype as
@@ -287,7 +359,7 @@ export class JiraCollector extends BaseSourceCollector {
       title: typeof fields.summary === 'string' ? fields.summary : '',
       epicKey,
       parentKey,
-      sprint: parseSprint(fields.sprint),
+      sprint: parseSprint(sprintFieldId ? fields[sprintFieldId] : undefined),
       releases: Array.isArray(fixVersions)
         ? fixVersions
             .map((v: { name?: string }) => v?.name)
@@ -321,11 +393,20 @@ function toJqlDate(d: Date): string {
 }
 
 /** Accepts the normalized `fields.sprint` object (id/name/state/dates). */
+/**
+ * Jira's Sprint custom field is an array (an issue can carry the history of
+ * every sprint it's passed through) — pick the active one if present,
+ * otherwise the most recent (last) entry.
+ */
 function parseSprint(raw: unknown): PlanningSprintRef | undefined {
-  if (!raw || typeof raw !== 'object') {
+  const value = Array.isArray(raw)
+    ? (raw.find((s) => (s as Record<string, unknown>)?.state === 'active') ??
+      raw[raw.length - 1])
+    : raw;
+  if (!value || typeof value !== 'object') {
     return undefined;
   }
-  const s = raw as Record<string, unknown>;
+  const s = value as Record<string, unknown>;
   if (s.id === undefined || typeof s.name !== 'string') {
     return undefined;
   }
