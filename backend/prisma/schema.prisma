@@ -72,6 +72,23 @@ model Connection {
   @@map("connections_connection")
 }
 
+// Encrypted, tenant-scoped secret values (BC-0). `ref` matches the human-chosen
+// name an admin sets in a `secretRefs` field (e.g. "GITHUB_TOKEN") — SecretsService
+// resolves it here first (AES-256-GCM, app-level master key) before falling back
+// to `process.env[ref]`, so existing deploy-time env-var setups keep working
+// untouched. `ciphertext` never appears in logs or API responses.
+model TenantSecret {
+  id         String   @id
+  tenantId   String
+  ref        String
+  ciphertext String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tenantId, ref])
+  @@map("connections_tenant_secret")
+}
+
 model TenantConfiguration {
   id         String   @id
   tenantId   String

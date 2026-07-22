@@ -26,10 +26,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const message =
+    const responseBody =
       exception instanceof HttpException
         ? exception.getResponse()
         : 'Internal server error';
+
+    // Nest's default HttpException shape (and ours, for validation errors) is
+    // { statusCode, message, error } — flatten to the inner `message` so
+    // clients get the human-readable string/array directly, not a
+    // doubly-nested object they have to unwrap themselves.
+    const message =
+      typeof responseBody === 'string'
+        ? responseBody
+        : ((responseBody as Record<string, unknown>)?.message ?? responseBody);
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
@@ -40,10 +49,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     response.status(status).json({
       statusCode: status,
-      error:
-        typeof message === 'string'
-          ? message
-          : (message as Record<string, unknown>),
+      error: message,
       path: request.url,
       timestamp: new Date().toISOString(),
     });

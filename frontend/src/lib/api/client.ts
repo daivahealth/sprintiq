@@ -6,6 +6,8 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Per-field validation messages, when the server returned an array (400s). */
+    public details?: string[],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -34,16 +36,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     let message = res.statusText;
+    let details: string[] | undefined;
     try {
       const body = await res.json();
-      message =
-        typeof body?.error === 'string'
-          ? body.error
-          : (body?.message ?? JSON.stringify(body?.error ?? body));
+      if (typeof body?.error === 'string') {
+        message = body.error;
+      } else if (Array.isArray(body?.error)) {
+        details = body.error;
+        message = body.error.join('; ');
+      } else {
+        message = body?.message ?? JSON.stringify(body?.error ?? body);
+      }
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, details);
   }
 
   if (res.status === 204) {

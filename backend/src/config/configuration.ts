@@ -35,6 +35,13 @@ export const configuration = () => ({
     secretsProvider: process.env.SECRETS_PROVIDER ?? 'env',
   },
 
+  secrets: {
+    // Master key for the DB-backed encrypted secret store (SecretsService):
+    // AES-256-GCM, so this must base64-decode to exactly 32 bytes.
+    // Generate with: openssl rand -base64 32
+    encryptionKey: process.env.SECRETS_ENCRYPTION_KEY ?? '',
+  },
+
   ai: {
     apiKey: process.env.LLM_API_KEY ?? '',
     defaultModel: process.env.LLM_DEFAULT_MODEL ?? 'claude-opus-4-8',

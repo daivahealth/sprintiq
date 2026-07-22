@@ -64,6 +64,9 @@ export interface ConfigurationField {
   kind: ConfigurationFieldKind;
   required?: boolean;
   helper?: string;
+  /** Regex SOURCE (not a RegExp — sent as JSON, reconstruct with `new RegExp()`). */
+  pattern?: string;
+  patternHint?: string;
 }
 
 export interface ConfigurationSection {
@@ -71,6 +74,27 @@ export interface ConfigurationSection {
   label: string;
   description: string;
   fields: ConfigurationField[];
+}
+
+/** GET /api/admin/configurations/catalog */
+export interface ConfigurationCatalogResponse {
+  secretRefHint: string;
+  secretRefPattern: string;
+  /** Whether pasting a secret value will actually work server-side (SECRETS_ENCRYPTION_KEY configured). */
+  secretsStoreEnabled: boolean;
+  sections: ConfigurationSection[];
+}
+
+/**
+ * Whether this namespace is actually collecting data (a real BC-0 Connection
+ * exists), not just saved. `null` for config-only namespaces (llm/notifications/
+ * metrics/security) that have no underlying connection to speak of.
+ */
+export interface ConfigurationConnectionSummary {
+  linked: boolean;
+  status?: "active" | "disabled";
+  lastSyncAt?: string | null;
+  syncLagSeconds?: number;
 }
 
 export interface TenantConfiguration {
@@ -81,6 +105,24 @@ export interface TenantConfiguration {
   secretRefs: Record<string, unknown>;
   status: "active" | "disabled";
   updatedAt: string;
+  connection: ConfigurationConnectionSummary | null;
+  /** Per secret-ref field key: whether a value is stored in the encrypted DB store. */
+  secretsConfigured: Record<string, boolean>;
+}
+
+/** PUT /api/admin/configurations body. */
+export interface UpsertConfigurationPayload {
+  namespace: ConfigurationNamespace;
+  key?: string;
+  values: Record<string, unknown>;
+  secretRefs: Record<string, unknown>;
+  /** Actual secret values to store (encrypted server-side). Omit a field to leave it untouched. */
+  secretValues?: Record<string, unknown>;
+  /** Field keys whose stored secret value should be deleted. */
+  clearSecrets?: string[];
+  status: "active" | "disabled";
+  /** Optimistic-concurrency token: the updatedAt this draft was based on. */
+  expectedUpdatedAt?: string;
 }
 
 /** Response of GET /api/dashboards/pr-cycle-time (BC-13 → BC-8). */

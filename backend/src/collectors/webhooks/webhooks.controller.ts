@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { Public } from '../../common/auth/public.decorator';
+import { SecretsService } from '../../common/secrets/secrets.service';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { ConnectionsService } from '../../modules/connections/connections.service';
 import { CollectorRegistry } from '../framework/collector.registry';
@@ -34,6 +35,7 @@ export class WebhooksController {
     private readonly connections: ConnectionsService,
     private readonly ingestion: IngestionService,
     private readonly tenantContext: TenantContextService,
+    private readonly secrets: SecretsService,
   ) {}
 
   @Public()
@@ -60,11 +62,14 @@ export class WebhooksController {
       );
     }
 
-    // Per-provider signature verification over the raw body. The secret is
-    // resolved from the secret store via connection.webhookSecretRef; the
-    // scaffold reads it from config/env (SECRETS_PROVIDER=env).
+    // Per-provider signature verification over the raw body. The secret
+    // resolves from the encrypted per-tenant store first, falling back to
+    // process.env[ref] (SecretsService) — never logged.
     const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
-    const secret = this.resolveWebhookSecret(connection.webhookSecretRef);
+    const secret = await this.secrets.resolve(
+      connection.tenantId,
+      connection.webhookSecretRef,
+    );
     if (!verifier.verify(rawBody, req.headers, secret)) {
       throw new UnauthorizedException('Signature verification failed.');
     }
@@ -106,14 +111,5 @@ export class WebhooksController {
         ingested,
       };
     });
-  }
-
-  private resolveWebhookSecret(ref?: string | null): string {
-    // Scaffold: env-backed secret resolution. Production resolves `ref` from
-    // vault/KMS (SECRETS_PROVIDER). Never log the resolved value.
-    if (!ref) {
-      return '';
-    }
-    return process.env[ref] ?? '';
   }
 }

@@ -6,6 +6,7 @@ import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
 
 import { CommonModule } from './common/common.module';
+import { SecretsModule } from './common/secrets/secrets.module';
 import { PrismaModule } from './database/prisma.module';
 import { HealthModule } from './health/health.module';
 
@@ -47,6 +48,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 
     PrismaModule,
     CommonModule,
+    SecretsModule,
     AuditModule,
     HealthModule,
 

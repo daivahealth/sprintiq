@@ -121,6 +121,8 @@ export interface ProjectActivityRow {
   activeRepos: number;
   topRepo: string | null;
   contributors: number;
+  /** Per-day activity (sparse: only days with commits). */
+  dailySeries: { date: string; commits: number; locChanged: number }[];
 }
 
 export interface DeveloperActivityView {
@@ -532,6 +534,7 @@ export class InsightsService {
       deletions: number;
       repoCommits: Map<string, number>;
       contributors: Set<string>;
+      byDay: Map<string, { commits: number; locChanged: number }>;
     }
     const acc = new Map<string, Acc>();
     const ensure = (key: string): Acc => {
@@ -543,6 +546,7 @@ export class InsightsService {
           deletions: 0,
           repoCommits: new Map(),
           contributors: new Set(),
+          byDay: new Map(),
         } as Acc);
       acc.set(key, cur);
       return cur;
@@ -552,6 +556,7 @@ export class InsightsService {
       const projects = repoToProjects.get(c.repoFullName) ?? [
         '(unlinked repos)',
       ];
+      const day = c.authoredAt.toISOString().slice(0, 10);
       for (const project of projects) {
         const a = ensure(project);
         a.commits += 1;
@@ -564,6 +569,10 @@ export class InsightsService {
         if (c.authorLogin) {
           a.contributors.add(c.authorLogin);
         }
+        const d = a.byDay.get(day) ?? { commits: 0, locChanged: 0 };
+        d.commits += 1;
+        d.locChanged += c.additions + c.deletions;
+        a.byDay.set(day, d);
       }
     }
 
@@ -579,6 +588,13 @@ export class InsightsService {
           [...a.repoCommits.entries()].sort((x, y) => y[1] - x[1])[0]?.[0] ??
           null,
         contributors: a.contributors.size,
+        dailySeries: [...a.byDay.entries()]
+          .map(([date, d]) => ({
+            date,
+            commits: d.commits,
+            locChanged: d.locChanged,
+          }))
+          .sort((x, y) => x.date.localeCompare(y.date)),
       }))
       .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
   }

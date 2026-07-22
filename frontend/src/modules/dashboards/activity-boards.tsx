@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Badge, Card } from '../../components/ui';
+import { SearchSelect } from '../../components/search-select';
 import { cn, timeAgo } from '../../lib/utils';
 import {
   type ActivityWindow,
@@ -8,6 +9,7 @@ import {
   useProjectActivity,
 } from './useInsights';
 import { CommitChart } from './CommitChart';
+import { ProjectActivityChart } from './ProjectActivityChart';
 import { BarList, ErrorCard, LoadingCard, Stat } from './widgets';
 
 const WINDOWS: { key: ActivityWindow; label: string }[] = [
@@ -84,15 +86,9 @@ export function ProjectActivityBoard() {
         <Card className="space-y-5">
           <div>
             <h4 className="mb-2 text-sm font-medium text-slate-600">
-              Commits per project
+              Activity timeline (commits per day by project)
             </h4>
-            <BarList
-              rows={rows.map((r) => ({
-                label: r.projectKey,
-                value: r.commits,
-                secondary: `${r.locChanged} LOC`,
-              }))}
-            />
+            <ProjectActivityChart rows={rows} windowDays={WINDOW_DAYS[window]} />
           </div>
 
           {rows.length > 0 && (
@@ -151,10 +147,10 @@ export function ProjectActivityBoard() {
 
 /** GitHub-style per-developer activity: commit history, repos, LOC, projects. */
 export function DeveloperActivityBoard() {
-  const [search, setSearch] = useState('');
+  const [appliedSearch, setAppliedSearch] = useState('');
   const [developer, setDeveloper] = useState<string | null>(null);
   const [window, setWindow] = useState<ActivityWindow>('month');
-  const catalog = useDeveloperCatalog(search);
+  const catalog = useDeveloperCatalog(appliedSearch);
   const developers = catalog.data?.items ?? [];
   const query = useDeveloperActivity(developer, window);
   const d = query.data;
@@ -179,31 +175,15 @@ export function DeveloperActivityBoard() {
       </div>
 
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
-        <div>
-          <span className="mb-1 block text-xs font-medium text-slate-500">
-            Developer
-          </span>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter…"
-            className="mb-1 w-64 rounded-md border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand"
-          />
-          <select
-            value={developer ?? ''}
-            onChange={(e) => setDeveloper(e.target.value)}
-            className="block w-64 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand"
-          >
-            <option value="" disabled>
-              Select a developer…
-            </option>
-            {developers.map((dev) => (
-              <option key={dev.login} value={dev.login}>
-                {dev.login}
-              </option>
-            ))}
-          </select>
-        </div>
+        <SearchSelect
+          label="Developer"
+          value={developer}
+          options={developers.map((dev) => dev.login)}
+          onSearch={setAppliedSearch}
+          onSelect={setDeveloper}
+          loading={catalog.isFetching}
+          placeholder="Search developers…"
+        />
         <WindowToggle value={window} onChange={setWindow} />
       </div>
 
