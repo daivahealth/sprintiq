@@ -118,7 +118,17 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
   }
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="min-w-[960px] w-full table-fixed text-sm">
+        <colgroup>
+          <col className="w-[23%]" />
+          <col className="w-[7%]" />
+          <col className="w-[13%]" />
+          <col className="w-[4%]" />
+          <col className="w-[12%]" />
+          <col className="w-[8%]" />
+          <col className="w-[22%]" />
+          <col className="w-[11%]" />
+        </colgroup>
         <thead>
           <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
             <th className="py-2 pr-4 font-medium">Item</th>
@@ -137,9 +147,15 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
               key={item.key}
               className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
             >
-              <td className="max-w-64 py-2.5 pr-4">
-                <span className="font-medium text-slate-700">{item.key}</span>
-                <span className="ml-2 truncate text-slate-500">{item.title}</span>
+              <td className="py-2.5 pr-4">
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <span className="shrink-0 font-medium text-slate-700">
+                    {item.key}
+                  </span>
+                  <span className="min-w-0 truncate text-slate-500">
+                    {item.title}
+                  </span>
+                </div>
               </td>
               <td className="py-2.5 pr-4">
                 <TypeBadge type={item.type} />

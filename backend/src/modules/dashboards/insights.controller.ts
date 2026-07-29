@@ -8,6 +8,7 @@ import {
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
+import { istWindowFloor } from '../../common/time';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { InsightsService } from '../../metrics/insights.service';
 import { CodeService } from '../code/code.service';
@@ -90,6 +91,21 @@ export const DASHBOARD_REGISTRY: {
     path: '/developer-activity',
     description:
       'Per-developer commit history, repos, lines committed, active projects.',
+    roles: ALL_ROLES,
+  },
+  {
+    key: 'top-repos',
+    title: 'Top Repos',
+    path: '/top-repos',
+    description: 'Repositories ranked by commit/LOC volume.',
+    roles: ALL_ROLES,
+  },
+  {
+    key: 'team-capacity',
+    title: 'Team Capacity',
+    path: '/team-capacity',
+    description:
+      'Developers with no PR activity in the window — a staffing/blocker signal, not a ranking.',
     roles: ALL_ROLES,
   },
 ];
@@ -264,9 +280,7 @@ export class InsightsController {
         `Unsupported window: ${window}. Supported: ${Object.keys(ACTIVITY_WINDOWS).join(', ')}.`,
       );
     }
-    const rows = await this.insights.projectActivity(
-      new Date(Date.now() - days * 86_400_000),
-    );
+    const rows = await this.insights.projectActivity(istWindowFloor(days));
     return { window, rows, computedAt: new Date().toISOString() };
   }
 
@@ -279,7 +293,7 @@ export class InsightsController {
     const days = ACTIVITY_WINDOWS[window] ?? 30;
     return this.insights.developerActivity(
       requireParam(developer, 'developer'),
-      new Date(Date.now() - days * 86_400_000),
+      istWindowFloor(days),
     );
   }
 

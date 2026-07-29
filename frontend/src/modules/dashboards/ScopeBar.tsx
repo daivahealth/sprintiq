@@ -8,7 +8,7 @@ import { useProjects, useRepos } from "./useCatalog";
  * The global Scope Bar (DASHBOARDS.md §3): projects × repos × time, URL-synced.
  * Selecting projects cross-filters the repo picker via the delivery graph.
  */
-export function ScopeBar() {
+export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
   const { scope, setScope } = useScope();
   const [projectSearch, setProjectSearch] = useState("");
   const [repoSearch, setRepoSearch] = useState("");
@@ -69,28 +69,30 @@ export function ScopeBar() {
         </div>
       </div>
 
-      <div>
-        <span className="mb-1 block text-xs font-medium text-slate-500">
-          Group by
-        </span>
-        <div className="flex overflow-hidden rounded-md border border-slate-300">
-          {(["repo", "project", "developer", "day"] as const).map((groupBy) => (
-            <button
-              key={groupBy}
-              type="button"
-              onClick={() => setScope({ groupBy })}
-              className={cn(
-                "px-3 py-2 text-sm capitalize",
-                scope.groupBy === groupBy
-                  ? "bg-brand text-white"
-                  : "bg-white text-slate-600 hover:bg-slate-50",
-              )}
-            >
-              {groupBy}
-            </button>
-          ))}
+      {showGroupBy && (
+        <div>
+          <span className="mb-1 block text-xs font-medium text-slate-500">
+            Group by
+          </span>
+          <div className="flex overflow-hidden rounded-md border border-slate-300">
+            {(["repo", "project", "developer", "day"] as const).map((groupBy) => (
+              <button
+                key={groupBy}
+                type="button"
+                onClick={() => setScope({ groupBy })}
+                className={cn(
+                  "px-3 py-2 text-sm capitalize",
+                  scope.groupBy === groupBy
+                    ? "bg-brand text-white"
+                    : "bg-white text-slate-600 hover:bg-slate-50",
+                )}
+              >
+                {groupBy}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {repos.data?.crossFiltered && (
         <p className="pb-2 text-xs text-slate-400">

@@ -65,11 +65,52 @@ model Connection {
   status            String    @default("pending")
   lastSyncAt        DateTime?
   syncLagSeconds    Int       @default(0)
+  // Set once, the first tick the historical backfill (all entity types) fully completes.
+  backfillCompletedAt DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   @@index([tenantId, sourceSystem])
   @@map("connections_connection")
+}
+
+// One row per source system ("github" | "jira"), tracking the live
+// tick-in-progress (or last completed tick) state for THAT source's own
+// scheduled sweep — persisted (not in-memory) so it survives dev-server
+// restarts and works the same across multiple API replicas. GitHub and Jira
+// are ticked independently so one source's cadence never blocks the other's.
+// Powers the Sync Status screen's per-source "is a tick running right now"
+// + rough ETA.
+model SchedulerTick {
+  sourceSystem         String    @id
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  totalConnections     Int       @default(0)
+  connectionsProcessed Int       @default(0)
+
+  @@map("collectors_scheduler_tick")
+}
+
+// Tenant-scoped history: one row per connection per tick where that
+// connection was actually due (per its own configured
+// config.syncIntervalMinutes) and polled — connections skipped as not-yet-due
+// get no row. Powers the Sync Status screen's "previous sync + what was
+// synced" run history, per connection/source.
+model ConnectionSyncRun {
+  id             String    @id
+  tenantId       String
+  connectionId   String
+  sourceSystem   String
+  startedAt      DateTime
+  finishedAt     DateTime?
+  eventsFetched  Int       @default(0)
+  eventsIngested Int       @default(0)
+  status         String    @default("running") // running | success | error
+  errorMessage   String?
+
+  @@index([tenantId, sourceSystem, startedAt])
+  @@index([tenantId, connectionId, startedAt])
+  @@map("collectors_connection_sync_run")
 }
 
 // Encrypted, tenant-scoped secret values (BC-0). `ref` matches the human-chosen
@@ -261,6 +302,7 @@ model Commit {
   authorName   String?
   authorEmail  String?
   authoredAt   DateTime
+  committedAt  DateTime?
   additions    Int      @default(0)
   deletions    Int      @default(0)
   filesChanged Int      @default(0)

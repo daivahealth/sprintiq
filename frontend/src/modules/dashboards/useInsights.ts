@@ -148,6 +148,7 @@ export interface DeveloperActivityView {
     repo: string;
     message: string;
     authoredAt: string;
+    committedAt: string;
     additions: number;
     deletions: number;
   }[];

@@ -13,10 +13,28 @@ import {
   CollectionMode,
 } from '../../ingestion/canonical-envelope';
 import { BaseSourceCollector } from '../../framework/source-collector';
-import { GithubClient, GithubCommit, GithubPull } from './github.client';
+import {
+  GithubClient,
+  GithubCommit,
+  GithubCommitDetail,
+  GithubPull,
+  GithubPullDetail,
+} from './github.client';
 
 /** Bounds how much work one scheduler tick does — large histories catch up over several ticks. */
 const PAGE_BUDGET_PER_TICK = 3;
+/**
+ * Bounds the per-commit detail calls (for line-change stats) one tick makes,
+ * per repo. Commits beyond this budget are left for a later tick rather than
+ * ingested with stats missing — ingestion's idempotency key means a commit,
+ * once ingested, can never be re-enriched afterward (a later envelope with
+ * the same key is dropped as a duplicate before it ever reaches the
+ * projector), so "ingest now without stats" would be a permanent gap, not a
+ * temporary one. See `syncCommits`.
+ */
+const COMMIT_ENRICH_BUDGET_PER_TICK = 25;
+/** Same rationale as COMMIT_ENRICH_BUDGET_PER_TICK, for PR line-change stats. */
+const PR_ENRICH_BUDGET_PER_TICK = 25;
 /** Default historical lookback when a connection doesn't set `config.backfillSince`. */
 const DEFAULT_BACKFILL_DAYS = 90;
 
@@ -130,6 +148,10 @@ export class GithubCollector extends BaseSourceCollector {
         const files = ['added', 'removed', 'modified']
           .map((k) => (Array.isArray(c[k]) ? (c[k] as unknown[]).length : 0))
           .reduce((a, b) => a + b, 0);
+        // Push payloads carry one timestamp per commit (no separate
+        // author/committer dates), so authoredAt and committedAt are the same value here.
+        const commitTimestamp =
+          typeof c.timestamp === 'string' ? c.timestamp : this.nowIso();
         const payload: CodeCommitPayload = {
           repoFullName,
           sha: c.id as string,
@@ -139,8 +161,8 @@ export class GithubCollector extends BaseSourceCollector {
           authorName: typeof author.name === 'string' ? author.name : undefined,
           authorEmail:
             typeof author.email === 'string' ? author.email : undefined,
-          authoredAt:
-            typeof c.timestamp === 'string' ? c.timestamp : this.nowIso(),
+          authoredAt: commitTimestamp,
+          committedAt: commitTimestamp,
           filesChanged: files,
         };
         return this.commitEnvelope(
@@ -229,6 +251,18 @@ export class GithubCollector extends BaseSourceCollector {
       rateLimitedUntil ? { resetAt: rateLimitedUntil.toISOString() } : {},
     );
 
+    // Checked against the PERSISTED flag (not an in-memory before/after cursor
+    // snapshot) so this self-heals connections that already reached poll mode
+    // before backfillCompletedAt tracking existed — an in-memory transition
+    // check would only ever fire once, at the moment the DB column was added,
+    // and permanently miss any connection already past that point by then.
+    const isNowFullyBackfilled = Boolean(
+      cursors.prBackfillDone && cursors.commitsCursor,
+    );
+    if (isNowFullyBackfilled && !connection.backfillCompletedAt) {
+      await this.connections.setBackfillCompletedAt(connection.id);
+    }
+
     return envelopes;
   }
 
@@ -242,6 +276,7 @@ export class GithubCollector extends BaseSourceCollector {
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
     let page = cursors.prPage ?? 1;
+    let enrichBudget = PR_ENRICH_BUDGET_PER_TICK;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const result = await this.client.listPullRequestsPage(
@@ -269,9 +304,25 @@ export class GithubCollector extends BaseSourceCollector {
           this.finishPrBackfill(cursors);
           return { envelopes };
         }
-        envelopes.push(
-          this.fromPolledPull(connection, repoFullName, pr, 'backfill'),
+        if (enrichBudget <= 0) {
+          // Resume at this exact page next tick — same rationale as
+          // syncCommits: never ingest a PR with permanently-missing stats.
+          cursors.prPage = page;
+          return { envelopes };
+        }
+        const detail = await this.client.getPullRequestDetail(
+          repoFullName,
+          token,
+          pr.number,
         );
+        enrichBudget--;
+        envelopes.push(
+          this.fromPolledPull(connection, repoFullName, pr, 'backfill', detail),
+        );
+        if (detail.rateLimitedUntil) {
+          cursors.prPage = page;
+          return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
+        }
       }
       if (!result.hasNextPage) {
         this.finishPrBackfill(cursors);
@@ -307,19 +358,38 @@ export class GithubCollector extends BaseSourceCollector {
     }
 
     const watermark = cursors.prNewestSeenAt;
-    let newestThisRun: string | undefined;
+    let enrichBudget = PR_ENRICH_BUDGET_PER_TICK;
+    // Only set if the enrichment budget runs out before every PR newer than
+    // the old watermark has been processed — in that case advancing the
+    // watermark at all would skip the un-enriched remainder forever.
+    let budgetExhausted = false;
+
     for (const pr of result.items) {
       const updatedAt = pr.updated_at ?? pr.created_at;
-      if (!newestThisRun) {
-        newestThisRun = updatedAt;
-      }
       if (watermark && updatedAt <= watermark) {
         break; // sorted desc — everything after this is already synced
       }
-      envelopes.push(this.fromPolledPull(connection, repoFullName, pr, 'poll'));
+      if (enrichBudget <= 0) {
+        budgetExhausted = true;
+        break;
+      }
+      const detail = await this.client.getPullRequestDetail(
+        repoFullName,
+        token,
+        pr.number,
+      );
+      enrichBudget--;
+      envelopes.push(
+        this.fromPolledPull(connection, repoFullName, pr, 'poll', detail),
+      );
+      if (detail.rateLimitedUntil) {
+        return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
+      }
     }
-    if (newestThisRun) {
-      cursors.prNewestSeenAt = newestThisRun;
+
+    if (!budgetExhausted && result.items[0]) {
+      cursors.prNewestSeenAt =
+        result.items[0].updated_at ?? result.items[0].created_at;
     }
     return { envelopes };
   }
@@ -338,6 +408,7 @@ export class GithubCollector extends BaseSourceCollector {
     let page = cursors.commitsResumePage ?? 1;
     // Captured at pass START (not completion) so nothing landing mid-pass is missed.
     const passStartedAt = this.nowIso();
+    let enrichBudget = COMMIT_ENRICH_BUDGET_PER_TICK;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const result = await this.client.listCommitsPage(
@@ -351,9 +422,26 @@ export class GithubCollector extends BaseSourceCollector {
         return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
       }
       for (const commit of result.items) {
-        envelopes.push(
-          this.fromPolledCommit(connection, repoFullName, commit, mode),
+        if (enrichBudget <= 0) {
+          // Resume at this exact page next tick — already-enriched commits
+          // above re-fetch as harmless idempotent duplicates; this one and
+          // the rest of the page get enriched fresh once budget resets.
+          cursors.commitsResumePage = page;
+          return { envelopes };
+        }
+        const detail = await this.client.getCommitDetail(
+          repoFullName,
+          token,
+          commit.sha,
         );
+        enrichBudget--;
+        envelopes.push(
+          this.fromPolledCommit(connection, repoFullName, commit, mode, detail),
+        );
+        if (detail.rateLimitedUntil) {
+          cursors.commitsResumePage = page;
+          return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
+        }
       }
       if (result.items.length === 0 || !result.hasNextPage) {
         cursors.commitsResumePage = undefined;
@@ -367,11 +455,18 @@ export class GithubCollector extends BaseSourceCollector {
     return { envelopes };
   }
 
+  /**
+   * GitHub's PR list endpoint never includes line-change stats — only a
+   * per-PR detail call does (`GithubClient.getPullRequestDetail`, called by
+   * `backfillPullRequests`/`incrementalPullRequests` under a bounded
+   * per-tick budget before this is reached).
+   */
   private fromPolledPull(
     connection: Connection,
     repoFullName: string,
     pr: GithubPull,
     mode: CollectionMode,
+    detail?: GithubPullDetail,
   ): CanonicalEnvelope {
     const merged = Boolean(pr.merged_at);
     const eventType = merged
@@ -387,9 +482,9 @@ export class GithubCollector extends BaseSourceCollector {
       baseBranch: pr.base?.ref,
       state: merged ? 'merged' : pr.state === 'open' ? 'open' : 'closed',
       authorLogin: pr.user?.login,
-      additions: pr.additions,
-      deletions: pr.deletions,
-      changedFiles: pr.changed_files,
+      additions: detail?.additions,
+      deletions: detail?.deletions,
+      changedFiles: detail?.changedFiles,
       openedAt: pr.created_at,
       mergedAt: pr.merged_at ?? undefined,
     };
@@ -406,16 +501,18 @@ export class GithubCollector extends BaseSourceCollector {
   }
 
   /**
-   * Backfilled commits omit LOC/file stats: GitHub's list endpoint doesn't
-   * include them, and fetching per-commit detail would be an N+1 call per
-   * commit — a rate-limit blowup for exactly the large histories backfill
-   * targets. Same tradeoff push webhooks already accept.
+   * GitHub's commit list endpoint never includes line-change stats — only a
+   * per-commit detail call does (`GithubClient.getCommitDetail`, called by
+   * `syncCommits` under a bounded per-tick budget before this is reached).
+   * Push webhooks still omit them (payloads carry file lists but not LOC) —
+   * lower volume there makes it a smaller gap than backfill was.
    */
   private fromPolledCommit(
     connection: Connection,
     repoFullName: string,
     commit: GithubCommit,
     mode: CollectionMode,
+    detail?: GithubCommitDetail,
   ): CanonicalEnvelope {
     const authoredAt = commit.commit.author?.date ?? this.nowIso();
     const payload: CodeCommitPayload = {
@@ -426,6 +523,10 @@ export class GithubCollector extends BaseSourceCollector {
       authorName: commit.commit.author?.name,
       authorEmail: commit.commit.author?.email,
       authoredAt,
+      committedAt: commit.commit.committer?.date,
+      additions: detail?.additions,
+      deletions: detail?.deletions,
+      filesChanged: detail?.filesChanged,
     };
     return this.commitEnvelope(connection, mode, repoFullName, payload);
   }

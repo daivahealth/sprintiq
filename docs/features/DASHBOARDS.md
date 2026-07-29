@@ -45,15 +45,19 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 
 | Dashboard | Route | Reads | Core content |
 |---|---|---|---|
-| **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table |
+| **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table, listed by Changed LOC descending |
 | **Sprint Health** | `/sprint-health` | `dashboards/sprint-health/active` + `dashboards/sprint-health` | **multi-project default: one card per concurrent active sprint** (each project runs its own lifecycle), ranked worst-pace-first with **cadence-normalized pace** (completion % vs elapsed % of that sprint's own window → on-track/at-risk/behind); click to drill into committed vs completed, code linkage, by-type progress |
-| **Sprint Risk** | `/sprint-risk` | `dashboards/sprint-risk/active` + `dashboards/sprint-risk` | **multi-project default: one risk card per concurrent active sprint**, ranked most-at-risk-first; project picker; click to drill into open items **without linked code** (at-risk pts), open bugs, unestimated work — each row with its PRs |
+| **Sprint Risk** | `/sprint-risk` | `dashboards/sprint-risk/active` + `dashboards/sprint-risk` | **multi-project default: one risk card per concurrent active sprint**, ranked most-at-risk-first; project picker; click to drill into open items **without linked code** (at-risk pts), open bugs, unestimated work — each row with its PRs. Long item titles stay within the Item column and truncate rather than obscuring adjacent data. |
 | **Velocity** | `/velocity` | `dashboards/velocity` | completed vs committed points per closed sprint |
 | **Forecasting** | `/forecast` | `dashboards/forecast` | avg velocity (last 3 closed) vs remaining backlog → sprints needed + projected date; unestimated items flagged |
 | **Productivity** | `/productivity` | `dashboards/productivity` | weekly throughput: items + points (Jira) and merged PRs + LOC (GitHub) — team-level |
 | **Efficiency** | `/efficiency` | `dashboards/efficiency` | PR cycle p50/p85, story cycle p50/p85, **traceability both directions** |
 | **Project Activity** | `/project-activity` | `dashboards/project-activity` | most-active projects by **commits + LOC across all mapped repos** (delivery graph), day/week/month windows; unlinked repos bucketed honestly |
 | **Developer Activity** | `/developer-activity` | `dashboards/developer-activity` | GitHub-style per-developer profile: commit history (sha/±LOC), repos committed to, lines committed, commits-per-day, PRs authored, **active projects** via the graph — activity context, never a ranking |
+| **Top Repos** | `/top-repos` | `dashboards/metrics` (groupBy=repo, fixed) | Repos ranked by Changed LOC, top 20 by default with a "show all N repos" expansion — repo-level ranking only, never individual |
+| **Team Capacity** | `/team-capacity` | `dashboards/metrics` (groupBy=developer, fixed) + developer catalog | Alphabetical roster diff — developers with **no PR activity in the window** (a staffing/blocker signal); intentionally unsorted by volume, never a leaderboard |
+
+Top Repos and Team Capacity force their `groupBy` (via `useBatchMetrics`'s explicit override) and hide the Scope Bar's Group-by toggle (`ScopeBar`'s `showGroupBy={false}`) — they are dedicated single-purpose screens, not configurable views like Delivery Explorer.
 
 All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cross-filtered); sprint boards add a sprint picker (auto-selects the active sprint in scope).
 
@@ -75,9 +79,9 @@ Server aggregates, client renders; one batch request per table (never N-per-cell
 
 ## 8. Ethics & RBAC in the UI
 
-Developer-wise views are labeled activity context; no leaderboards; person-level bug attribution is not surfaced; individual detail only in self-service contexts (AUTH-AND-RBAC §5).
+Developer-wise views are labeled activity context; no leaderboards; person-level bug attribution is not surfaced; individual detail only in self-service contexts (AUTH-AND-RBAC §5). Team Capacity in particular renders its roster **alphabetically, never sorted by volume** — it answers "who has no recent activity," not "who did the most."
 
-Tenant admins also see separate **Users & Roles** and **Configuration** navigation items. They are not metric dashboards and are guarded by the same `admin` role as the admin API; all user-role and tenant-configuration reads/writes remain tenant-scoped.
+Tenant admins also see separate **Users & Roles**, **Configuration**, and **Sync Status** navigation items. They are not metric dashboards and are guarded by the same `admin` role as the admin API; all user-role, tenant-configuration, and sync-status reads/writes remain tenant-scoped. Sync Status (`/admin/sync-status`, [docs/api/README.md §7.1](../api/README.md)) shows collector backfill/ingestion progress and live scheduler tick state, broken out **per source** (GitHub and Jira sync and are configured independently — each has its own `syncIntervalMinutes` on the Configuration screen, default every 4 hours) with a recent run-history table per source — operational observability, not a delivery metric.
 
 ## 9. Next increments (ordered)
 

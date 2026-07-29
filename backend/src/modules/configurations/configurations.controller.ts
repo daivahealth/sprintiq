@@ -14,12 +14,15 @@ import {
   IsOptional,
   IsString,
 } from 'class-validator';
+import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
+import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
 import { SecretsService } from '../../common/secrets/secrets.service';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
+import { CorrelationService } from '../../correlation/correlation.service';
 import {
   CONFIGURATION_CATALOG,
   CONFIGURATION_NAMESPACES,
@@ -81,6 +84,9 @@ export class ConfigurationsController {
     private readonly configurations: ConfigurationsService,
     private readonly secrets: SecretsService,
     private readonly githubOrgSync: GithubOrgSyncService,
+    private readonly commitReconciler: GithubCommitReconcilerService,
+    private readonly prReconciler: GithubPrReconcilerService,
+    private readonly correlation: CorrelationService,
   ) {}
 
   @Roles(Role.ADMIN)
@@ -179,6 +185,42 @@ export class ConfigurationsController {
       token,
       backfillDays,
     );
+  }
+
+  /**
+   * One-off maintenance: fills in additions/deletions/filesChanged for
+   * already-ingested commits still at 0/0/0 (see
+   * `GithubCommitReconcilerService` for why this can't happen via normal
+   * re-ingestion). Updates `code_commit` rows directly.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/reconcile-commit-stats')
+  async reconcileCommitStats(@CurrentUser() user: AuthUser) {
+    return this.commitReconciler.reconcile(user.tenantId);
+  }
+
+  /**
+   * One-off maintenance: fills in additions/deletions/changedFiles for
+   * already-ingested PRs still at 0/0/0 (see `GithubPrReconcilerService` for
+   * why this can't happen via normal re-ingestion). Updates
+   * `code_pull_request` rows directly.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/reconcile-pr-stats')
+  async reconcilePrStats(@CurrentUser() user: AuthUser) {
+    return this.prReconciler.reconcile(user.tenantId);
+  }
+
+  /**
+   * One-off maintenance: re-attempts Jira↔GitHub correlation for PRs already
+   * flagged as orphans (see `CorrelationService.reconcileOrphans` for why a
+   * PR ingested before its Jira story existed needs this instead of
+   * resolving on its own). Pure in-database matching — no external API calls.
+   */
+  @Roles(Role.ADMIN)
+  @Post('correlation/reconcile-orphans')
+  async reconcileOrphans(@CurrentUser() user: AuthUser) {
+    return this.correlation.reconcileOrphans(user.tenantId);
   }
 
   private toView(config: TenantConfigurationView) {

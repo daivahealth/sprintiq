@@ -58,6 +58,7 @@ export class CodeService implements OnModuleInit {
       authorName: c.authorName ?? null,
       authorEmail: c.authorEmail ?? null,
       authoredAt: new Date(c.authoredAt),
+      committedAt: c.committedAt ? new Date(c.committedAt) : null,
       additions: c.additions ?? 0,
       deletions: c.deletions ?? 0,
       filesChanged: c.filesChanged ?? 0,
@@ -270,12 +271,14 @@ export class CodeService implements OnModuleInit {
           ? { repoFullName: { in: filters.repos } }
           : {}),
         ...(filters.authorLogin ? { authorLogin: filters.authorLogin } : {}),
-        authoredAt: {
+        // Windows by committer date (when the commit actually landed), not
+        // author date — the two diverge on a rebase/cherry-pick/amend.
+        committedAt: {
           ...(filters.from ? { gte: filters.from } : {}),
           ...(filters.to ? { lte: filters.to } : {}),
         },
       },
-      orderBy: { authoredAt: 'desc' },
+      orderBy: { committedAt: 'desc' },
       take: 2000,
     });
   }

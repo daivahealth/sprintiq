@@ -35,6 +35,13 @@ export interface CodeCommitPayload {
   authorName?: string;
   authorEmail?: string;
   authoredAt: string;
+  /**
+   * When the commit was actually written to the repo — differs from
+   * `authoredAt` on a rebase/cherry-pick/amend. Poller: GitHub's commit list
+   * endpoint's `commit.committer.date`. Webhook: GitHub's push payload only
+   * carries one timestamp per commit, so it's set equal to `authoredAt`.
+   */
+  committedAt?: string;
   additions?: number;
   deletions?: number;
   filesChanged?: number;

@@ -79,6 +79,13 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         helper:
           'How far back to import history on first sync (default 90 days). Changing this after collection has started re-runs the backfill to the new window.',
       },
+      {
+        key: 'syncIntervalMinutes',
+        label: 'Sync interval (minutes)',
+        kind: 'number',
+        helper:
+          'How often to check GitHub for changes (default 240 = every 4 hours). GitHub and Jira sync independently, each on their own interval — this does not affect Jira.',
+      },
     ],
   },
   {
@@ -113,6 +120,13 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         kind: 'number',
         helper:
           'How far back to import history on first sync (default 90 days). Changing this after collection has started re-runs the backfill to the new window.',
+      },
+      {
+        key: 'syncIntervalMinutes',
+        label: 'Sync interval (minutes)',
+        kind: 'number',
+        helper:
+          'How often to check Jira for changes (default 240 = every 4 hours). GitHub and Jira sync independently, each on their own interval — this does not affect GitHub.',
       },
     ],
   },

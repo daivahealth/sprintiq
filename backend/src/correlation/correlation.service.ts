@@ -9,6 +9,12 @@ import { PrismaService } from '../database/prisma.service';
 import { PlanningService } from '../modules/planning/planning.service';
 import { extractJiraKeys } from './jira-key.util';
 
+export interface OrphanReconcileResult {
+  candidates: number;
+  resolved: number;
+  stillOrphaned: number;
+}
+
 /**
  * BC-5 Correlation & Delivery Graph — the moat. On each PR event it extracts
  * Jira keys (title/branch/commits), resolves the story, and writes a
@@ -221,6 +227,93 @@ export class CorrelationService implements OnModuleInit {
         `linked ${prRef} → ${match.key} (confidence=${confidence})`,
       );
     }
+  }
+
+  /**
+   * One-off maintenance: re-attempts correlation for PRs already flagged as
+   * orphans. Correlation only ever runs once, at PR-ingestion time (see
+   * `onModuleInit`) — a PR ingested before the Jira story it references
+   * existed becomes a permanent orphan, since nothing re-triggers matching
+   * once that story later arrives. This needs no external API calls (title/
+   * branch/commit messages and story keys are already in our own DB), so
+   * it's cheap and safe to re-run.
+   */
+  async reconcileOrphans(
+    tenantId: string,
+    limit = 500,
+  ): Promise<OrphanReconcileResult> {
+    const orphans = await this.prisma.orphan.findMany({
+      where: { tenantId, nodeType: 'pull_request', resolvedAt: null },
+      take: limit,
+    });
+
+    let resolved = 0;
+    let stillOrphaned = 0;
+
+    for (const orphan of orphans) {
+      const sep = orphan.nodeRef.lastIndexOf('#');
+      if (sep === -1) {
+        stillOrphaned++;
+        continue;
+      }
+      const repoFullName = orphan.nodeRef.slice(0, sep);
+      const externalNumber = orphan.nodeRef.slice(sep + 1);
+
+      const pr = await this.prisma.pullRequest.findUnique({
+        where: {
+          tenantId_repoFullName_externalNumber: {
+            tenantId,
+            repoFullName,
+            externalNumber,
+          },
+        },
+      });
+      if (!pr) {
+        stillOrphaned++;
+        continue;
+      }
+
+      const matches = extractJiraKeys({
+        title: pr.title,
+        branch: pr.branch,
+        commit: (pr.commitMessages ?? []).join('\n'),
+      });
+
+      let linkedAny = false;
+      for (const match of matches) {
+        const story = await this.planning.findByKey(tenantId, match.key);
+        if (!story) {
+          continue;
+        }
+        const confidence = this.scoreConfidence(match.foundIn, matches.length);
+        await this.upsertLink(tenantId, {
+          edgeType: 'pr_implements_story',
+          fromType: 'pull_request',
+          fromId: orphan.nodeRef,
+          toType: 'story',
+          toId: story.id,
+          confidence,
+          method: 'regex',
+          evidence: { key: match.key, foundIn: match.foundIn },
+        });
+        linkedAny = true;
+      }
+
+      if (linkedAny) {
+        await this.prisma.orphan.update({
+          where: { id: orphan.id },
+          data: { resolvedAt: new Date() },
+        });
+        resolved++;
+      } else {
+        stillOrphaned++;
+      }
+    }
+
+    this.logger.log(
+      `Reconciled orphans: ${resolved} resolved, ${stillOrphaned} still orphaned, ${orphans.length} candidates`,
+    );
+    return { candidates: orphans.length, resolved, stillOrphaned };
   }
 
   /**

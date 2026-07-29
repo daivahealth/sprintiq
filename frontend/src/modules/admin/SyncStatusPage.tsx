@@ -1,0 +1,364 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Badge, Card, Spinner } from "../../components/ui";
+import { api } from "../../lib/api/client";
+import { cn } from "../../lib/utils";
+import type {
+  ConnectionSyncStatus,
+  SourceSyncStatus,
+  SyncRunHistoryEntry,
+  SyncStatusResponse,
+} from "../../lib/api/types";
+import { timeAgo } from "../../lib/utils";
+
+function useSyncStatus() {
+  return useQuery({
+    queryKey: ["admin", "sync-status"],
+    queryFn: () => api.get<SyncStatusResponse>("/api/admin/connections/sync-status"),
+    // Live view — refresh often enough to feel real-time without hammering the API.
+    refetchInterval: 5_000,
+  });
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
+
+function formatInterval(minutes: number): string {
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function dateRange(from: string | null, to: string | null): string {
+  if (!from || !to) return "—";
+  const fromD = new Date(from);
+  const toD = new Date(to);
+  const days = Math.max(
+    1,
+    Math.round((toD.getTime() - fromD.getTime()) / 86_400_000),
+  );
+  return `${fromD.toLocaleDateString()} → ${toD.toLocaleDateString()} (${days}d)`;
+}
+
+function StatCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <p className="text-2xl font-semibold text-slate-800">{value}</p>
+      <p className="text-xs text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+function sourceLabel(sourceSystem: string): string {
+  if (sourceSystem === "github") return "GitHub";
+  if (sourceSystem === "jira") return "Jira";
+  return sourceSystem;
+}
+
+function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
+  const isRateLimited = Boolean(c.rateLimitedUntil);
+  return (
+    <tr className="border-b border-slate-100 last:border-0">
+      <td className="py-2.5 pr-4 font-medium text-slate-700">{c.name}</td>
+      <td className="py-2.5 pr-4 tabular-nums text-slate-600">
+        {c.eventsIngested.toLocaleString()}
+      </td>
+      <td className="py-2.5 pr-4 text-slate-600">
+        {dateRange(c.earliestEventAt, c.latestEventAt)}
+      </td>
+      <td className="py-2.5 pr-4 text-slate-500">
+        {c.lastSyncAt ? timeAgo(c.lastSyncAt) : "never"}
+      </td>
+      <td className="py-2.5 pr-4 text-slate-500">
+        every {formatInterval(c.syncIntervalMinutes)}
+      </td>
+      <td className="py-2.5">
+        {isRateLimited ? (
+          <Badge tone="warn">rate-limited</Badge>
+        ) : c.backfillCompletedAt ? (
+          <Badge tone="good">complete</Badge>
+        ) : (
+          <Badge tone="warn">backfilling</Badge>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function HistoryRow({ run }: { run: SyncRunHistoryEntry }) {
+  const durationMs =
+    run.finishedAt && run.startedAt
+      ? new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()
+      : null;
+  return (
+    <tr className="border-b border-slate-100 last:border-0">
+      <td className="py-2.5 pr-4 font-medium text-slate-700">
+        {run.connectionName}
+      </td>
+      <td className="py-2.5 pr-4 text-slate-500">{timeAgo(run.startedAt)}</td>
+      <td className="py-2.5 pr-4 text-slate-500">
+        {durationMs !== null ? `${Math.max(1, Math.round(durationMs / 1000))}s` : "running…"}
+      </td>
+      <td className="py-2.5 pr-4 tabular-nums text-slate-600">
+        {run.eventsIngested.toLocaleString()}
+        {run.eventsFetched > run.eventsIngested
+          ? ` / ${run.eventsFetched.toLocaleString()} fetched`
+          : ""}
+      </td>
+      <td className="py-2.5">
+        {run.status === "success" ? (
+          <Badge tone="good">success</Badge>
+        ) : run.status === "error" ? (
+          <Badge tone="bad" >{run.errorMessage ? `error: ${run.errorMessage}` : "error"}</Badge>
+        ) : (
+          <Badge tone="warn">running</Badge>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function SourceSection({ source }: { source: SourceSyncStatus }) {
+  const allConnections = [...source.inProgress, ...source.completedRuns];
+  const eventsIngested = allConnections.reduce((sum, c) => sum + c.eventsIngested, 0);
+
+  return (
+    <Card className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs uppercase text-slate-500">
+          {allConnections.length} connection{allConnections.length === 1 ? "" : "s"}
+        </span>
+        <span className="text-sm text-slate-500">
+          {eventsIngested.toLocaleString()} events ingested
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        <h4 className="text-sm font-semibold text-slate-700">Scheduler</h4>
+        {source.tick.running ? (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <Badge tone="good">running now</Badge>
+              <span className="text-sm text-slate-600">
+                {source.tick.connectionsProcessed} of {source.tick.totalConnections}{" "}
+                due connections processed this tick
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full bg-brand transition-all"
+                style={{
+                  width: `${
+                    source.tick.totalConnections > 0
+                      ? (source.tick.connectionsProcessed / source.tick.totalConnections) * 100
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+            <p className="text-xs text-slate-400">
+              {source.tick.etaSeconds !== null
+                ? `~${formatDuration(source.tick.etaSeconds)} remaining (rough estimate)`
+                : "estimating time remaining…"}
+            </p>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Badge tone="neutral">idle</Badge>
+            <span className="text-sm text-slate-600">
+              {source.tick.finishedAt
+                ? `last checked ${timeAgo(source.tick.finishedAt)}`
+                : "no tick recorded yet"}
+              {" · checks every 5 min; a connection only actually syncs once its own interval has elapsed"}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-700">
+          Backfilling now ({source.inProgress.length})
+        </h4>
+        {source.inProgress.length === 0 ? (
+          <p className="py-3 text-center text-sm text-slate-400">
+            Nothing currently backfilling.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-4 font-medium">Name</th>
+                  <th className="py-2 pr-4 font-medium">Ingested</th>
+                  <th className="py-2 pr-4 font-medium">Date coverage</th>
+                  <th className="py-2 pr-4 font-medium">Last synced</th>
+                  <th className="py-2 pr-4 font-medium">Interval</th>
+                  <th className="py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {source.inProgress.map((c) => (
+                  <ConnectionRow key={c.id} c={c} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-700">
+          Completed backfills ({source.completedRuns.length})
+        </h4>
+        {source.completedRuns.length === 0 ? (
+          <p className="py-3 text-center text-sm text-slate-400">
+            No backfills have completed yet.
+          </p>
+        ) : (
+          <div className="max-h-72 overflow-y-auto overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-4 font-medium">Name</th>
+                  <th className="py-2 pr-4 font-medium">Ingested</th>
+                  <th className="py-2 pr-4 font-medium">Date coverage</th>
+                  <th className="py-2 pr-4 font-medium">Last synced</th>
+                  <th className="py-2 pr-4 font-medium">Interval</th>
+                  <th className="py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {source.completedRuns.map((c) => (
+                  <ConnectionRow key={c.id} c={c} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-slate-700">
+          Recent sync history ({source.history.length})
+        </h4>
+        <p className="text-xs text-slate-400">
+          Previous sync runs for this source's connections — when it ran, how long it took, and
+          what was synced.
+        </p>
+        {source.history.length === 0 ? (
+          <p className="py-3 text-center text-sm text-slate-400">No sync runs recorded yet.</p>
+        ) : (
+          <div className="max-h-72 overflow-y-auto overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-white">
+                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-4 font-medium">Connection</th>
+                  <th className="py-2 pr-4 font-medium">When</th>
+                  <th className="py-2 pr-4 font-medium">Duration</th>
+                  <th className="py-2 pr-4 font-medium">Synced</th>
+                  <th className="py-2 font-medium">Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {source.history.map((run) => (
+                  <HistoryRow key={run.id} run={run} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function SourceTabs({
+  sources,
+  active,
+  onSelect,
+}: {
+  sources: SourceSyncStatus[];
+  active: string;
+  onSelect: (sourceSystem: string) => void;
+}) {
+  return (
+    <div className="flex gap-1 border-b border-slate-200">
+      {sources.map((source) => {
+        const connectionCount = source.inProgress.length + source.completedRuns.length;
+        const isActive = source.sourceSystem === active;
+        return (
+          <button
+            key={source.sourceSystem}
+            type="button"
+            onClick={() => onSelect(source.sourceSystem)}
+            className={cn(
+              "flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition",
+              isActive
+                ? "border-brand text-brand"
+                : "border-transparent text-slate-500 hover:text-slate-700",
+            )}
+          >
+            {sourceLabel(source.sourceSystem)}
+            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+              {connectionCount}
+            </span>
+            {source.tick.running && <Badge tone="good">running</Badge>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function SyncStatusPage() {
+  const query = useSyncStatus();
+  const [activeSource, setActiveSource] = useState<string>("github");
+
+  const selected = query.data?.sources.find((s) => s.sourceSystem === activeSource);
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-slate-800">Sync Status</h2>
+        <p className="text-sm text-slate-500">
+          Data transfer/backfill progress from GitHub and Jira — each source syncs
+          independently on its own configurable interval (Configuration screen, default every 4
+          hours).
+        </p>
+      </div>
+
+      {query.isLoading && (
+        <Card className="flex items-center gap-2 text-sm text-slate-500">
+          <Spinner /> Loading…
+        </Card>
+      )}
+
+      {query.data && (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard label="Connections" value={query.data.summary.totalConnections} />
+            <StatCard label="Backfill complete" value={query.data.summary.backfillComplete} />
+            <StatCard label="Backfilling now" value={query.data.summary.backfillInProgress} />
+            <StatCard
+              label="Events ingested"
+              value={query.data.summary.totalEventsIngested.toLocaleString()}
+            />
+          </div>
+
+          <SourceTabs
+            sources={query.data.sources}
+            active={activeSource}
+            onSelect={setActiveSource}
+          />
+
+          {selected && <SourceSection source={selected} />}
+        </>
+      )}
+    </div>
+  );
+}

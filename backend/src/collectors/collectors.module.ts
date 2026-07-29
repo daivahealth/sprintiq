@@ -3,7 +3,9 @@ import { ConnectionsModule } from '../modules/connections/connections.module';
 import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
+import { GithubCommitReconcilerService } from './sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from './sources/github/github-org-sync.service';
+import { GithubPrReconcilerService } from './sources/github/github-pr-reconciler.service';
 import { GithubClient } from './sources/github/github.client';
 import { GithubCollector } from './sources/github/github.collector';
 import { JiraClient } from './sources/jira/jira.client';
@@ -28,10 +30,17 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubClient,
     GithubCollector,
     GithubOrgSyncService,
+    GithubCommitReconcilerService,
+    GithubPrReconcilerService,
     JiraClient,
     JiraCollector,
     CollectorSchedulerService,
   ],
-  exports: [IngestionService, GithubOrgSyncService],
+  exports: [
+    IngestionService,
+    GithubOrgSyncService,
+    GithubCommitReconcilerService,
+    GithubPrReconcilerService,
+  ],
 })
 export class CollectorsModule {}

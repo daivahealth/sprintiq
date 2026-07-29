@@ -131,4 +131,169 @@ describe('GithubClient', () => {
       'https://api.github.com/orgs/athmahealth/repos?type=all&per_page=100&page=1',
     );
   });
+
+  describe('getCommitDetail', () => {
+    it('returns additions/deletions/filesChanged from the per-commit endpoint', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: { 'x-ratelimit-remaining': '500' },
+          body: {
+            stats: { additions: 12, deletions: 4 },
+            files: [{ filename: 'a.ts' }, { filename: 'b.ts' }],
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getCommitDetail(
+        'acme/payments',
+        'tok',
+        'abc123',
+      );
+
+      expect(detail).toEqual({
+        additions: 12,
+        deletions: 4,
+        filesChanged: 2,
+      });
+      const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(url).toBe(
+        'https://api.github.com/repos/acme/payments/commits/abc123',
+      );
+    });
+
+    it('signals rateLimitedUntil on a 403/429 instead of throwing', async () => {
+      const resetEpoch = Math.floor(Date.now() / 1000) + 90;
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          ok: false,
+          status: 403,
+          headers: { 'x-ratelimit-reset': String(resetEpoch) },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getCommitDetail(
+        'acme/payments',
+        'tok',
+        'abc123',
+      );
+
+      expect(detail.additions).toBeUndefined();
+      expect(detail.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
+    });
+
+    it('preempts a hard rate limit when remaining drops to 1, keeping the detail just fetched', async () => {
+      const resetEpoch = Math.floor(Date.now() / 1000) + 60;
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: {
+            'x-ratelimit-remaining': '1',
+            'x-ratelimit-reset': String(resetEpoch),
+          },
+          body: { stats: { additions: 1, deletions: 1 }, files: [] },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getCommitDetail(
+        'acme/payments',
+        'tok',
+        'abc123',
+      );
+
+      expect(detail.additions).toBe(1);
+      expect(detail.rateLimitedUntil).toBeInstanceOf(Date);
+    });
+
+    it('returns {} without calling fetch when no token is configured', async () => {
+      global.fetch = jest.fn() as unknown as typeof fetch;
+
+      const detail = await client.getCommitDetail(
+        'acme/payments',
+        '',
+        'abc123',
+      );
+
+      expect(detail).toEqual({});
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getPullRequestDetail', () => {
+    it('returns additions/deletions/changedFiles from the per-PR endpoint', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: { 'x-ratelimit-remaining': '500' },
+          body: { additions: 142, deletions: 38, changed_files: 6 },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getPullRequestDetail(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(detail).toEqual({
+        additions: 142,
+        deletions: 38,
+        changedFiles: 6,
+      });
+      const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(url).toBe('https://api.github.com/repos/acme/payments/pulls/4521');
+    });
+
+    it('signals rateLimitedUntil on a 403/429 instead of throwing', async () => {
+      const resetEpoch = Math.floor(Date.now() / 1000) + 90;
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          ok: false,
+          status: 403,
+          headers: { 'x-ratelimit-reset': String(resetEpoch) },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getPullRequestDetail(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(detail.additions).toBeUndefined();
+      expect(detail.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
+    });
+
+    it('preempts a hard rate limit when remaining drops to 1, keeping the detail just fetched', async () => {
+      const resetEpoch = Math.floor(Date.now() / 1000) + 60;
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: {
+            'x-ratelimit-remaining': '1',
+            'x-ratelimit-reset': String(resetEpoch),
+          },
+          body: { additions: 1, deletions: 1, changed_files: 1 },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getPullRequestDetail(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(detail.additions).toBe(1);
+      expect(detail.rateLimitedUntil).toBeInstanceOf(Date);
+    });
+
+    it('returns {} without calling fetch when no token is configured', async () => {
+      global.fetch = jest.fn() as unknown as typeof fetch;
+
+      const detail = await client.getPullRequestDetail(
+        'acme/payments',
+        '',
+        4521,
+      );
+
+      expect(detail).toEqual({});
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
 });

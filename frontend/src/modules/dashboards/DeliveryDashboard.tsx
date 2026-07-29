@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Card, Spinner } from "../../components/ui";
 import { ApiError } from "../../lib/api/client";
 import { useScope } from "../../lib/scope";
@@ -17,6 +18,16 @@ export function DeliveryDashboard() {
     ["pr_cycle_time", "loc_added_deleted", "bug_count"],
     scope,
     from,
+  );
+  const rows = useMemo(
+    () =>
+      [...(query.data?.rows ?? [])].sort((a, b) => {
+        const changedLoc =
+          (b.metrics.loc_added_deleted?.value ?? 0) -
+          (a.metrics.loc_added_deleted?.value ?? 0);
+        return changedLoc || a.key.localeCompare(b.key);
+      }),
+    [query.data?.rows],
   );
 
   return (
@@ -51,7 +62,7 @@ export function DeliveryDashboard() {
               </h3>
               <p className="text-sm text-slate-500">
                 delivery, change-volume, and bug context · last {scope.days}d ·
-                grouped by {query.data.groupBy}
+                grouped by {query.data.groupBy} · sorted by changed LOC
               </p>
             </div>
             <span className="text-xs text-slate-400">
@@ -61,14 +72,14 @@ export function DeliveryDashboard() {
             </span>
           </div>
 
-          {query.data.rows.length === 0 ? (
+          {rows.length === 0 ? (
             <p className="py-6 text-center text-sm text-slate-400">
               No repositories in this scope — widen the filters or check
               collector/linkage coverage.
             </p>
           ) : (
             <MetricRowsTable
-              rows={query.data.rows}
+              rows={rows}
               groupBy={query.data.groupBy}
             />
           )}

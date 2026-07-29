@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PullRequest, Sprint, Story } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
+import { istDateKey } from '../common/time';
 import { CorrelationService } from '../correlation/correlation.service';
 import { CodeService } from '../modules/code/code.service';
 import {
@@ -149,6 +150,8 @@ export interface DeveloperActivityView {
     repo: string;
     message: string;
     authoredAt: string;
+    /** When the commit actually landed (committer date) — differs from `authoredAt` on a rebase/cherry-pick/amend. */
+    committedAt: string;
     additions: number;
     deletions: number;
   }[];
@@ -556,7 +559,7 @@ export class InsightsService {
       const projects = repoToProjects.get(c.repoFullName) ?? [
         '(unlinked repos)',
       ];
-      const day = c.authoredAt.toISOString().slice(0, 10);
+      const day = istDateKey(c.committedAt ?? c.authoredAt);
       for (const project of projects) {
         const a = ensure(project);
         a.commits += 1;
@@ -628,20 +631,21 @@ export class InsightsService {
     let deletions = 0;
     let filesChanged = 0;
     for (const c of commits) {
+      const committedAt = c.committedAt ?? c.authoredAt;
       additions += c.additions;
       deletions += c.deletions;
       filesChanged += c.filesChanged;
       const r = byRepo.get(c.repoFullName) ?? {
         commits: 0,
         loc: 0,
-        last: c.authoredAt,
+        last: committedAt,
       };
       r.commits += 1;
       r.loc += c.additions + c.deletions;
-      if (c.authoredAt > r.last) r.last = c.authoredAt;
+      if (committedAt > r.last) r.last = committedAt;
       byRepo.set(c.repoFullName, r);
 
-      const day = c.authoredAt.toISOString().slice(0, 10);
+      const day = istDateKey(committedAt);
       const d = byDay.get(day) ?? { commits: 0, loc: 0 };
       d.commits += 1;
       d.loc += c.additions + c.deletions;
@@ -684,6 +688,7 @@ export class InsightsService {
         repo: c.repoFullName,
         message: c.message.split('\n')[0],
         authoredAt: c.authoredAt.toISOString(),
+        committedAt: (c.committedAt ?? c.authoredAt).toISOString(),
         additions: c.additions,
         deletions: c.deletions,
       })),

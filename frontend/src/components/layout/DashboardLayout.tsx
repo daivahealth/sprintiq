@@ -105,6 +105,20 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
               >
                 Configuration
               </NavLink>
+              <NavLink
+                to="/admin/sync-status"
+                title="Data transfer/backfill progress and live scheduler status"
+                className={({ isActive }) =>
+                  cn(
+                    "block rounded-md px-3 py-2 text-sm font-medium",
+                    isActive
+                      ? "bg-brand-fg text-brand"
+                      : "text-slate-600 hover:bg-slate-100",
+                  )
+                }
+              >
+                Sync Status
+              </NavLink>
             </>
           )}
         </nav>

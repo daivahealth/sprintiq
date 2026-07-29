@@ -62,6 +62,7 @@ describe('JiraCollector.poll', () => {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
       setRateLimitState: jest.fn().mockResolvedValue(undefined),
       updateConfig: jest.fn().mockResolvedValue(undefined),
+      setBackfillCompletedAt: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     secrets = {
       resolve: jest.fn().mockResolvedValue('tok'),
@@ -302,5 +303,39 @@ describe('JiraCollector.poll', () => {
       parentKey: 'PAY-8',
       type: 'subtask',
     });
+  });
+
+  it('marks backfillCompletedAt exactly once — the tick the historical backfill first finishes', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(baseConnection({ backfillCompletedAt: null })); // fresh connection, no syncCursors yet
+
+    expect(connections.setBackfillCompletedAt).toHaveBeenCalledWith('conn_1');
+  });
+
+  it('does not re-mark backfillCompletedAt on a genuine steady-state (already recorded) tick', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: { updatedCursor: '2026-06-15T12:00:00.000Z' },
+        backfillCompletedAt: new Date('2026-06-16T00:00:00.000Z'),
+      }),
+    );
+
+    expect(connections.setBackfillCompletedAt).not.toHaveBeenCalled();
+  });
+
+  it('self-heals a connection whose cursors already show full backfill but whose backfillCompletedAt was never recorded (predates the tracking column)', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: { updatedCursor: '2026-06-15T12:00:00.000Z' },
+        backfillCompletedAt: null,
+      }),
+    );
+
+    expect(connections.setBackfillCompletedAt).toHaveBeenCalledWith('conn_1');
   });
 });

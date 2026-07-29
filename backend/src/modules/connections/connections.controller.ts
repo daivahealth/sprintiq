@@ -63,6 +63,18 @@ export class ConnectionsController {
     return conns.map((c) => this.toView(c));
   }
 
+  /**
+   * Data transfer/backfill progress + live scheduler tick state for the Sync
+   * Status screen: how much has been migrated from each source and over
+   * what date range, whether a sweep is running right now with a rough ETA,
+   * and the history of repos/sites whose backfill has completed.
+   */
+  @Roles(Role.ADMIN)
+  @Get('sync-status')
+  async syncStatus(@CurrentUser() user: AuthUser) {
+    return this.connections.getSyncStatus(user.tenantId);
+  }
+
   // Never expose secret references over the API.
   private toView(c: {
     id: string;

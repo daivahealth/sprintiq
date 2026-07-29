@@ -259,8 +259,11 @@ export function DeveloperActivityBoard() {
                     <span className="text-emerald-600">+{c.additions}</span>{' '}
                     <span className="text-rose-500">−{c.deletions}</span>
                   </span>
-                  <span className="w-20 shrink-0 text-right text-xs text-slate-400">
-                    {timeAgo(c.authoredAt)}
+                  <span
+                    className="w-20 shrink-0 text-right text-xs text-slate-400"
+                    title={`Authored ${timeAgo(c.authoredAt)}`}
+                  >
+                    {timeAgo(c.committedAt)}
                   </span>
                 </li>
               ))}

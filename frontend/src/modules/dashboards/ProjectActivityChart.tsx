@@ -1,3 +1,4 @@
+import { istDayAxis } from '../../lib/utils';
 import type { ProjectActivityRow } from './useInsights';
 
 /**
@@ -45,7 +46,7 @@ export function ProjectActivityChart({
     );
   }
 
-  const days = buildDayAxis(windowDays);
+  const days = istDayAxis(windowDays);
   const perProjectDays = series.map((r) => fillWindow(r.dailySeries, days));
   const maxCommits = Math.max(
     1,
@@ -153,17 +154,6 @@ export function ProjectActivityChart({
       </div>
     </div>
   );
-}
-
-/** Contiguous [today-windowDays+1 … today] date-string axis, UTC-anchored. */
-function buildDayAxis(windowDays: number): string[] {
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const out: string[] = [];
-  for (let i = windowDays - 1; i >= 0; i--) {
-    out.push(new Date(today.getTime() - i * 86_400_000).toISOString().slice(0, 10));
-  }
-  return out;
 }
 
 /** Fill one project's sparse daily series into the full day axis. */

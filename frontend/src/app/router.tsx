@@ -4,6 +4,7 @@ import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { useAuthStore } from '../lib/stores/auth-store';
 import { AdminConfigurationsPage } from '../modules/admin/AdminConfigurationsPage';
 import { AdminUsersPage } from '../modules/admin/AdminUsersPage';
+import { SyncStatusPage } from '../modules/admin/SyncStatusPage';
 import { LoginPage } from '../modules/auth/LoginPage';
 import {
   DeveloperActivityBoard,
@@ -18,6 +19,8 @@ import {
   VelocityBoard,
 } from '../modules/dashboards/boards';
 import { DeliveryDashboard } from '../modules/dashboards/DeliveryDashboard';
+import { TeamCapacity } from '../modules/dashboards/TeamCapacity';
+import { TopRepos } from '../modules/dashboards/TopRepos';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const authed = useAuthStore((s) => s.isAuthenticated());
@@ -60,6 +63,8 @@ export function AppRouter() {
       <Route path="/efficiency" element={<Page><EfficiencyBoard /></Page>} />
       <Route path="/project-activity" element={<Page><ProjectActivityBoard /></Page>} />
       <Route path="/developer-activity" element={<Page><DeveloperActivityBoard /></Page>} />
+      <Route path="/top-repos" element={<Page><TopRepos /></Page>} />
+      <Route path="/team-capacity" element={<Page><TeamCapacity /></Page>} />
       <Route
         path="/admin/users"
         element={
@@ -76,6 +81,16 @@ export function AppRouter() {
           <Page>
             <RequireRole role="admin">
               <AdminConfigurationsPage />
+            </RequireRole>
+          </Page>
+        }
+      />
+      <Route
+        path="/admin/sync-status"
+        element={
+          <Page>
+            <RequireRole role="admin">
+              <SyncStatusPage />
             </RequireRole>
           </Page>
         }

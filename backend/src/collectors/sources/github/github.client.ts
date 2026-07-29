@@ -20,6 +20,10 @@ export interface GithubCommit {
   commit: {
     message: string;
     author: { name?: string; email?: string; date?: string } | null;
+    // `committer.date` differs from `author.date` whenever a commit is
+    // rebased, cherry-picked, or amended — both are already on the list
+    // endpoint's response, no extra call needed.
+    committer: { name?: string; email?: string; date?: string } | null;
   };
   author: { login?: string } | null;
 }
@@ -28,6 +32,24 @@ export interface GithubRepo {
   full_name: string;
   archived: boolean;
   disabled: boolean;
+}
+
+export interface GithubCommitDetail {
+  additions?: number;
+  deletions?: number;
+  filesChanged?: number;
+  /** `commit.committer.date` — same response, no extra cost; used by the reconciler to backfill already-ingested commits. */
+  committedAt?: string;
+  /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
+  rateLimitedUntil?: Date;
+}
+
+export interface GithubPullDetail {
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
+  /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
+  rateLimitedUntil?: Date;
 }
 
 export interface GithubPage<T> {
@@ -79,6 +101,109 @@ export class GithubClient {
   ): Promise<GithubPage<GithubCommit>> {
     const url = `${this.baseUrl}/repos/${repoFullName}/commits?since=${encodeURIComponent(since)}&per_page=${perPage}&page=${page}`;
     return this.getPage<GithubCommit>(url, token);
+  }
+
+  /** `GET /repos/{repo}/commits/{sha}` — the only way to get a commit's line-change stats; the list endpoint never includes them. */
+  async getCommitDetail(
+    repoFullName: string,
+    token: string,
+    sha: string,
+  ): Promise<GithubCommitDetail> {
+    if (!token) {
+      return {};
+    }
+    const url = `${this.baseUrl}/repos/${repoFullName}/commits/${sha}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+
+    if (res.status === 403 || res.status === 429) {
+      const resetAt = this.parseResetHeader(
+        res.headers.get('x-ratelimit-reset'),
+      );
+      this.logger.warn(`GitHub rate-limited until ${resetAt.toISOString()}`);
+      return { rateLimitedUntil: resetAt };
+    }
+    if (!res.ok) {
+      this.logger.warn(`GitHub commit detail failed (${res.status}): ${url}`);
+      return {};
+    }
+
+    const body = (await res.json()) as {
+      commit?: { committer?: { date?: string } | null };
+      stats?: { additions?: number; deletions?: number };
+      files?: unknown[];
+    };
+    const detail: GithubCommitDetail = {
+      additions: body.stats?.additions,
+      deletions: body.stats?.deletions,
+      filesChanged: Array.isArray(body.files) ? body.files.length : undefined,
+      committedAt: body.commit?.committer?.date,
+    };
+
+    // Same preemption as list pages: don't let the NEXT call blow past a hard 403.
+    const remaining = Number(res.headers.get('x-ratelimit-remaining') ?? NaN);
+    if (!Number.isNaN(remaining) && remaining <= 1) {
+      detail.rateLimitedUntil = this.parseResetHeader(
+        res.headers.get('x-ratelimit-reset'),
+      );
+    }
+    return detail;
+  }
+
+  /** `GET /repos/{repo}/pulls/{number}` — the only way to get a PR's line-change stats; the list endpoint never includes them. */
+  async getPullRequestDetail(
+    repoFullName: string,
+    token: string,
+    number: number | string,
+  ): Promise<GithubPullDetail> {
+    if (!token) {
+      return {};
+    }
+    const url = `${this.baseUrl}/repos/${repoFullName}/pulls/${number}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+
+    if (res.status === 403 || res.status === 429) {
+      const resetAt = this.parseResetHeader(
+        res.headers.get('x-ratelimit-reset'),
+      );
+      this.logger.warn(`GitHub rate-limited until ${resetAt.toISOString()}`);
+      return { rateLimitedUntil: resetAt };
+    }
+    if (!res.ok) {
+      this.logger.warn(`GitHub PR detail failed (${res.status}): ${url}`);
+      return {};
+    }
+
+    const body = (await res.json()) as {
+      additions?: number;
+      deletions?: number;
+      changed_files?: number;
+    };
+    const detail: GithubPullDetail = {
+      additions: body.additions,
+      deletions: body.deletions,
+      changedFiles: body.changed_files,
+    };
+
+    // Same preemption as list pages: don't let the NEXT call blow past a hard 403.
+    const remaining = Number(res.headers.get('x-ratelimit-remaining') ?? NaN);
+    if (!Number.isNaN(remaining) && remaining <= 1) {
+      detail.rateLimitedUntil = this.parseResetHeader(
+        res.headers.get('x-ratelimit-reset'),
+      );
+    }
+    return detail;
   }
 
   private async getPage<T>(url: string, token: string): Promise<GithubPage<T>> {

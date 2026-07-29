@@ -164,3 +164,54 @@ export interface BatchMetricsResponse {
   rows: MetricRow[];
   computedAt: string;
 }
+
+/** GET /api/admin/connections/sync-status */
+export interface ConnectionSyncStatus {
+  id: string;
+  sourceSystem: string;
+  name: string;
+  status: string;
+  syncIntervalMinutes: number;
+  backfillSince: string | null;
+  backfillCompletedAt: string | null;
+  lastSyncAt: string | null;
+  nextSyncDueAt: string;
+  eventsIngested: number;
+  earliestEventAt: string | null;
+  latestEventAt: string | null;
+  rateLimitedUntil: string | null;
+}
+export interface SyncRunHistoryEntry {
+  id: string;
+  connectionId: string;
+  connectionName: string;
+  startedAt: string;
+  finishedAt: string | null;
+  eventsFetched: number;
+  eventsIngested: number;
+  status: string;
+  errorMessage: string | null;
+}
+export interface SourceSyncStatus {
+  sourceSystem: string;
+  tick: {
+    running: boolean;
+    startedAt: string | null;
+    finishedAt: string | null;
+    totalConnections: number;
+    connectionsProcessed: number;
+    etaSeconds: number | null;
+  };
+  inProgress: ConnectionSyncStatus[];
+  completedRuns: ConnectionSyncStatus[];
+  history: SyncRunHistoryEntry[];
+}
+export interface SyncStatusResponse {
+  summary: {
+    totalConnections: number;
+    backfillComplete: number;
+    backfillInProgress: number;
+    totalEventsIngested: number;
+  };
+  sources: SourceSyncStatus[];
+}

@@ -218,6 +218,15 @@ export class JiraCollector extends BaseSourceCollector {
       rateLimitedUntil ? { resetAt: rateLimitedUntil.toISOString() } : {},
     );
 
+    // Checked against the PERSISTED flag (not an in-memory before/after cursor
+    // snapshot) so this self-heals connections that already reached poll mode
+    // before backfillCompletedAt tracking existed — an in-memory transition
+    // check would only ever fire once, at the moment the DB column was added,
+    // and permanently miss any connection already past that point by then.
+    if (cursors.updatedCursor && !connection.backfillCompletedAt) {
+      await this.connections.setBackfillCompletedAt(connection.id);
+    }
+
     return envelopes;
   }
 

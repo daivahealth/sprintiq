@@ -55,10 +55,17 @@ describe('GithubCollector.poll', () => {
     client = {
       listPullRequestsPage: jest.fn(),
       listCommitsPage: jest.fn(),
+      getCommitDetail: jest
+        .fn()
+        .mockResolvedValue({ additions: 3, deletions: 1 }),
+      getPullRequestDetail: jest
+        .fn()
+        .mockResolvedValue({ additions: 10, deletions: 5, changedFiles: 2 }),
     } as unknown as jest.Mocked<GithubClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
       setRateLimitState: jest.fn().mockResolvedValue(undefined),
+      setBackfillCompletedAt: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     secrets = {
       resolve: jest.fn().mockResolvedValue('tok'),
@@ -108,6 +115,16 @@ describe('GithubCollector.poll', () => {
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0].collectionMode).toBe('backfill');
     expect(envelopes[0].externalRefs.pr_number).toBe('1');
+    expect(client.getPullRequestDetail).toHaveBeenCalledWith(
+      'acme/payments',
+      'tok',
+      1,
+    );
+    expect(envelopes[0].data).toMatchObject({
+      additions: 10,
+      deletions: 5,
+      changedFiles: 2,
+    });
 
     const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
       string,
@@ -116,6 +133,87 @@ describe('GithubCollector.poll', () => {
     expect(cursors.prBackfillDone).toBe(true);
     expect(cursors.prPage).toBeUndefined();
     expect(cursors.prNewestSeenAt).toBe(within.updated_at);
+  });
+
+  it('defers un-enriched PRs to a later tick once the backfill enrichment budget runs out', async () => {
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({ number: i + 1, updated_at: new Date().toISOString() }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes).toHaveLength(25);
+    expect(client.getPullRequestDetail).toHaveBeenCalledTimes(25);
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    // resumes the SAME page next tick, mirroring syncCommits' behavior
+    expect(cursors.prPage).toBe(1);
+    expect(cursors.prBackfillDone).toBeUndefined();
+  });
+
+  it('stops PR enrichment and persists resetAt when a PR-detail call is rate-limited during backfill', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 }), pull({ number: 2 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    const resetAt = new Date(Date.now() + 60_000);
+    client.getPullRequestDetail.mockResolvedValueOnce({
+      additions: 10,
+      deletions: 5,
+      rateLimitedUntil: resetAt,
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes).toHaveLength(1);
+    expect(client.getPullRequestDetail).toHaveBeenCalledTimes(1);
+    expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
+      resetAt: resetAt.toISOString(),
+    });
+  });
+
+  it('incremental sync does NOT advance the watermark when the enrichment budget runs out before reaching it — would otherwise skip the un-enriched remainder forever', async () => {
+    // 30 PRs, all newer than the existing watermark — exceeds the 25-per-tick budget.
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({
+        number: 100 - i,
+        updated_at: new Date(
+          Date.parse('2026-06-10T00:00:00.000Z') - i * 60_000,
+        ).toISOString(),
+      }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    const connection = baseConnection({
+      syncCursors: {
+        prBackfillDone: true,
+        prNewestSeenAt: '2026-06-01T00:00:00.000Z',
+      },
+    });
+
+    const envelopes = await collector.poll(connection);
+
+    expect(envelopes).toHaveLength(25);
+    expect(client.getPullRequestDetail).toHaveBeenCalledTimes(25);
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    // untouched — NOT advanced to pulls[0]'s date, so the 5 un-enriched PRs
+    // (and the 25 already-ingested ones, as harmless idempotent duplicates)
+    // get retried in full next tick.
+    expect(cursors.prNewestSeenAt).toBe('2026-06-01T00:00:00.000Z');
   });
 
   it('resumes a still-in-progress backfill from the saved page across ticks', async () => {
@@ -194,6 +292,12 @@ describe('GithubCollector.poll', () => {
               email: 'j@acme.com',
               date: '2026-06-01T00:00:00.000Z',
             },
+            // rebased onto main a day later — committedAt should reflect that, not authoredAt
+            committer: {
+              name: 'Jane',
+              email: 'j@acme.com',
+              date: '2026-06-02T00:00:00.000Z',
+            },
           },
           author: { login: 'jdoe' },
         },
@@ -208,11 +312,224 @@ describe('GithubCollector.poll', () => {
     expect(envelopes[0].idempotencyKey).toBe(
       'github:acme/payments:commit:abc123',
     );
+    expect(client.getCommitDetail).toHaveBeenCalledWith(
+      'acme/payments',
+      'tok',
+      'abc123',
+    );
+    expect(envelopes[0].data).toMatchObject({
+      additions: 3,
+      deletions: 1,
+      authoredAt: '2026-06-01T00:00:00.000Z',
+      committedAt: '2026-06-02T00:00:00.000Z',
+    });
     const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
       string,
       unknown
     >;
     expect(cursors.commitsCursor).toBeDefined();
     expect(cursors.commitsResumePage).toBeUndefined();
+  });
+
+  it('defers un-enriched commits to a later tick once the enrichment budget runs out, instead of ingesting them with 0 stats', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    // 30 commits on one page — exceeds the 25-per-tick enrichment budget.
+    const commits = Array.from({ length: 30 }, (_, i) => ({
+      sha: `sha${i}`,
+      commit: {
+        message: 'msg',
+        author: {
+          name: 'Jane',
+          email: 'j@acme.com',
+          date: '2026-06-01T00:00:00.000Z',
+        },
+        committer: null,
+      },
+      author: { login: 'jdoe' },
+    }));
+    client.listCommitsPage.mockResolvedValue({
+      items: commits,
+      hasNextPage: false,
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes).toHaveLength(25);
+    expect(client.getCommitDetail).toHaveBeenCalledTimes(25);
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    // resumes the SAME page next tick — the 5 unenriched commits (and the 25
+    // already-ingested ones, as harmless idempotent duplicates) get re-fetched.
+    expect(cursors.commitsResumePage).toBe(1);
+    expect(cursors.commitsCursor).toBeUndefined();
+  });
+
+  it('stops enriching and persists resetAt when a commit-detail call is rate-limited, resuming the same page', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue({
+      items: [
+        {
+          sha: 'abc123',
+          commit: {
+            message: 'msg',
+            author: {
+              name: 'Jane',
+              email: 'j@acme.com',
+              date: '2026-06-01T00:00:00.000Z',
+            },
+            committer: null,
+          },
+          author: { login: 'jdoe' },
+        },
+        {
+          sha: 'def456',
+          commit: {
+            message: 'msg2',
+            author: {
+              name: 'Jane',
+              email: 'j@acme.com',
+              date: '2026-06-02T00:00:00.000Z',
+            },
+            committer: null,
+          },
+          author: { login: 'jdoe' },
+        },
+      ],
+      hasNextPage: false,
+    });
+    const resetAt = new Date(Date.now() + 60_000);
+    client.getCommitDetail.mockResolvedValueOnce({
+      additions: 3,
+      deletions: 1,
+      rateLimitedUntil: resetAt,
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    // the first commit's already-fetched detail is kept; the second is never attempted
+    expect(envelopes).toHaveLength(1);
+    expect(client.getCommitDetail).toHaveBeenCalledTimes(1);
+    expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
+      resetAt: resetAt.toISOString(),
+    });
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.commitsResumePage).toBe(1);
+  });
+
+  it('marks backfillCompletedAt exactly once — the tick both PRs and commits finish their historical backfill', async () => {
+    // PRs already finished backfilling in a prior tick; commits finish THIS tick.
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: { prBackfillDone: true },
+        backfillCompletedAt: null,
+      }),
+    );
+
+    expect(connections.setBackfillCompletedAt).toHaveBeenCalledWith('conn_1');
+  });
+
+  it('does not re-mark backfillCompletedAt on a genuine steady-state tick (already recorded)', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: {
+          prBackfillDone: true,
+          commitsCursor: '2026-06-01T00:00:00.000Z',
+        },
+        backfillCompletedAt: new Date('2026-06-02T00:00:00.000Z'),
+      }),
+    );
+
+    expect(connections.setBackfillCompletedAt).not.toHaveBeenCalled();
+  });
+
+  it('self-heals a connection whose cursors already show full backfill but whose backfillCompletedAt was never recorded (predates the tracking column)', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: {
+          prBackfillDone: true,
+          commitsCursor: '2026-06-01T00:00:00.000Z',
+        },
+        backfillCompletedAt: null,
+      }),
+    );
+
+    expect(connections.setBackfillCompletedAt).toHaveBeenCalledWith('conn_1');
+  });
+});
+
+describe('GithubCollector.normalizeWebhook (push)', () => {
+  const client = {
+    searchIssues: jest.fn(),
+  } as unknown as jest.Mocked<GithubClient>;
+  const connections = {} as unknown as jest.Mocked<ConnectionsService>;
+  const secrets = {} as unknown as jest.Mocked<SecretsService>;
+  const collector = new GithubCollector(client, connections, secrets);
+
+  it('sets committedAt equal to authoredAt — push payloads carry one timestamp per commit, not separate author/committer dates', async () => {
+    const body = JSON.stringify({
+      repository: { full_name: 'acme/payments' },
+      commits: [
+        {
+          id: 'abc123',
+          message: 'fix bug',
+          timestamp: '2026-06-01T00:00:00.000Z',
+          author: { name: 'Jane', email: 'j@acme.com', username: 'jdoe' },
+          added: ['a.ts'],
+          removed: [],
+          modified: ['b.ts'],
+        },
+      ],
+    });
+
+    const envelopes = await collector.normalizeWebhook(
+      baseConnection(),
+      Buffer.from(body),
+      { 'x-github-event': 'push' },
+    );
+
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].data).toMatchObject({
+      authoredAt: '2026-06-01T00:00:00.000Z',
+      committedAt: '2026-06-01T00:00:00.000Z',
+      filesChanged: 2,
+    });
   });
 });

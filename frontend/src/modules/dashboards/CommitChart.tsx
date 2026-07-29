@@ -1,3 +1,5 @@
+import { istDayAxis } from '../../lib/utils';
+
 /**
  * GitHub-style daily contribution chart (dependency-free SVG): one column per
  * day across the FULL window — zero-commit days included, unlike a sparse list —
@@ -140,15 +142,9 @@ export function CommitChart({
 /** Fill the sparse series into a contiguous [today-windowDays+1 … today] range. */
 function buildFullWindow(series: DayPoint[], windowDays: number): DayPoint[] {
   const byDate = new Map(series.map((d) => [d.date, d]));
-  const out: DayPoint[] = [];
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  for (let i = windowDays - 1; i >= 0; i--) {
-    const day = new Date(today.getTime() - i * 86_400_000);
-    const date = day.toISOString().slice(0, 10);
-    out.push(byDate.get(date) ?? { date, commits: 0, locChanged: 0 });
-  }
-  return out;
+  return istDayAxis(windowDays).map(
+    (date) => byDate.get(date) ?? { date, commits: 0, locChanged: 0 },
+  );
 }
 
 /** 3–4 clean integer ticks for the commits axis. */

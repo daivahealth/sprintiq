@@ -95,6 +95,11 @@ function positiveNumber(value: unknown): number | undefined {
  * `config.backfillDays` is carried as-is (not yet resolved to an absolute
  * `backfillSince` date) — the caller resolves that, since whether to actually
  * recompute it depends on comparing against what the connection already has.
+ *
+ * `config.syncIntervalMinutes` is carried through directly (unlike
+ * backfillDays, it's never resolved to an absolute value) — the scheduler
+ * reads it live on every tick, so a change here takes effect on the very next
+ * tick with no cursor reset needed.
  */
 function deriveConnectionInput(
   namespace: BridgedNamespace,
@@ -102,6 +107,7 @@ function deriveConnectionInput(
   secretRefs: Record<string, unknown>,
 ): DerivedConnectionInput | null {
   const backfillDays = positiveNumber(values.backfillDays);
+  const syncIntervalMinutes = positiveNumber(values.syncIntervalMinutes);
 
   if (namespace === 'github') {
     const organization = str(values.organization);
@@ -110,7 +116,11 @@ function deriveConnectionInput(
       return null; // org-wide config only — no single repo to collect yet
     }
     return {
-      config: { repoFullName: `${organization}/${defaultRepo}`, backfillDays },
+      config: {
+        repoFullName: `${organization}/${defaultRepo}`,
+        backfillDays,
+        syncIntervalMinutes,
+      },
       secretRef: str(secretRefs.tokenRef),
       webhookSecretRef: str(secretRefs.webhookSecretRef),
     };
@@ -127,6 +137,7 @@ function deriveConnectionInput(
       email,
       projectKey: str(values.projectKey),
       backfillDays,
+      syncIntervalMinutes,
     },
     secretRef: str(secretRefs.apiTokenRef),
     webhookSecretRef: str(secretRefs.webhookSecretRef),
