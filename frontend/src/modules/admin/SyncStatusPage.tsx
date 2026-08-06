@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Badge, Card, Spinner } from "../../components/ui";
+import {
+  Badge,
+  Card,
+  Spinner,
+  TableBodyRow,
+  TableHeadRow,
+} from "../../components/ui";
 import { api } from "../../lib/api/client";
 import { cn } from "../../lib/utils";
 import type {
@@ -47,9 +53,9 @@ function dateRange(from: string | null, to: string | null): string {
 
 function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <p className="text-2xl font-semibold text-slate-800">{value}</p>
-      <p className="text-xs text-slate-500">{label}</p>
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <p className="text-2xl font-semibold tracking-[-0.03em] tabular-nums text-fg">{value}</p>
+      <p className="text-xs text-fg-subtle">{label}</p>
     </div>
   );
 }
@@ -63,18 +69,18 @@ function sourceLabel(sourceSystem: string): string {
 function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
   const isRateLimited = Boolean(c.rateLimitedUntil);
   return (
-    <tr className="border-b border-slate-100 last:border-0">
-      <td className="py-2.5 pr-4 font-medium text-slate-700">{c.name}</td>
-      <td className="py-2.5 pr-4 tabular-nums text-slate-600">
+    <TableBodyRow hoverable={false}>
+      <td className="py-2.5 pr-4 font-medium text-fg-secondary">{c.name}</td>
+      <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
         {c.eventsIngested.toLocaleString()}
       </td>
-      <td className="py-2.5 pr-4 text-slate-600">
+      <td className="py-2.5 pr-4 text-fg-muted">
         {dateRange(c.earliestEventAt, c.latestEventAt)}
       </td>
-      <td className="py-2.5 pr-4 text-slate-500">
+      <td className="py-2.5 pr-4 text-fg-subtle">
         {c.lastSyncAt ? timeAgo(c.lastSyncAt) : "never"}
       </td>
-      <td className="py-2.5 pr-4 text-slate-500">
+      <td className="py-2.5 pr-4 text-fg-subtle">
         every {formatInterval(c.syncIntervalMinutes)}
       </td>
       <td className="py-2.5">
@@ -86,7 +92,7 @@ function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
           <Badge tone="warn">backfilling</Badge>
         )}
       </td>
-    </tr>
+    </TableBodyRow>
   );
 }
 
@@ -96,15 +102,15 @@ function HistoryRow({ run }: { run: SyncRunHistoryEntry }) {
       ? new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()
       : null;
   return (
-    <tr className="border-b border-slate-100 last:border-0">
-      <td className="py-2.5 pr-4 font-medium text-slate-700">
+    <TableBodyRow hoverable={false}>
+      <td className="py-2.5 pr-4 font-medium text-fg-secondary">
         {run.connectionName}
       </td>
-      <td className="py-2.5 pr-4 text-slate-500">{timeAgo(run.startedAt)}</td>
-      <td className="py-2.5 pr-4 text-slate-500">
+      <td className="py-2.5 pr-4 text-fg-subtle">{timeAgo(run.startedAt)}</td>
+      <td className="py-2.5 pr-4 text-fg-subtle">
         {durationMs !== null ? `${Math.max(1, Math.round(durationMs / 1000))}s` : "running…"}
       </td>
-      <td className="py-2.5 pr-4 tabular-nums text-slate-600">
+      <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
         {run.eventsIngested.toLocaleString()}
         {run.eventsFetched > run.eventsIngested
           ? ` / ${run.eventsFetched.toLocaleString()} fetched`
@@ -114,12 +120,12 @@ function HistoryRow({ run }: { run: SyncRunHistoryEntry }) {
         {run.status === "success" ? (
           <Badge tone="good">success</Badge>
         ) : run.status === "error" ? (
-          <Badge tone="bad" >{run.errorMessage ? `error: ${run.errorMessage}` : "error"}</Badge>
+          <Badge tone="bad">{run.errorMessage ? `error: ${run.errorMessage}` : "error"}</Badge>
         ) : (
           <Badge tone="warn">running</Badge>
         )}
       </td>
-    </tr>
+    </TableBodyRow>
   );
 }
 
@@ -129,27 +135,27 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
 
   return (
     <Card className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs uppercase text-slate-500">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle pb-3">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-xs uppercase text-fg-subtle">
           {allConnections.length} connection{allConnections.length === 1 ? "" : "s"}
         </span>
-        <span className="text-sm text-slate-500">
+        <span className="text-sm text-fg-subtle">
           {eventsIngested.toLocaleString()} events ingested
         </span>
       </div>
 
       <div className="space-y-2">
-        <h4 className="text-sm font-semibold text-slate-700">Scheduler</h4>
+        <h4 className="text-sm font-semibold text-fg-secondary">Scheduler</h4>
         {source.tick.running ? (
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <Badge tone="good">running now</Badge>
-              <span className="text-sm text-slate-600">
+              <span className="text-sm text-fg-muted">
                 {source.tick.connectionsProcessed} of {source.tick.totalConnections}{" "}
                 due connections processed this tick
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full bg-brand transition-all"
                 style={{
@@ -161,7 +167,7 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
                 }}
               />
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-fg-faint">
               {source.tick.etaSeconds !== null
                 ? `~${formatDuration(source.tick.etaSeconds)} remaining (rough estimate)`
                 : "estimating time remaining…"}
@@ -170,7 +176,7 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
         ) : (
           <div className="flex items-center gap-2">
             <Badge tone="neutral">idle</Badge>
-            <span className="text-sm text-slate-600">
+            <span className="text-sm text-fg-muted">
               {source.tick.finishedAt
                 ? `last checked ${timeAgo(source.tick.finishedAt)}`
                 : "no tick recorded yet"}
@@ -181,25 +187,25 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
       </div>
 
       <div className="space-y-3">
-        <h4 className="text-sm font-semibold text-slate-700">
+        <h4 className="text-sm font-semibold text-fg-secondary">
           Backfilling now ({source.inProgress.length})
         </h4>
         {source.inProgress.length === 0 ? (
-          <p className="py-3 text-center text-sm text-slate-400">
+          <p className="py-3 text-center text-sm text-fg-faint">
             Nothing currently backfilling.
           </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+                <TableHeadRow>
                   <th className="py-2 pr-4 font-medium">Name</th>
                   <th className="py-2 pr-4 font-medium">Ingested</th>
                   <th className="py-2 pr-4 font-medium">Date coverage</th>
                   <th className="py-2 pr-4 font-medium">Last synced</th>
                   <th className="py-2 pr-4 font-medium">Interval</th>
                   <th className="py-2 font-medium">Status</th>
-                </tr>
+                </TableHeadRow>
               </thead>
               <tbody>
                 {source.inProgress.map((c) => (
@@ -212,25 +218,25 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
       </div>
 
       <div className="space-y-3">
-        <h4 className="text-sm font-semibold text-slate-700">
+        <h4 className="text-sm font-semibold text-fg-secondary">
           Completed backfills ({source.completedRuns.length})
         </h4>
         {source.completedRuns.length === 0 ? (
-          <p className="py-3 text-center text-sm text-slate-400">
+          <p className="py-3 text-center text-sm text-fg-faint">
             No backfills have completed yet.
           </p>
         ) : (
           <div className="max-h-72 overflow-y-auto overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-white">
-                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+              <thead className="sticky top-0 bg-surface">
+                <TableHeadRow>
                   <th className="py-2 pr-4 font-medium">Name</th>
                   <th className="py-2 pr-4 font-medium">Ingested</th>
                   <th className="py-2 pr-4 font-medium">Date coverage</th>
                   <th className="py-2 pr-4 font-medium">Last synced</th>
                   <th className="py-2 pr-4 font-medium">Interval</th>
                   <th className="py-2 font-medium">Status</th>
-                </tr>
+                </TableHeadRow>
               </thead>
               <tbody>
                 {source.completedRuns.map((c) => (
@@ -243,26 +249,26 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
       </div>
 
       <div className="space-y-3">
-        <h4 className="text-sm font-semibold text-slate-700">
+        <h4 className="text-sm font-semibold text-fg-secondary">
           Recent sync history ({source.history.length})
         </h4>
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-fg-faint">
           Previous sync runs for this source's connections — when it ran, how long it took, and
           what was synced.
         </p>
         {source.history.length === 0 ? (
-          <p className="py-3 text-center text-sm text-slate-400">No sync runs recorded yet.</p>
+          <p className="py-3 text-center text-sm text-fg-faint">No sync runs recorded yet.</p>
         ) : (
           <div className="max-h-72 overflow-y-auto overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-white">
-                <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+              <thead className="sticky top-0 bg-surface">
+                <TableHeadRow>
                   <th className="py-2 pr-4 font-medium">Connection</th>
                   <th className="py-2 pr-4 font-medium">When</th>
                   <th className="py-2 pr-4 font-medium">Duration</th>
                   <th className="py-2 pr-4 font-medium">Synced</th>
                   <th className="py-2 font-medium">Result</th>
-                </tr>
+                </TableHeadRow>
               </thead>
               <tbody>
                 {source.history.map((run) => (
@@ -287,7 +293,7 @@ function SourceTabs({
   onSelect: (sourceSystem: string) => void;
 }) {
   return (
-    <div className="flex gap-1 border-b border-slate-200">
+    <div className="flex gap-1 border-b border-border">
       {sources.map((source) => {
         const connectionCount = source.inProgress.length + source.completedRuns.length;
         const isActive = source.sourceSystem === active;
@@ -300,11 +306,11 @@ function SourceTabs({
               "flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition",
               isActive
                 ? "border-brand text-brand"
-                : "border-transparent text-slate-500 hover:text-slate-700",
+                : "border-transparent text-fg-subtle hover:text-fg-secondary",
             )}
           >
             {sourceLabel(source.sourceSystem)}
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+            <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-fg-subtle">
               {connectionCount}
             </span>
             {source.tick.running && <Badge tone="good">running</Badge>}
@@ -322,10 +328,10 @@ export function SyncStatusPage() {
   const selected = query.data?.sources.find((s) => s.sourceSystem === activeSource);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-slate-800">Sync Status</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">Sync Status</h2>
+        <p className="text-sm text-fg-subtle">
           Data transfer/backfill progress from GitHub and Jira — each source syncs
           independently on its own configurable interval (Configuration screen, default every 4
           hours).
@@ -333,7 +339,7 @@ export function SyncStatusPage() {
       </div>
 
       {query.isLoading && (
-        <Card className="flex items-center gap-2 text-sm text-slate-500">
+        <Card className="flex items-center gap-2 text-sm text-fg-subtle">
           <Spinner /> Loading…
         </Card>
       )}

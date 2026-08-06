@@ -1,4 +1,11 @@
-import { Badge, Card, Spinner } from '../../components/ui';
+import {
+  Badge,
+  Card,
+  Spinner,
+  StatusDot,
+  TableBodyRow,
+  TableHeadRow,
+} from '../../components/ui';
 import { ApiError } from '../../lib/api/client';
 import { cn } from '../../lib/utils';
 import type { SprintCatalogItem, WorkItemView } from './useInsights';
@@ -15,10 +22,12 @@ export function Stat({
   hint?: string;
 }) {
   return (
-    <div className="rounded-lg bg-slate-50 p-4">
-      <div className="text-2xl font-semibold text-slate-800">{value}</div>
-      <div className="text-xs text-slate-500">{label}</div>
-      {hint && <div className="mt-0.5 text-[11px] text-slate-400">{hint}</div>}
+    <div className="rounded-lg border border-border bg-subtle p-3">
+      <div className="text-2xl font-semibold tracking-[-0.03em] tabular-nums text-fg">
+        {value}
+      </div>
+      <div className="text-xs text-fg-subtle">{label}</div>
+      {hint && <div className="mt-0.5 text-[11px] text-fg-faint">{hint}</div>}
     </div>
   );
 }
@@ -36,40 +45,46 @@ export function BarList({
     <div className="space-y-2">
       {rows.map((r) => (
         <div key={r.label} className="flex items-center gap-3 text-sm">
-          <span className="w-44 truncate text-slate-600">{r.label}</span>
-          <div className="h-4 flex-1 overflow-hidden rounded bg-slate-100">
+          <span className="w-44 truncate text-fg-muted">{r.label}</span>
+          <div className="h-4 flex-1 overflow-hidden rounded bg-muted">
             <div
               className={cn('h-full rounded', color)}
               style={{ width: `${(r.value / max) * 100}%` }}
             />
           </div>
-          <span className="w-24 text-right tabular-nums text-slate-700">
+          <span className="w-24 text-right tabular-nums text-fg-secondary">
             {r.value}
             {r.secondary && (
-              <span className="ml-1 text-xs text-slate-400">{r.secondary}</span>
+              <span className="ml-1 text-xs text-fg-faint">{r.secondary}</span>
             )}
           </span>
         </div>
       ))}
       {rows.length === 0 && (
-        <p className="py-4 text-center text-sm text-slate-400">No data in scope.</p>
+        <p className="py-4 text-center text-sm text-fg-faint">No data in scope.</p>
       )}
     </div>
   );
 }
 
-export function LoadingCard() {
+export function LoadingCard({ label = 'Loading…' }: { label?: string }) {
   return (
-    <Card className="flex items-center gap-2 text-sm text-slate-500">
-      <Spinner /> Loading…
+    <Card className="flex items-center gap-2 text-sm text-fg-subtle">
+      <Spinner /> {label}
     </Card>
   );
 }
 
-export function ErrorCard({ error }: { error: unknown }) {
+export function ErrorCard({
+  error,
+  fallback = 'Failed to load.',
+}: {
+  error: unknown;
+  fallback?: string;
+}) {
   return (
-    <Card className="text-sm text-rose-600">
-      {(error as ApiError)?.message ?? 'Failed to load.'}
+    <Card className="text-sm text-danger-fg">
+      {(error as ApiError)?.message ?? fallback}
     </Card>
   );
 }
@@ -85,11 +100,11 @@ export function SprintPicker({
 }) {
   return (
     <div>
-      <span className="mb-1 block text-xs font-medium text-slate-500">Sprint</span>
+      <span className="mb-1 block text-xs font-medium text-fg-subtle">Sprint</span>
       <select
         value={selected ?? ''}
         onChange={(e) => onChange(e.target.value)}
-        className="w-64 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand"
+        className="w-64 rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand"
       >
         <option value="" disabled>
           Select a sprint…
@@ -111,7 +126,7 @@ export function SprintPicker({
 export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
   if (items.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-slate-400">
+      <p className="py-6 text-center text-sm text-fg-faint">
         No work items match this scope.
       </p>
     );
@@ -130,7 +145,7 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
           <col className="w-[11%]" />
         </colgroup>
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+          <TableHeadRow>
             <th className="py-2 pr-4 font-medium">Item</th>
             <th className="py-2 pr-4 font-medium">Type</th>
             <th className="py-2 pr-4 font-medium">Status</th>
@@ -139,20 +154,17 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
             <th className="py-2 pr-4 font-medium">Epic</th>
             <th className="py-2 pr-4 font-medium">Releases</th>
             <th className="py-2 font-medium">Linked PRs (GitHub)</th>
-          </tr>
+          </TableHeadRow>
         </thead>
         <tbody>
           {items.map((item) => (
-            <tr
-              key={item.key}
-              className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
-            >
+            <TableBodyRow key={item.key}>
               <td className="py-2.5 pr-4">
                 <div className="flex min-w-0 items-baseline gap-2">
-                  <span className="shrink-0 font-medium text-slate-700">
+                  <span className="shrink-0 font-medium text-fg-secondary">
                     {item.key}
                   </span>
-                  <span className="min-w-0 truncate text-slate-500">
+                  <span className="min-w-0 truncate text-fg-subtle">
                     {item.title}
                   </span>
                 </div>
@@ -166,11 +178,11 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
               <td className="py-2.5 pr-4 tabular-nums">
                 {item.storyPoints ?? '—'}
               </td>
-              <td className="py-2.5 pr-4 text-slate-600">
+              <td className="py-2.5 pr-4 text-fg-muted">
                 {item.assigneeName ?? '—'}
               </td>
-              <td className="py-2.5 pr-4 text-slate-600">{item.epicKey ?? '—'}</td>
-              <td className="py-2.5 pr-4 text-slate-600">
+              <td className="py-2.5 pr-4 text-fg-muted">{item.epicKey ?? '—'}</td>
+              <td className="py-2.5 pr-4 text-fg-muted">
                 {item.releases.length > 0 ? item.releases.join(', ') : '—'}
               </td>
               <td className="py-2.5">
@@ -181,19 +193,18 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
                     {item.linkedPrs.map((pr) => (
                       <span
                         key={pr.ref}
-                        className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600"
+                        className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-fg-muted"
                       >
                         {pr.ref}
                         {pr.state && (
-                          <span
-                            className={cn(
-                              'h-1.5 w-1.5 rounded-full',
+                          <StatusDot
+                            tone={
                               pr.state === 'merged'
-                                ? 'bg-emerald-500'
+                                ? 'good'
                                 : pr.state === 'open'
-                                  ? 'bg-amber-500'
-                                  : 'bg-slate-400',
-                            )}
+                                  ? 'warn'
+                                  : 'neutral'
+                            }
                           />
                         )}
                       </span>
@@ -201,7 +212,7 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
                   </span>
                 )}
               </td>
-            </tr>
+            </TableBodyRow>
           ))}
         </tbody>
       </table>

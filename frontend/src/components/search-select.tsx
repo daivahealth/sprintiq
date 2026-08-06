@@ -1,3 +1,4 @@
+import { AnimatePresence, motion } from 'framer-motion';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '../lib/utils';
 import { Spinner } from './ui';
@@ -69,13 +70,13 @@ export function SearchSelect({
 
   return (
     <div ref={rootRef} className="relative">
-      <span className="mb-1 block text-xs font-medium text-slate-500">
+      <span className="mb-1 block text-xs font-medium text-fg-subtle">
         {label}
       </span>
       <div
         className={cn(
-          'flex w-64 items-center gap-2 rounded-md border bg-white px-2 py-1.5',
-          open ? 'border-brand ring-2 ring-brand/20' : 'border-slate-300',
+          'flex w-64 items-center gap-2 rounded-md border bg-surface px-2 py-1.5',
+          open ? 'border-brand ring-2 ring-brand/20' : 'border-border-strong',
         )}
       >
         <input
@@ -86,32 +87,40 @@ export function SearchSelect({
             setOpen(true);
           }}
           placeholder={placeholder}
-          className="w-full text-sm outline-none"
+          className="w-full text-sm text-fg outline-none"
         />
         {loading && <Spinner />}
       </div>
 
-      {open && (
-        <ul className="absolute z-20 mt-1 max-h-64 w-64 overflow-auto rounded-lg border border-slate-200 bg-white py-1 text-sm shadow-lg">
-          {options.map((option) => (
-            <li key={option}>
-              <button
-                type="button"
-                onClick={() => handleSelect(option)}
-                className={cn(
-                  'block w-full truncate px-3 py-1.5 text-left hover:bg-slate-50',
-                  option === value && 'bg-brand-fg font-medium text-brand',
-                )}
-              >
-                {option}
-              </button>
-            </li>
-          ))}
-          {options.length === 0 && !loading && (
-            <li className="px-3 py-2 text-slate-400">{emptyText}</li>
-          )}
-        </ul>
-      )}
+      <AnimatePresence>
+        {open && (
+          <motion.ul
+            initial={{ opacity: 0, scale: 0.98, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: -4 }}
+            transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
+            className="absolute z-20 mt-1 max-h-64 w-64 overflow-auto rounded-lg border border-border bg-popover py-1 text-sm shadow-lg"
+          >
+            {options.map((option) => (
+              <li key={option}>
+                <button
+                  type="button"
+                  onClick={() => handleSelect(option)}
+                  className={cn(
+                    'block w-full truncate px-3 py-1.5 text-left hover:bg-subtle',
+                    option === value && 'bg-brand-fg font-medium text-brand',
+                  )}
+                >
+                  {option}
+                </button>
+              </li>
+            ))}
+            {options.length === 0 && !loading && (
+              <li className="px-3 py-2 text-fg-faint">{emptyText}</li>
+            )}
+          </motion.ul>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

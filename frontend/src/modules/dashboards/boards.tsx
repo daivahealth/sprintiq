@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { MultiSelect } from '../../components/multi-select';
-import { Badge, Card } from '../../components/ui';
+import { Badge, Card, FilterBar, ProvenanceNote } from '../../components/ui';
 import { useScope } from '../../lib/scope';
-import { formatHours, timeAgo } from '../../lib/utils';
+import { cn, formatHours, timeAgo } from '../../lib/utils';
 import { ScopeBar } from './ScopeBar';
 import { useProjects } from './useCatalog';
 import {
@@ -35,8 +35,8 @@ import {
 function BoardHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div>
-      <h2 className="text-xl font-semibold text-slate-800">{title}</h2>
-      <p className="text-sm text-slate-500">{subtitle}</p>
+      <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">{title}</h2>
+      <p className="text-sm text-fg-subtle">{subtitle}</p>
     </div>
   );
 }
@@ -91,7 +91,7 @@ export function SprintHealthBoard() {
         subtitle="Every project runs its own sprint lifecycle — all concurrent active sprints at a glance, worst pace first. Click one to drill in."
       />
 
-      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
+      <FilterBar>
         <MultiSelect
           label="Projects"
           options={(projects.data?.items ?? []).map((p) => p.key)}
@@ -106,18 +106,18 @@ export function SprintHealthBoard() {
           selected={sprint}
           onChange={setSprint}
         />
-      </div>
+      </FilterBar>
 
       {active.isLoading && <LoadingCard />}
       {active.isError && <ErrorCard error={active.error} />}
       {active.data && (
         <div>
-          <h4 className="mb-2 text-sm font-medium text-slate-600">
+          <h4 className="mb-2 text-sm font-medium text-fg-muted">
             Active sprints ({active.data.rows.length})
           </h4>
           {active.data.rows.length === 0 ? (
             <Card>
-              <p className="py-4 text-center text-sm text-slate-400">
+              <p className="py-4 text-center text-sm text-fg-faint">
                 No active sprints in scope.
               </p>
             </Card>
@@ -131,7 +131,7 @@ export function SprintHealthBoard() {
                   className={cnCard(sprint === row.sprint.externalId)}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="truncate font-medium text-slate-700">
+                    <span className="truncate font-medium text-fg-secondary">
                       {row.sprint.projectKey} · {row.sprint.name}
                     </span>
                     <PaceBadge pace={row.pace} />
@@ -140,7 +140,7 @@ export function SprintHealthBoard() {
                     completionPct={row.completionPct}
                     elapsedPct={row.elapsedPct}
                   />
-                  <div className="flex justify-between text-xs text-slate-500">
+                  <div className="flex justify-between text-xs text-fg-subtle">
                     <span>
                       {row.completionPct === null
                         ? 'no estimated pts'
@@ -152,7 +152,7 @@ export function SprintHealthBoard() {
                       {row.daysRemaining !== null && `${row.daysRemaining}d left`}
                     </span>
                   </div>
-                  <div className="text-xs text-slate-400">
+                  <div className="text-xs text-fg-faint">
                     {row.itemsDone}/{row.itemsTotal} items ·{' '}
                     {row.codeLinkagePct === null
                       ? 'no code linkage'
@@ -170,7 +170,7 @@ export function SprintHealthBoard() {
       {d && (
         <Card className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-slate-800">
+            <h3 className="font-semibold text-fg">
               {d.sprint.projectKey} · {d.sprint.name}
             </h3>
             <span className="space-x-2">
@@ -207,7 +207,7 @@ export function SprintHealthBoard() {
             />
           </div>
           <div>
-            <h4 className="mb-2 text-sm font-medium text-slate-600">
+            <h4 className="mb-2 text-sm font-medium text-fg-muted">
               Progress by work-item type
             </h4>
             <BarList
@@ -225,10 +225,10 @@ export function SprintHealthBoard() {
 }
 
 function cnCard(selected: boolean): string {
-  return [
-    'space-y-2 rounded-xl border bg-white p-4 text-left shadow-sm transition hover:border-brand/60',
-    selected ? 'border-brand ring-2 ring-brand/20' : 'border-slate-200',
-  ].join(' ');
+  return cn(
+    'space-y-2 rounded-xl border bg-surface p-4 text-left shadow-sm transition hover:border-brand/60',
+    selected ? 'border-brand ring-2 ring-brand/20' : 'border-border',
+  );
 }
 
 /** Completion vs elapsed on one track — the cadence-normalized pace visual. */
@@ -240,14 +240,14 @@ function PaceBar({
   elapsedPct: number | null;
 }) {
   return (
-    <div className="relative h-3 overflow-hidden rounded bg-slate-100">
+    <div className="relative h-3 overflow-hidden rounded bg-muted">
       <div
         className="h-full rounded bg-brand"
         style={{ width: `${completionPct ?? 0}%` }}
       />
       {elapsedPct !== null && (
         <div
-          className="absolute top-0 h-full w-0.5 bg-slate-500"
+          className="absolute top-0 h-full w-0.5 bg-fg-subtle"
           style={{ left: `${elapsedPct}%` }}
           title={`${elapsedPct}% of sprint elapsed`}
         />
@@ -277,7 +277,7 @@ export function SprintRiskBoard() {
         subtitle="Every project runs its own sprint lifecycle — risk across all concurrent active sprints, worst first. Click one to drill in."
       />
 
-      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
+      <FilterBar>
         <MultiSelect
           label="Projects"
           options={(projects.data?.items ?? []).map((p) => p.key)}
@@ -288,18 +288,18 @@ export function SprintRiskBoard() {
           emptyText="No projects found"
         />
         <SprintPicker sprints={sprints} selected={sprint} onChange={setSprint} />
-      </div>
+      </FilterBar>
 
       {active.isLoading && <LoadingCard />}
       {active.isError && <ErrorCard error={active.error} />}
       {active.data && (
         <div>
-          <h4 className="mb-2 text-sm font-medium text-slate-600">
+          <h4 className="mb-2 text-sm font-medium text-fg-muted">
             Active sprints ({active.data.rows.length})
           </h4>
           {active.data.rows.length === 0 ? (
             <Card>
-              <p className="py-4 text-center text-sm text-slate-400">
+              <p className="py-4 text-center text-sm text-fg-faint">
                 No active sprints in scope.
               </p>
             </Card>
@@ -313,7 +313,7 @@ export function SprintRiskBoard() {
                   className={cnCard(sprint === row.sprint.externalId)}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="truncate font-medium text-slate-700">
+                    <span className="truncate font-medium text-fg-secondary">
                       {row.sprint.projectKey} · {row.sprint.name}
                     </span>
                     <Badge
@@ -332,22 +332,22 @@ export function SprintRiskBoard() {
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-center text-xs">
                     <div>
-                      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+                      <div className="text-lg font-semibold text-fg tabular-nums">
                         {row.atRiskPoints}
                       </div>
-                      <div className="text-slate-400">at-risk pts</div>
+                      <div className="text-fg-faint">at-risk pts</div>
                     </div>
                     <div>
-                      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+                      <div className="text-lg font-semibold text-fg tabular-nums">
                         {row.openBugs}
                       </div>
-                      <div className="text-slate-400">open bugs</div>
+                      <div className="text-fg-faint">open bugs</div>
                     </div>
                     <div>
-                      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+                      <div className="text-lg font-semibold text-fg tabular-nums">
                         {row.unestimatedOpen}
                       </div>
-                      <div className="text-slate-400">unestimated</div>
+                      <div className="text-fg-faint">unestimated</div>
                     </div>
                   </div>
                 </button>
@@ -362,7 +362,7 @@ export function SprintRiskBoard() {
       {d && (
         <Card className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-slate-800">
+            <h3 className="font-semibold text-fg">
               {d.sprint.projectKey} · {d.sprint.name}
             </h3>
             <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
@@ -376,7 +376,7 @@ export function SprintRiskBoard() {
             <Stat label="Unestimated open" value={d.unestimatedOpen} />
           </div>
           <div>
-            <h4 className="mb-2 text-sm font-medium text-slate-600">
+            <h4 className="mb-2 text-sm font-medium text-fg-muted">
               Open items with no linked GitHub activity
             </h4>
             <WorkItemsTable items={d.openWithoutCode} />
@@ -393,7 +393,7 @@ export function VelocityBoard() {
   const rows = query.data?.rows ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Velocity"
         subtitle="Completed vs committed story points per closed sprint."
@@ -404,7 +404,7 @@ export function VelocityBoard() {
       {query.data && (
         <Card className="space-y-4">
           {rows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-400">
+            <p className="py-6 text-center text-sm text-fg-faint">
               No closed sprints in scope yet — velocity appears after the first
               sprint closes.
             </p>
@@ -417,10 +417,10 @@ export function VelocityBoard() {
                   secondary: `/ ${r.committedPoints} pts`,
                 }))}
               />
-              <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
+              <ProvenanceNote>
                 Bars show completed points; “/ N” is committed. Computed{' '}
                 {timeAgo(query.data.computedAt)}.
-              </p>
+              </ProvenanceNote>
             </>
           )}
         </Card>
@@ -435,7 +435,7 @@ export function ForecastBoard() {
   const rows = query.data?.rows ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Forecasting"
         subtitle="Average velocity of recent closed sprints vs remaining backlog."
@@ -448,7 +448,7 @@ export function ForecastBoard() {
           {rows.map((f) => (
             <Card key={f.projectKey} className="space-y-3">
               <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-slate-800">{f.projectKey}</h3>
+                <h3 className="font-semibold text-fg">{f.projectKey}</h3>
                 <Badge tone={f.sprintsSampled > 0 ? 'good' : 'warn'}>
                   {f.sprintsSampled > 0
                     ? `${f.sprintsSampled} sprint(s) sampled`
@@ -478,7 +478,7 @@ export function ForecastBoard() {
                 />
               </div>
               {f.unestimatedItems > 0 && (
-                <p className="text-xs text-amber-600">
+                <p className="text-xs text-warning-fg">
                   {f.unestimatedItems} unestimated item(s) are not in the
                   projection — the real finish is later than shown.
                 </p>
@@ -487,7 +487,7 @@ export function ForecastBoard() {
           ))}
           {rows.length === 0 && (
             <Card>
-              <p className="py-4 text-center text-sm text-slate-400">
+              <p className="py-4 text-center text-sm text-fg-faint">
                 No projects in scope.
               </p>
             </Card>
@@ -504,7 +504,7 @@ export function ProductivityBoard() {
   const weeks = query.data?.weeks ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Productivity"
         subtitle="Weekly throughput across Jira (items, points) and GitHub (PRs, LOC)."
@@ -515,7 +515,7 @@ export function ProductivityBoard() {
       {query.data && (
         <Card className="space-y-5">
           <div>
-            <h4 className="mb-2 text-sm font-medium text-slate-600">
+            <h4 className="mb-2 text-sm font-medium text-fg-muted">
               Items completed per week
             </h4>
             <BarList
@@ -527,11 +527,11 @@ export function ProductivityBoard() {
             />
           </div>
           <div>
-            <h4 className="mb-2 text-sm font-medium text-slate-600">
+            <h4 className="mb-2 text-sm font-medium text-fg-muted">
               PRs merged per week
             </h4>
             <BarList
-              color="bg-emerald-500"
+              color="bg-success"
               rows={weeks.map((w) => ({
                 label: `wk ${w.weekStart}`,
                 value: w.prsMerged,
@@ -539,10 +539,10 @@ export function ProductivityBoard() {
               }))}
             />
           </div>
-          <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
+          <ProvenanceNote>
             Team-level throughput — not an individual ranking. Computed{' '}
             {timeAgo(query.data.computedAt)}.
-          </p>
+          </ProvenanceNote>
         </Card>
       )}
     </div>
@@ -555,7 +555,7 @@ export function EfficiencyBoard() {
   const d = query.data;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Efficiency"
         subtitle="Cycle times plus bi-directional Jira↔GitHub traceability."
@@ -566,7 +566,7 @@ export function EfficiencyBoard() {
       {d && (
         <>
           <Card className="space-y-4">
-            <h4 className="text-sm font-medium text-slate-600">Cycle times</h4>
+            <h4 className="text-sm font-medium text-fg-muted">Cycle times</h4>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <Stat
                 label="PR cycle p50"
@@ -586,7 +586,7 @@ export function EfficiencyBoard() {
             </div>
           </Card>
           <Card className="space-y-4">
-            <h4 className="text-sm font-medium text-slate-600">
+            <h4 className="text-sm font-medium text-fg-muted">
               Traceability (bi-directional)
             </h4>
             <div className="grid grid-cols-2 gap-4">
@@ -609,10 +609,10 @@ export function EfficiencyBoard() {
                 hint={`${d.traceability.prsTotal} PRs referencing work items`}
               />
             </div>
-            <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
+            <ProvenanceNote>
               Derived from the correlation graph (confidence-scored links;
               orphans surfaced, never guessed). Computed {timeAgo(d.computedAt)}.
-            </p>
+            </ProvenanceNote>
           </Card>
         </>
       )}

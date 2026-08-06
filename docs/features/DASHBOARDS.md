@@ -83,6 +83,8 @@ Developer-wise views are labeled activity context; no leaderboards; person-level
 
 Tenant admins also see separate **Users & Roles**, **Configuration**, and **Sync Status** navigation items. They are not metric dashboards and are guarded by the same `admin` role as the admin API; all user-role, tenant-configuration, and sync-status reads/writes remain tenant-scoped. Sync Status (`/admin/sync-status`, [docs/api/README.md §7.1](../api/README.md)) shows collector backfill/ingestion progress and live scheduler tick state, broken out **per source** (GitHub and Jira sync and are configured independently — each has its own `syncIntervalMinutes` on the Configuration screen, default every 4 hours) with a recent run-history table per source — operational observability, not a delivery metric.
 
+**Data-trust chrome is first-class, not muted.** Every board surfaces how trustworthy its numbers are: a `computed {timeAgo}` freshness stamp, a per-row Confidence badge (`MetricRowsTable`: `sampleSize === 0` → No data, `< 5` → Low confidence, else → Healthy), and linkage-coverage callouts (e.g. Configuration's "Collecting" / "Not collecting yet" connection status, Sprint boards' code-linkage %, "(unlinked repos)" bucketing on Project Activity). Visual treatment — token, contrast, and typography — is defined in [DESIGN-SYSTEM.md](../development/DESIGN-SYSTEM.md); `DeveloperActivityBoard`, `SprintHealthBoard`, `SprintRiskBoard`, and `ForecastBoard` currently omit the freshness stamp despite their endpoints returning `computedAt` — a known gap, not an intentional omission.
+
 ## 9. Next increments (ordered)
 
 1. **Assignment admin UI** — per-tenant role→dashboard overrides (persisted), replacing the static default registry.

@@ -1,0 +1,15 @@
+@font-face {
+  font-family: 'InterVariable';
+  src: url('../assets/fonts/inter-variable-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  src: url('../assets/fonts/jetbrains-mono-variable-latin.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}

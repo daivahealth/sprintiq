@@ -1,4 +1,4 @@
-import { Badge } from "../../components/ui";
+import { Badge, TableBodyRow, TableHeadRow } from "../../components/ui";
 import type { BatchMetricsResponse, MetricRow } from "../../lib/api/types";
 import { formatHours } from "../../lib/utils";
 
@@ -15,7 +15,7 @@ export function MetricRowsTable({
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+          <TableHeadRow>
             <th className="py-2 pr-4 font-medium">{groupLabel(groupBy)}</th>
             <th className="py-2 pr-4 font-medium">p50 (median)</th>
             <th className="py-2 pr-4 font-medium">p85</th>
@@ -24,7 +24,7 @@ export function MetricRowsTable({
             <th className="py-2 pr-4 font-medium">Added / Deleted</th>
             <th className="py-2 pr-4 font-medium">Bug Items</th>
             <th className="py-2 font-medium">Confidence</th>
-          </tr>
+          </TableHeadRow>
         </thead>
         <tbody>
           {rows.map((row) => {
@@ -32,11 +32,8 @@ export function MetricRowsTable({
             const loc = row.metrics.loc_added_deleted;
             const bugs = row.metrics.bug_count;
             return (
-              <tr
-                key={row.key}
-                className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
-              >
-                <td className="py-2.5 pr-4 font-medium text-slate-700">
+              <TableBodyRow key={row.key}>
+                <td className="py-2.5 pr-4 font-medium text-fg-secondary">
                   {row.key}
                 </td>
                 <td className="py-2.5 pr-4 tabular-nums">
@@ -61,7 +58,7 @@ export function MetricRowsTable({
                 <td className="py-2.5">
                   <ConfidenceBadge sampleSize={cycle?.sampleSize ?? 0} />
                 </td>
-              </tr>
+              </TableBodyRow>
             );
           })}
         </tbody>

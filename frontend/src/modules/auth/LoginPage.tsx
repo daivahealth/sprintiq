@@ -37,13 +37,13 @@ export function LoginPage() {
     <div className="grid min-h-full place-items-center p-6">
       <Card className="w-full max-w-sm">
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-lg bg-brand text-sm font-bold text-white">
+          <div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-lg bg-brand text-sm font-bold text-on-brand">
             IQ
           </div>
-          <h1 className="text-lg font-semibold text-slate-800">
+          <h1 className="text-lg font-semibold tracking-[-0.01em] text-fg">
             Sign in to SprintIQ
           </h1>
-          <p className="text-sm text-slate-500">Engineering Intelligence Platform</p>
+          <p className="text-sm text-fg-subtle">Engineering Intelligence Platform</p>
         </div>
 
         <form onSubmit={onSubmit} className="space-y-4">
@@ -65,7 +65,7 @@ export function LoginPage() {
           </Field>
 
           {login.isError && (
-            <p className="text-sm text-rose-600">
+            <p className="text-sm text-danger-fg">
               {(login.error as ApiError)?.message ?? 'Login failed'}
             </p>
           )}

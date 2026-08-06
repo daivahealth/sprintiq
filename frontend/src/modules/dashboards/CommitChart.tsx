@@ -29,7 +29,7 @@ export function CommitChart({
 
   if (total === 0) {
     return (
-      <p className="py-6 text-center text-sm text-slate-400">
+      <p className="py-6 text-center text-sm text-fg-faint">
         No commits in this window.
       </p>
     );
@@ -68,14 +68,14 @@ export function CommitChart({
               x2={W - PAD.right}
               y1={yCommits(t)}
               y2={yCommits(t)}
-              className="stroke-slate-100"
+              className="stroke-chart-grid"
               strokeWidth={1}
             />
             <text
               x={PAD.left - 6}
               y={yCommits(t) + 3}
               textAnchor="end"
-              className="fill-slate-400 text-[10px]"
+              className="fill-chart-axis text-[10px]"
             >
               {t}
             </text>
@@ -91,7 +91,7 @@ export function CommitChart({
             width={barW}
             height={PAD.top + plotH - yCommits(d.commits)}
             rx={1.5}
-            className={d.commits > 0 ? 'fill-brand' : 'fill-slate-100'}
+            className={d.commits > 0 ? 'fill-chart-1' : 'fill-chart-empty'}
           >
             <title>
               {d.date} · {d.commits} commit{d.commits === 1 ? '' : 's'} ·{' '}
@@ -104,7 +104,7 @@ export function CommitChart({
         <polyline
           points={locLine}
           fill="none"
-          className="stroke-emerald-500"
+          className="stroke-chart-2"
           strokeWidth={1.5}
           strokeLinejoin="round"
           opacity={0.85}
@@ -118,19 +118,19 @@ export function CommitChart({
               x={x(i) + barW / 2}
               y={H - 8}
               textAnchor="middle"
-              className="fill-slate-400 text-[10px]"
+              className="fill-chart-axis text-[10px]"
             >
               {d.date.slice(5)}
             </text>
           ) : null,
         )}
       </svg>
-      <div className="mt-1 flex items-center gap-4 text-xs text-slate-400">
+      <div className="mt-1 flex items-center gap-4 text-xs text-fg-faint">
         <span className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-sm bg-brand" /> commits
+          <span className="h-2 w-2 rounded-sm bg-chart-1" /> commits
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="h-0.5 w-4 rounded bg-emerald-500" /> changed LOC
+          <span className="h-0.5 w-4 rounded bg-chart-2" /> changed LOC
           (relative scale)
         </span>
         <span className="ml-auto">hover a bar for exact values</span>

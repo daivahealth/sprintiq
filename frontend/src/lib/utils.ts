@@ -1,6 +1,9 @@
-/** Tiny className combiner (avoids a dep). */
-export function cn(...classes: Array<string | false | null | undefined>): string {
-  return classes.filter(Boolean).join(' ');
+import { type ClassValue, clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+/** className combiner with Tailwind conflict resolution (last write wins). */
+export function cn(...classes: ClassValue[]): string {
+  return twMerge(clsx(classes));
 }
 
 /** Human-friendly "time ago" for freshness indicators. */

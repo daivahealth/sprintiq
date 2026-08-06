@@ -1,11 +1,11 @@
 import { useMemo } from "react";
-import { Card, Spinner } from "../../components/ui";
-import { ApiError } from "../../lib/api/client";
+import { Card, ProvenanceNote } from "../../components/ui";
 import { useScope } from "../../lib/scope";
 import { timeAgo } from "../../lib/utils";
 import { MetricRowsTable, tableTitle } from "./MetricRowsTable";
 import { ScopeBar } from "./ScopeBar";
 import { useBatchMetrics } from "./useBatchMetrics";
+import { ErrorCard, LoadingCard } from "./widgets";
 
 /**
  * Delivery dashboard on the scope system (DASHBOARDS.md): pick any combination
@@ -31,41 +31,35 @@ export function DeliveryDashboard() {
   );
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-slate-800">Delivery</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">Delivery</h2>
+        <p className="text-sm text-fg-subtle">
           Flow metrics derived from the correlated delivery graph.
         </p>
       </div>
 
       <ScopeBar />
 
-      {query.isLoading && (
-        <Card className="flex items-center gap-2 text-sm text-slate-500">
-          <Spinner /> Loading metrics…
-        </Card>
-      )}
+      {query.isLoading && <LoadingCard label="Loading metrics…" />}
 
       {query.isError && (
-        <Card className="text-sm text-rose-600">
-          {(query.error as ApiError)?.message ?? "Failed to load metrics."}
-        </Card>
+        <ErrorCard error={query.error} fallback="Failed to load metrics." />
       )}
 
       {query.data && (
         <Card className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-semibold text-slate-800">
+              <h3 className="font-semibold text-fg">
                 {tableTitle(query.data.groupBy)}
               </h3>
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-fg-subtle">
                 delivery, change-volume, and bug context · last {scope.days}d ·
                 grouped by {query.data.groupBy} · sorted by changed LOC
               </p>
             </div>
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-fg-faint">
               {query.data.rows.length} {query.data.groupBy}
               {query.data.rows.length === 1 ? "" : "s"} in scope · computed{" "}
               {timeAgo(query.data.computedAt)}
@@ -73,7 +67,7 @@ export function DeliveryDashboard() {
           </div>
 
           {rows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-400">
+            <p className="py-6 text-center text-sm text-fg-faint">
               No repositories in this scope — widen the filters or check
               collector/linkage coverage.
             </p>
@@ -84,10 +78,10 @@ export function DeliveryDashboard() {
             />
           )}
 
-          <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
+          <ProvenanceNote>
             Source: correlated merged PRs and bug stories (lineage-traced) · LOC
             is change volume/context, not productivity
-          </p>
+          </ProvenanceNote>
         </Card>
       )}
     </div>
