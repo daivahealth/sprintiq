@@ -1,10 +1,10 @@
 import { useEffect, type ReactNode } from "react";
-import { NavLink, Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useMe } from "../../lib/api/useMe";
 import { useAuthStore } from "../../lib/stores/auth-store";
-import { cn } from "../../lib/utils";
 import { useAssignments } from "../../modules/dashboards/useInsights";
-import { Spinner } from "../ui";
+import { ThemeToggle } from "../theme-toggle";
+import { NavItem, Spinner } from "../ui";
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -44,101 +44,62 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-full">
-      <aside className="hidden w-56 shrink-0 flex-col border-r border-slate-200 bg-white p-4 md:flex">
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-border bg-surface p-4 md:flex">
         <div className="mb-1 flex items-center gap-2 px-2">
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-sm font-bold text-white">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-sm font-bold text-on-brand">
             IQ
           </span>
-          <span className="text-lg font-semibold text-slate-800">SprintIQ</span>
+          <span className="text-lg font-semibold tracking-[-0.01em] text-fg">SprintIQ</span>
         </div>
         {/* Active tenant — one tenant's data at a time. */}
-        <p className="mb-6 truncate px-2 text-xs font-medium text-slate-400">
+        <p className="mb-6 truncate px-2 text-xs font-medium text-fg-faint">
           {tenant?.name ?? "—"}
         </p>
         <nav className="space-y-1">
           {nav.map((item) => (
-            <NavLink
+            <NavItem
               key={item.key}
               to={item.path}
               end={item.path === "/"}
               title={item.description}
-              className={({ isActive }) =>
-                cn(
-                  "block rounded-md px-3 py-2 text-sm font-medium",
-                  isActive
-                    ? "bg-brand-fg text-brand"
-                    : "text-slate-600 hover:bg-slate-100",
-                )
-              }
             >
               {item.title}
-            </NavLink>
+            </NavItem>
           ))}
           {assignments.isLoading && (
-            <p className="px-3 py-2 text-xs text-slate-400">Loading…</p>
+            <p className="px-3 py-2 text-xs text-fg-faint">Loading…</p>
           )}
           {isAdmin && (
             <>
-              <NavLink
-                to="/admin/users"
-                className={({ isActive }) =>
-                  cn(
-                    "block rounded-md px-3 py-2 text-sm font-medium",
-                    isActive
-                      ? "bg-brand-fg text-brand"
-                      : "text-slate-600 hover:bg-slate-100",
-                  )
-                }
-              >
-                Users & Roles
-              </NavLink>
-              <NavLink
-                to="/admin/configuration"
-                className={({ isActive }) =>
-                  cn(
-                    "block rounded-md px-3 py-2 text-sm font-medium",
-                    isActive
-                      ? "bg-brand-fg text-brand"
-                      : "text-slate-600 hover:bg-slate-100",
-                  )
-                }
-              >
-                Configuration
-              </NavLink>
-              <NavLink
+              <NavItem to="/admin/users">Users & Roles</NavItem>
+              <NavItem to="/admin/configuration">Configuration</NavItem>
+              <NavItem
                 to="/admin/sync-status"
                 title="Data transfer/backfill progress and live scheduler status"
-                className={({ isActive }) =>
-                  cn(
-                    "block rounded-md px-3 py-2 text-sm font-medium",
-                    isActive
-                      ? "bg-brand-fg text-brand"
-                      : "text-slate-600 hover:bg-slate-100",
-                  )
-                }
               >
                 Sync Status
-              </NavLink>
+              </NavItem>
             </>
           )}
         </nav>
-        <p className="mt-auto px-2 text-xs text-slate-400">
+        <p className="mt-auto px-2 text-xs text-fg-faint">
           Engineering Intelligence
         </p>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
-          <h1 className="text-sm font-medium text-slate-500">
+        <header className="flex items-center justify-between border-b border-border bg-surface px-6 py-3">
+          <h1 className="text-sm font-medium text-fg-subtle">
             {tenant?.name
               ? `${tenant.name} · Engineering Intelligence`
               : "Engineering Intelligence Platform"}
           </h1>
           <div className="flex items-center gap-3">
-            <span className="text-sm text-slate-600">{user?.email}</span>
+            <span className="text-sm text-fg-muted">{user?.email}</span>
+            <ThemeToggle />
             <button
               onClick={logout}
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+              className="rounded-md border border-border-strong px-3 py-1.5 text-sm text-fg-muted hover:bg-muted"
             >
               Sign out
             </button>

@@ -165,7 +165,7 @@ These rules are unique to SprintIQ and must not be violated.
 ## Frontend Rules
 
 - Use existing API client, query hooks, stores, and UI primitives before adding new ones.
-- Keep dashboards aligned to the per-persona designs in the architecture doc; respect shared theme tokens.
+- Keep dashboards aligned to the per-persona designs in the architecture doc; respect shared theme tokens — see [docs/development/DESIGN-SYSTEM.md](docs/development/DESIGN-SYSTEM.md) for the token set, primitive API, and dark-mode/motion conventions. Never reintroduce raw Tailwind palette classes (`slate-*`, `emerald-*`, etc.) in component code.
 - Do not hardcode API paths; use the centralized API client (dashboard BFF).
 - Always surface **data freshness / linkage coverage / metric health** where relevant — users must know how trustworthy a number is.
 - Document any change to:

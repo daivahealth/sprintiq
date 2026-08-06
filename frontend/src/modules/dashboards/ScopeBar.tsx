@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { MultiSelect } from "../../components/multi-select";
+import { FilterBar, SegmentedControl } from "../../components/ui";
 import { TIME_PRESETS, useScope } from "../../lib/scope";
-import { cn } from "../../lib/utils";
 import { useProjects, useRepos } from "./useCatalog";
 
 /**
@@ -17,7 +17,7 @@ export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
   const repos = useRepos(repoSearch, scope.projects);
 
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4">
+    <FilterBar>
       <MultiSelect
         label="Projects"
         options={(projects.data?.items ?? []).map((p) => p.key)}
@@ -46,60 +46,32 @@ export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
         }
       />
 
-      <div>
-        <span className="mb-1 block text-xs font-medium text-slate-500">
-          Time range
-        </span>
-        <div className="flex overflow-hidden rounded-md border border-slate-300">
-          {TIME_PRESETS.map((days) => (
-            <button
-              key={days}
-              type="button"
-              onClick={() => setScope({ days })}
-              className={cn(
-                "px-3 py-2 text-sm",
-                scope.days === days
-                  ? "bg-brand text-white"
-                  : "bg-white text-slate-600 hover:bg-slate-50",
-              )}
-            >
-              {days}d
-            </button>
-          ))}
-        </div>
-      </div>
+      <SegmentedControl
+        label="Time range"
+        value={scope.days}
+        onChange={(days) => setScope({ days })}
+        options={TIME_PRESETS.map((days) => ({ value: days, label: `${days}d` }))}
+      />
 
       {showGroupBy && (
-        <div>
-          <span className="mb-1 block text-xs font-medium text-slate-500">
-            Group by
-          </span>
-          <div className="flex overflow-hidden rounded-md border border-slate-300">
-            {(["repo", "project", "developer", "day"] as const).map((groupBy) => (
-              <button
-                key={groupBy}
-                type="button"
-                onClick={() => setScope({ groupBy })}
-                className={cn(
-                  "px-3 py-2 text-sm capitalize",
-                  scope.groupBy === groupBy
-                    ? "bg-brand text-white"
-                    : "bg-white text-slate-600 hover:bg-slate-50",
-                )}
-              >
-                {groupBy}
-              </button>
-            ))}
-          </div>
-        </div>
+        <SegmentedControl
+          label="Group by"
+          value={scope.groupBy}
+          onChange={(groupBy) => setScope({ groupBy })}
+          optionClassName="capitalize"
+          options={(["repo", "project", "developer", "day"] as const).map((groupBy) => ({
+            value: groupBy,
+            label: groupBy,
+          }))}
+        />
       )}
 
       {repos.data?.crossFiltered && (
-        <p className="pb-2 text-xs text-slate-400">
+        <p className="pb-2 text-xs text-fg-faint">
           Repos narrowed to those linked to the selected projects (delivery
           graph)
         </p>
       )}
-    </div>
+    </FilterBar>
   );
 }

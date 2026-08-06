@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { Button, Card, Spinner } from "../../components/ui";
-import { ApiError } from "../../lib/api/client";
+import { Button, Card, ProvenanceNote } from "../../components/ui";
 import { useScope } from "../../lib/scope";
 import { timeAgo } from "../../lib/utils";
 import { MetricRowsTable } from "./MetricRowsTable";
 import { ScopeBar } from "./ScopeBar";
 import { useBatchMetrics } from "./useBatchMetrics";
+import { ErrorCard, LoadingCard } from "./widgets";
 
 /** Default visible rows before expanding to the full list. */
 const DEFAULT_LIMIT = 20;
@@ -38,40 +38,34 @@ export function TopRepos() {
   }, [query.data?.rows, showAll]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h2 className="text-xl font-semibold text-slate-800">Top Repos</h2>
-        <p className="text-sm text-slate-500">
+        <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">Top Repos</h2>
+        <p className="text-sm text-fg-subtle">
           Repositories ranked by commit/LOC volume.
         </p>
       </div>
 
       <ScopeBar showGroupBy={false} />
 
-      {query.isLoading && (
-        <Card className="flex items-center gap-2 text-sm text-slate-500">
-          <Spinner /> Loading metrics…
-        </Card>
-      )}
+      {query.isLoading && <LoadingCard label="Loading metrics…" />}
 
       {query.isError && (
-        <Card className="text-sm text-rose-600">
-          {(query.error as ApiError)?.message ?? "Failed to load metrics."}
-        </Card>
+        <ErrorCard error={query.error} fallback="Failed to load metrics." />
       )}
 
       {query.data && (
         <Card className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-semibold text-slate-800">
+              <h3 className="font-semibold text-fg">
                 Repository Delivery Rollup
               </h3>
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-fg-subtle">
                 sorted by changed LOC · last {scope.days}d
               </p>
             </div>
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-fg-faint">
               {query.data.rows.length} repo
               {query.data.rows.length === 1 ? "" : "s"} in scope · computed{" "}
               {timeAgo(query.data.computedAt)}
@@ -79,13 +73,13 @@ export function TopRepos() {
           </div>
 
           {query.data.rows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-400">
+            <p className="py-6 text-center text-sm text-fg-faint">
               No repositories in this scope — widen the filters or check
               collector/linkage coverage.
             </p>
           ) : (
             <>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-fg-faint">
                 Showing{" "}
                 {showAll
                   ? `all ${rows.length}`
@@ -94,7 +88,7 @@ export function TopRepos() {
               <MetricRowsTable rows={rows} groupBy="repo" />
               {query.data.rows.length > DEFAULT_LIMIT && (
                 <Button
-                  className="bg-transparent text-brand hover:bg-brand/5"
+                  variant="ghost"
                   onClick={() => setShowAll((v) => !v)}
                 >
                   {showAll
@@ -105,10 +99,10 @@ export function TopRepos() {
             </>
           )}
 
-          <p className="border-t border-slate-100 pt-3 text-xs text-slate-400">
+          <ProvenanceNote>
             Source: correlated merged PRs and bug stories (lineage-traced) · LOC
             is change volume/context, not productivity
-          </p>
+          </ProvenanceNote>
         </Card>
       )}
     </div>

@@ -58,6 +58,8 @@ npm run build    # production build
 npm run lint
 ```
 
+Styling is token-based (semantic Tailwind colors, light/dark via a `dark` class) — see [DESIGN-SYSTEM.md](DESIGN-SYSTEM.md) before adding a new screen, primitive, or color. Fonts (Inter Variable, JetBrains Mono Variable) are self-hosted under `frontend/src/assets/fonts/`, no external font CDN.
+
 ### Full stack (Docker)
 ```bash
 docker compose up -d        # api, db (PostgreSQL + pgvector), redis
@@ -110,4 +112,5 @@ Kubernetes manifests for staging/production live under `deploy/`.
 | Entities, keys, the delivery graph | [`DATA-MODEL.md`](../architecture/DATA-MODEL.md) |
 | Auth / RBAC / tenancy / agent governance | [`security/`](../security/AUTH-AND-RBAC.md) |
 | Feature/metric/rule/agent specs | `docs/features/` (per module) |
+| Frontend tokens, primitives, dark mode, motion | [`DESIGN-SYSTEM.md`](DESIGN-SYSTEM.md) |
 | Deploy / infra | `docs/deployment/` |

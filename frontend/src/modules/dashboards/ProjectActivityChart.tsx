@@ -1,4 +1,4 @@
-import { istDayAxis } from '../../lib/utils';
+import { cn, istDayAxis } from '../../lib/utils';
 import type { ProjectActivityRow } from './useInsights';
 
 /**
@@ -13,20 +13,29 @@ const H = 200;
 const PAD = { top: 12, right: 8, bottom: 26, left: 30 };
 const MAX_SERIES = 6;
 const COLORS = [
-  'stroke-brand',
-  'stroke-emerald-500',
-  'stroke-amber-500',
-  'stroke-rose-500',
-  'stroke-indigo-500',
-  'stroke-cyan-500',
+  'stroke-chart-1',
+  'stroke-chart-2',
+  'stroke-chart-3',
+  'stroke-chart-4',
+  'stroke-chart-5',
+  'stroke-chart-6',
 ];
 const DOT_COLORS = [
-  'fill-brand',
-  'fill-emerald-500',
-  'fill-amber-500',
-  'fill-rose-500',
-  'fill-indigo-500',
-  'fill-cyan-500',
+  'fill-chart-1',
+  'fill-chart-2',
+  'fill-chart-3',
+  'fill-chart-4',
+  'fill-chart-5',
+  'fill-chart-6',
+];
+/** Same series/index mapping as DOT_COLORS, but `bg-*` for the HTML legend swatches (`fill-*` has no effect outside SVG). */
+const LEGEND_DOT_COLORS = [
+  'bg-chart-1',
+  'bg-chart-2',
+  'bg-chart-3',
+  'bg-chart-4',
+  'bg-chart-5',
+  'bg-chart-6',
 ];
 
 export function ProjectActivityChart({
@@ -40,7 +49,7 @@ export function ProjectActivityChart({
 
   if (series.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-slate-400">
+      <p className="py-6 text-center text-sm text-fg-faint">
         No commits in this window.
       </p>
     );
@@ -78,14 +87,14 @@ export function ProjectActivityChart({
               x2={W - PAD.right}
               y1={y(t)}
               y2={y(t)}
-              className="stroke-slate-100"
+              className="stroke-chart-grid"
               strokeWidth={1}
             />
             <text
               x={PAD.left - 6}
               y={y(t) + 3}
               textAnchor="end"
-              className="fill-slate-400 text-[10px]"
+              className="fill-chart-axis text-[10px]"
             >
               {t}
             </text>
@@ -134,18 +143,18 @@ export function ProjectActivityChart({
               x={x(i)}
               y={H - 8}
               textAnchor="middle"
-              className="fill-slate-400 text-[10px]"
+              className="fill-chart-axis text-[10px]"
             >
               {date.slice(5)}
             </text>
           ) : null,
         )}
       </svg>
-      <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+      <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-fg-faint">
         {series.map((r, i) => (
           <span key={r.projectKey} className="flex items-center gap-1.5">
             <span
-              className={`h-2 w-2 rounded-full ${DOT_COLORS[i % DOT_COLORS.length]}`}
+              className={cn('h-2 w-2 rounded-full', LEGEND_DOT_COLORS[i % LEGEND_DOT_COLORS.length])}
             />
             {r.projectKey}
           </span>

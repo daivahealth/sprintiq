@@ -1,9 +1,121 @@
+@import './styles/fonts.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Tokens are space-separated RGB channels (not hex) so Tailwind's
+ * `rgb(var(--x) / <alpha-value>)` pattern can apply opacity modifiers
+ * (e.g. `bg-brand/5`, `ring-brand/20`) — a hex value here would silently
+ * break every one of those utilities.
+ */
 :root {
   color-scheme: light;
+
+  --brand: 91 87 214;
+  --brand-fg: 238 237 251;
+  --brand-muted: 110 106 224;
+  --on-brand: 255 255 255;
+
+  --canvas: 248 250 252;
+  --surface: 255 255 255;
+  --popover: 255 255 255;
+  --subtle: 248 250 252;
+  --muted: 241 245 249;
+  --muted-strong: 226 232 240;
+
+  --fg: 30 41 59;
+  --fg-secondary: 51 65 85;
+  --fg-muted: 71 85 105;
+  --fg-subtle: 100 116 139;
+  --fg-faint: 148 163 184;
+
+  --border: 226 232 240;
+  --border-subtle: 241 245 249;
+  --border-strong: 203 213 225;
+
+  --success: 16 185 129;
+  --success-fg: 4 120 87;
+  --success-bg: 209 250 229;
+  --success-border: 167 243 208;
+
+  --warning: 245 158 11;
+  --warning-fg: 180 83 9;
+  --warning-bg: 254 243 199;
+  --warning-border: 253 230 138;
+
+  --danger: 244 63 94;
+  --danger-fg: 190 18 60;
+  --danger-bg: 255 228 230;
+  --danger-border: 254 205 211;
+  --danger-solid: 225 29 72;
+  --danger-solid-hover: 190 18 60;
+  --on-danger: 255 255 255;
+
+  --chart-1: 91 87 214;
+  --chart-2: 16 185 129;
+  --chart-3: 245 158 11;
+  --chart-4: 244 63 94;
+  --chart-5: 59 130 246;
+  --chart-6: 6 182 212;
+  --chart-grid: 241 245 249;
+  --chart-axis: 148 163 184;
+  --chart-empty: 241 245 249;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --brand: 139 135 240;
+  --brand-fg: 33 30 74;
+  --brand-muted: 166 162 245;
+  --on-brand: 18 19 43;
+
+  --canvas: 11 18 32;
+  --surface: 19 24 38;
+  --popover: 30 41 59;
+  --subtle: 11 18 32;
+  --muted: 23 32 51;
+  --muted-strong: 51 65 85;
+
+  --fg: 241 245 249;
+  --fg-secondary: 226 232 240;
+  --fg-muted: 203 213 225;
+  --fg-subtle: 168 179 196;
+  --fg-faint: 141 153 171;
+
+  --border: 42 53 75;
+  --border-subtle: 26 34 50;
+  --border-strong: 61 74 99;
+
+  --success: 16 185 129;
+  --success-fg: 110 231 183;
+  --success-bg: 2 44 34;
+  --success-border: 6 95 70;
+
+  --warning: 245 158 11;
+  --warning-fg: 252 211 77;
+  --warning-bg: 69 26 3;
+  --warning-border: 146 64 14;
+
+  --danger: 244 63 94;
+  --danger-fg: 253 164 175;
+  --danger-bg: 76 5 25;
+  --danger-border: 159 18 57;
+  --danger-solid: 225 29 72;
+  --danger-solid-hover: 244 63 94;
+  --on-danger: 255 255 255;
+
+  --chart-1: 139 135 240;
+  --chart-2: 52 211 153;
+  --chart-3: 251 191 36;
+  --chart-4: 251 113 133;
+  --chart-5: 96 165 250;
+  --chart-6: 34 211 238;
+  --chart-grid: 42 53 75;
+  --chart-axis: 110 122 142;
+  --chart-empty: 48 58 79;
 }
 
 html,
@@ -13,5 +125,5 @@ body,
 }
 
 body {
-  @apply bg-slate-50 text-slate-800 antialiased;
+  @apply bg-canvas text-fg antialiased;
 }

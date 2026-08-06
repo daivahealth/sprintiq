@@ -303,10 +303,10 @@ export function AdminConfigurationsPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold text-slate-900">
+          <h2 className="text-2xl font-semibold tracking-[-0.02em] text-fg">
             Configuration
           </h2>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-fg-subtle">
             Tenant-scoped integration, AI, metric, and policy settings
           </p>
         </div>
@@ -315,7 +315,7 @@ export function AdminConfigurationsPage() {
 
       {catalog.isError || configs.isError ? (
         <Card>
-          <p className="text-sm text-rose-700">
+          <p className="text-sm text-danger-fg">
             Configuration data could not be loaded.
           </p>
         </Card>
@@ -335,7 +335,7 @@ export function AdminConfigurationsPage() {
                 className={
                   selectedSection
                     ? 'flex w-full items-center justify-between rounded-md bg-brand-fg px-3 py-2 text-left text-sm font-medium text-brand'
-                    : 'flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-slate-600 hover:bg-slate-100'
+                    : 'flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-fg-muted hover:bg-muted'
                 }
               >
                 <span className="flex items-center gap-2">
@@ -343,7 +343,7 @@ export function AdminConfigurationsPage() {
                   {dirty ? (
                     <span
                       title="Unsaved changes"
-                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
                     />
                   ) : null}
                 </span>
@@ -361,10 +361,10 @@ export function AdminConfigurationsPage() {
           <Card className="space-y-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h3 className="text-lg font-semibold text-slate-900">
+                <h3 className="text-lg font-semibold text-fg">
                   {selected.label}
                 </h3>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-fg-subtle">
                   {selected.description}
                 </p>
               </div>
@@ -374,7 +374,7 @@ export function AdminConfigurationsPage() {
                 ) : (
                   <Badge>Not configured</Badge>
                 )}
-                <label className="flex items-center gap-2 rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600">
+                <label className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs font-medium text-fg-muted">
                   <input
                     type="checkbox"
                     checked={(statusDrafts[selected.namespace] ?? 'active') === 'active'}
@@ -384,7 +384,7 @@ export function AdminConfigurationsPage() {
                         [selected.namespace]: event.target.checked ? 'active' : 'disabled',
                       }))
                     }
-                    className="h-3.5 w-3.5 rounded border-slate-300"
+                    className="h-3.5 w-3.5 rounded border-border-strong"
                   />
                   Enabled
                 </label>
@@ -404,7 +404,7 @@ export function AdminConfigurationsPage() {
                   return (
                     <label
                       key={field.key}
-                      className="flex min-h-[42px] items-center gap-3 rounded-md border border-slate-200 px-3 py-2"
+                      className="flex min-h-[42px] items-center gap-3 rounded-md border border-border px-3 py-2"
                     >
                       <input
                         type="checkbox"
@@ -412,9 +412,9 @@ export function AdminConfigurationsPage() {
                         onChange={(event) =>
                           updateDraft(selected, field, event.target.checked)
                         }
-                        className="h-4 w-4 rounded border-slate-300"
+                        className="h-4 w-4 rounded border-border-strong"
                       />
-                      <span className="text-sm font-medium text-slate-700">
+                      <span className="text-sm font-medium text-fg-secondary">
                         {field.label}
                       </span>
                     </label>
@@ -439,31 +439,31 @@ export function AdminConfigurationsPage() {
                           }
                           className={
                             isSecretRef
-                              ? `font-mono ${error ? 'border-rose-400' : ''}`
+                              ? `font-mono ${error ? 'border-danger' : ''}`
                               : error
-                                ? 'border-rose-400'
+                                ? 'border-danger'
                                 : ''
                           }
                         />
                         {isSecretRef ? <Badge>ENV VAR</Badge> : null}
                       </div>
                       {error ? (
-                        <p className="text-xs text-rose-600">{error}</p>
+                        <p className="text-xs text-danger-fg">{error}</p>
                       ) : isSecretRef ? (
-                        <p className="text-xs text-slate-400">
+                        <p className="text-xs text-fg-faint">
                           {catalog.data?.secretRefHint}
                         </p>
                       ) : field.patternHint ? (
-                        <p className="text-xs text-slate-400">{field.patternHint}</p>
+                        <p className="text-xs text-fg-faint">{field.patternHint}</p>
                       ) : field.helper ? (
-                        <p className="text-xs text-slate-400">{field.helper}</p>
+                        <p className="text-xs text-fg-faint">{field.helper}</p>
                       ) : null}
                     </Field>
 
                     {isSecretRef ? (
-                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 md:col-span-2">
+                      <div className="rounded-md border border-border bg-subtle p-3 md:col-span-2">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-medium text-slate-500">
+                          <span className="text-xs font-medium text-fg-subtle">
                             Secret value for {field.label}
                           </span>
                           {isStoredSecurely ? (
@@ -473,7 +473,7 @@ export function AdminConfigurationsPage() {
                           )}
                         </div>
                         {catalog.data?.secretsStoreEnabled === false ? (
-                          <p className="mt-2 text-xs text-amber-600">
+                          <p className="mt-2 text-xs text-warning-fg">
                             Ask an operator to set SECRETS_ENCRYPTION_KEY on the server to
                             paste secrets here — for now, use an environment variable
                             matching the ref name above.
@@ -499,9 +499,10 @@ export function AdminConfigurationsPage() {
                             {isStoredSecurely ? (
                               <Button
                                 type="button"
+                                variant="secondary"
                                 onClick={() => markSecretForClear(selected, field)}
                                 disabled={isMarkedForClear}
-                                className="whitespace-nowrap bg-slate-100 text-slate-700 hover:bg-slate-200"
+                                className="whitespace-nowrap"
                               >
                                 {isMarkedForClear ? 'Will clear' : 'Clear'}
                               </Button>
@@ -515,16 +516,16 @@ export function AdminConfigurationsPage() {
               })}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
-              <p className="text-xs text-slate-500">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+              <p className="text-xs text-fg-subtle">
                 Store secret manager references only, never raw tokens.
               </p>
               <div className="flex items-center gap-2">
                 {isDirty(selected.namespace) ? (
                   <Button
                     type="button"
+                    variant="secondary"
                     onClick={() => handleReset(selected)}
-                    className="bg-slate-100 text-slate-700 hover:bg-slate-200"
                   >
                     Reset
                   </Button>
@@ -540,15 +541,15 @@ export function AdminConfigurationsPage() {
             </div>
 
             {saveErrors[selected.namespace] ? (
-              <div className="space-y-2 rounded-md border border-rose-200 bg-rose-50 p-3">
+              <div className="space-y-2 rounded-md border border-danger-border bg-danger-bg p-3">
                 {saveErrors[selected.namespace]?.details?.length ? (
-                  <ul className="list-disc space-y-1 pl-4 text-sm text-rose-700">
+                  <ul className="list-disc space-y-1 pl-4 text-sm text-danger-fg">
                     {saveErrors[selected.namespace]?.details?.map((message) => (
                       <li key={message}>{message}</li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="text-sm text-rose-700">
+                  <p className="text-sm text-danger-fg">
                     {saveErrors[selected.namespace]?.message ??
                       'Configuration could not be saved.'}
                   </p>
@@ -556,8 +557,8 @@ export function AdminConfigurationsPage() {
                 {saveErrors[selected.namespace]?.status === 409 ? (
                   <Button
                     type="button"
+                    variant="destructive"
                     onClick={() => handleReloadLatest(selected)}
-                    className="bg-rose-600 hover:bg-rose-700"
                   >
                     Reload latest and discard local edits
                   </Button>
@@ -590,7 +591,7 @@ function ConnectionLinkageNotice({
 
   if (!connection.linked) {
     return (
-      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+      <div className="rounded-md border border-warning-border bg-warning-bg px-3 py-2 text-sm text-warning-fg">
         <span className="font-medium">Not collecting yet.</span>{' '}
         {linkingHint(namespace)}
       </div>
@@ -599,7 +600,7 @@ function ConnectionLinkageNotice({
 
   if (connection.status !== 'active') {
     return (
-      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+      <div className="rounded-md border border-border bg-subtle px-3 py-2 text-sm text-fg-muted">
         <span className="font-medium">Linked, but disabled.</span> Enable this
         section and save to resume collection.
       </div>
@@ -607,7 +608,7 @@ function ConnectionLinkageNotice({
   }
 
   return (
-    <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+    <div className="rounded-md border border-success-border bg-success-bg px-3 py-2 text-sm text-success-fg">
       <span className="font-medium">Collecting.</span>{' '}
       {connection.lastSyncAt
         ? `Last synced ${timeAgo(connection.lastSyncAt)}.`

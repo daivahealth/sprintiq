@@ -1,3 +1,5 @@
+import { AnimatePresence, motion } from 'framer-motion';
+import { ChevronDown } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '../lib/utils';
 import { Spinner } from './ui';
@@ -69,70 +71,76 @@ export function MultiSelect({
 
   return (
     <div ref={rootRef} className="relative">
-      <span className="mb-1 block text-xs font-medium text-slate-500">
+      <span className="mb-1 block text-xs font-medium text-fg-subtle">
         {label}
       </span>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'flex w-48 items-center justify-between rounded-md border bg-white px-3 py-2 text-sm',
-          open ? 'border-brand ring-2 ring-brand/20' : 'border-slate-300',
+          'flex w-48 items-center justify-between rounded-md border bg-surface px-3 py-2 text-sm text-fg',
+          open ? 'border-brand ring-2 ring-brand/20' : 'border-border-strong',
         )}
       >
-        <span className={cn('truncate', selected.length === 0 && 'text-slate-400')}>
+        <span className={cn('truncate', selected.length === 0 && 'text-fg-faint')}>
           {selected.length === 0
             ? `All ${label.toLowerCase()}`
             : selected.length === 1
               ? selected[0]
               : `${selected.length} selected`}
         </span>
-        <svg className="ml-2 h-4 w-4 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
-          <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.1l3.71-3.87a.75.75 0 111.08 1.04l-4.25 4.43a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" clipRule="evenodd" />
-        </svg>
+        <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-fg-faint" />
       </button>
 
-      {open && (
-        <div className="absolute z-20 mt-1 w-72 rounded-lg border border-slate-200 bg-white shadow-lg">
-          <div className="flex items-center gap-2 border-b border-slate-100 p-2">
-            <input
-              autoFocus
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={placeholder}
-              className="w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand"
-            />
-            {loading && <Spinner />}
-          </div>
-
-          <ul className="max-h-64 overflow-auto py-1 text-sm">
-            {selected.map((value) => (
-              <Option key={value} value={value} checked onToggle={toggle} />
-            ))}
-            {selected.length > 0 && unselected.length > 0 && (
-              <li className="my-1 border-t border-slate-100" />
-            )}
-            {unselected.map((value) => (
-              <Option key={value} value={value} checked={false} onToggle={toggle} />
-            ))}
-            {selected.length === 0 && options.length === 0 && !loading && (
-              <li className="px-3 py-2 text-slate-400">{emptyText}</li>
-            )}
-          </ul>
-
-          {selected.length > 0 && (
-            <div className="border-t border-slate-100 p-2">
-              <button
-                type="button"
-                onClick={() => onChange([])}
-                className="text-xs font-medium text-brand hover:underline"
-              >
-                Clear selection
-              </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: -4 }}
+            transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
+            className="absolute z-20 mt-1 w-72 rounded-lg border border-border bg-popover shadow-lg"
+          >
+            <div className="flex items-center gap-2 border-b border-border-subtle p-2">
+              <input
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={placeholder}
+                className="w-full rounded-md border border-border px-2 py-1.5 text-sm text-fg outline-none focus:border-brand"
+              />
+              {loading && <Spinner />}
             </div>
-          )}
-        </div>
-      )}
+
+            <ul className="max-h-64 overflow-auto py-1 text-sm">
+              {selected.map((value) => (
+                <Option key={value} value={value} checked onToggle={toggle} />
+              ))}
+              {selected.length > 0 && unselected.length > 0 && (
+                <li className="my-1 border-t border-border-subtle" />
+              )}
+              {unselected.map((value) => (
+                <Option key={value} value={value} checked={false} onToggle={toggle} />
+              ))}
+              {selected.length === 0 && options.length === 0 && !loading && (
+                <li className="px-3 py-2 text-fg-faint">{emptyText}</li>
+              )}
+            </ul>
+
+            {selected.length > 0 && (
+              <div className="border-t border-border-subtle p-2">
+                <button
+                  type="button"
+                  onClick={() => onChange([])}
+                  className="text-xs font-medium text-brand hover:underline"
+                >
+                  Clear selection
+                </button>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -148,12 +156,12 @@ function Option({
 }) {
   return (
     <li>
-      <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-slate-50">
+      <label className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-subtle">
         <input
           type="checkbox"
           checked={checked}
           onChange={() => onToggle(value)}
-          className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand/30"
+          className="h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/30"
         />
         <span className="truncate">{value}</span>
       </label>
