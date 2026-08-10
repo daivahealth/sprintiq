@@ -19,6 +19,18 @@ import { BASE_SEARCH_FIELDS, JiraClient, JiraSearchIssue } from './jira.client';
 /** Jira Software's Sprint field always carries this custom-field schema type, regardless of its per-site numeric id. */
 const SPRINT_FIELD_CUSTOM_TYPE = 'com.pyxis.greenhopper.jira:gh-sprint';
 
+/**
+ * Story points have no single stable identity on Jira Cloud: team-managed
+ * projects use "Story point estimate" (`jsw-story-points`), classic projects a
+ * plain numeric custom field conventionally named "Story Points". A site with
+ * both — the common case for an org that migrated — has one populated and the
+ * other permanently empty, and WHICH one varies per project. So we resolve
+ * every plausible candidate and read the first one actually set on each issue,
+ * rather than betting the whole integration on picking correctly up front.
+ */
+const STORY_POINTS_CUSTOM_TYPE = 'com.pyxis.greenhopper.jira:jsw-story-points';
+const STORY_POINTS_FIELD_NAMES = ['story points', 'story point estimate'];
+
 const TYPE_MAP: Record<string, string> = {
   Story: 'story',
   Bug: 'bug',
@@ -29,9 +41,19 @@ const TYPE_MAP: Record<string, string> = {
   Subtask: 'subtask',
 };
 
-/** Bounds how much work one scheduler tick does — large projects catch up over several ticks. */
-const PAGE_BUDGET_PER_TICK = 3;
-const PAGE_SIZE = 50;
+/**
+ * Bounds how much work one scheduler tick does — large projects catch up over
+ * several ticks.
+ *
+ * Jira tolerates a far bigger budget than GitHub does: a search page returns
+ * whole issues, so there is no per-issue detail call (contrast GitHub's
+ * COMMIT/PR_ENRICH_BUDGET_PER_TICK, which is what really bounds a tick there).
+ * One tick is therefore ~20 requests, not ~2000, and a 90-day window for a
+ * busy site (~12k issues) catches up in a handful of ticks instead of hours.
+ */
+const PAGE_BUDGET_PER_TICK = 20;
+/** Jira Cloud's `/search/jql` hard-caps `maxResults` at 100 — asking for more silently returns 100. */
+const PAGE_SIZE = 100;
 /** Default historical lookback when a connection doesn't set `config.backfillSince`. */
 const DEFAULT_BACKFILL_DAYS = 90;
 
@@ -78,13 +100,15 @@ export class JiraCollector extends BaseSourceCollector {
         ? EventTypes.PLANNING_STORY_CREATED
         : EventTypes.PLANNING_STORY_UPDATED;
 
-    const sprintFieldId = (
-      connection.config as { sprintFieldId?: string | null } | null
-    )?.sprintFieldId;
+    const cachedFields = connection.config as {
+      sprintFieldId?: string | null;
+      storyPointsFieldIds?: string[];
+    } | null;
     const payload = this.mapIssueToPayload(
       issue.key,
       issue.fields ?? {},
-      sprintFieldId,
+      cachedFields?.sprintFieldId,
+      cachedFields?.storyPointsFieldIds ?? [],
     );
     const occurredAt: string = issue.fields?.updated ?? this.nowIso();
 
@@ -119,6 +143,8 @@ export class JiraCollector extends BaseSourceCollector {
       backfillSince?: string;
       /** Site-specific custom-field id for Sprint; `null` once resolved as absent. */
       sprintFieldId?: string | null;
+      /** Site-specific story-point custom-field ids, best-first; `[]` once resolved as absent. */
+      storyPointsFieldIds?: string[];
     };
     if (!config.siteUrl || !config.email) {
       return [];
@@ -142,21 +168,20 @@ export class JiraCollector extends BaseSourceCollector {
       return [];
     }
 
-    const sprintFieldId = await this.resolveSprintFieldId(
-      connection,
-      config,
-      apiToken,
-    );
-    const fields = sprintFieldId
-      ? [...BASE_SEARCH_FIELDS, sprintFieldId]
-      : BASE_SEARCH_FIELDS;
+    const { sprintFieldId, storyPointsFieldIds } =
+      await this.resolveCustomFieldIds(connection, config, apiToken);
+    const fields = [
+      ...BASE_SEARCH_FIELDS,
+      ...(sprintFieldId ? [sprintFieldId] : []),
+      ...storyPointsFieldIds,
+    ];
 
     const cursors: JiraSyncCursors = {
       ...((connection.syncCursors as JiraSyncCursors | null) ?? {}),
     };
     const floor = cursors.updatedCursor
       ? new Date(cursors.updatedCursor)
-      : resolveBackfillFloor(config.backfillSince);
+      : await this.resolveBackfillFloor(connection, config);
     const mode: CollectionMode = cursors.updatedCursor ? 'poll' : 'backfill';
 
     const jqlParts = [`updated >= "${toJqlDate(floor)}"`];
@@ -182,9 +207,26 @@ export class JiraCollector extends BaseSourceCollector {
         rateLimitedUntil = page.rateLimitedUntil;
         break;
       }
+      if (page.failed) {
+        // The resume request itself failed (e.g. a `pageToken` rejected as
+        // expired) — this must never be read as "no more results." Stop the
+        // tick and resume from the same `pageToken` next time (handled by
+        // the "budget exhausted" branch below, since `pageToken` here still
+        // holds the token that was just attempted, not `page.nextPageToken`).
+        this.logger.error(
+          `Jira search failed for connection ${connection.id} — will retry the same page next tick instead of concluding the backfill is complete.`,
+        );
+        break;
+      }
       for (const issue of page.issues) {
         envelopes.push(
-          this.fromPolledIssue(connection, issue, mode, sprintFieldId),
+          this.fromPolledIssue(
+            connection,
+            issue,
+            mode,
+            sprintFieldId,
+            storyPointsFieldIds,
+          ),
         );
         const updated = issue.fields?.updated;
         if (typeof updated === 'string') {
@@ -232,44 +274,126 @@ export class JiraCollector extends BaseSourceCollector {
 
   /**
    * Resolves and caches (on `connection.config`) the site-specific custom-
-   * field id backing Sprint — Jira Software always exposes it via the
-   * `com.pyxis.greenhopper.jira:gh-sprint` schema type, but its numeric id
-   * (e.g. `customfield_10020`) differs per site, so `"sprint"` as a literal
-   * field id never matches on a real Jira Cloud instance.
+   * field ids backing Sprint and Story Points. Both differ per site (e.g.
+   * `customfield_10020`), so literal ids like `"sprint"` or `"storyPoints"`
+   * never match on a real Jira Cloud instance.
+   *
+   * Crucially, a FAILED field lookup caches nothing. `getFields` returns
+   * `null` on failure (vs `[]` for a genuinely empty catalog) precisely so a
+   * transient 401/429 can't be mistaken for "this site has no sprint field"
+   * and cached permanently — which would silently disable sprint and
+   * story-point collection forever, with no error surfaced anywhere.
    */
-  private async resolveSprintFieldId(
+  private async resolveCustomFieldIds(
     connection: Connection,
-    config: { siteUrl?: string; email?: string; sprintFieldId?: string | null },
+    config: {
+      siteUrl?: string;
+      email?: string;
+      sprintFieldId?: string | null;
+      storyPointsFieldIds?: string[];
+    },
     apiToken: string,
-  ): Promise<string | null> {
-    if (config.sprintFieldId !== undefined) {
-      return config.sprintFieldId;
+  ): Promise<{ sprintFieldId: string | null; storyPointsFieldIds: string[] }> {
+    const known = {
+      sprintFieldId: config.sprintFieldId ?? null,
+      storyPointsFieldIds: config.storyPointsFieldIds ?? [],
+    };
+    if (
+      config.sprintFieldId !== undefined &&
+      config.storyPointsFieldIds !== undefined
+    ) {
+      return known;
     }
+
     const allFields = await this.client.getFields(
       config.siteUrl as string,
       config.email as string,
       apiToken,
     );
-    const candidates = allFields.filter(
+    if (allFields === null) {
+      this.logger.warn(
+        `Jira field lookup failed for ${config.siteUrl} — leaving custom-field ids unresolved and retrying next tick rather than caching "not present".`,
+      );
+      return known;
+    }
+
+    const sprintCandidates = allFields.filter(
       (f) => f.schema?.custom === SPRINT_FIELD_CUSTOM_TYPE,
     );
-    const sprintField =
-      candidates[0] ?? allFields.find((f) => f.name.toLowerCase() === 'sprint');
-    const resolved = sprintField?.id ?? null;
+    const sprintFieldId =
+      config.sprintFieldId !== undefined
+        ? config.sprintFieldId
+        : (sprintCandidates[0]?.id ??
+          allFields.find((f) => f.name?.toLowerCase() === 'sprint')?.id ??
+          null);
+
+    // Every plausible story-point field, deduped and best-first: the typed
+    // team-managed one, then any conventionally-named numeric field.
+    const storyPointsFieldIds =
+      config.storyPointsFieldIds !== undefined
+        ? config.storyPointsFieldIds
+        : [
+            ...new Set(
+              [
+                ...allFields.filter(
+                  (f) => f.schema?.custom === STORY_POINTS_CUSTOM_TYPE,
+                ),
+                ...allFields.filter((f) =>
+                  STORY_POINTS_FIELD_NAMES.includes(
+                    f.name?.toLowerCase() ?? '',
+                  ),
+                ),
+              ].map((f) => f.id),
+            ),
+          ];
+
     this.logger.log(
-      `Resolved Jira Sprint field for ${config.siteUrl}: ${resolved ?? 'none found'}` +
-        (candidates.length > 1
-          ? ` (${candidates.length} sprint-type fields present: ${candidates.map((f) => f.id).join(', ')} — using the first)`
+      `Resolved Jira custom fields for ${config.siteUrl}: sprint=${sprintFieldId ?? 'none found'}, storyPoints=[${storyPointsFieldIds.join(', ') || 'none found'}]` +
+        (sprintCandidates.length > 1
+          ? ` (${sprintCandidates.length} sprint-type fields present — using the first)`
           : ''),
     );
     await this.connections.updateConfig(connection.id, {
       config: {
         ...((connection.config as Record<string, unknown>) ?? {}),
-        sprintFieldId: resolved,
+        sprintFieldId,
+        storyPointsFieldIds,
       },
       status: connection.status,
     });
-    return resolved;
+    return { sprintFieldId, storyPointsFieldIds };
+  }
+
+  /**
+   * Pins the backfill floor ONCE, on the first poll of a backfill pass, and
+   * caches it onto `connection.config.backfillSince` — same self-heal shape
+   * as `resolveSprintFieldId` above. Without this, an unset `backfillSince`
+   * would recompute `now - N days` fresh on every tick, drifting the JQL
+   * `updated >=` literal between ticks; Jira Cloud's `nextPageToken` is bound
+   * to the exact JQL text that produced it, so a resumed page fetched under a
+   * drifted floor gets rejected — see the `page.failed` handling in `poll()`.
+   */
+  private async resolveBackfillFloor(
+    connection: Connection,
+    config: { backfillSince?: string },
+  ): Promise<Date> {
+    if (config.backfillSince) {
+      const parsed = new Date(config.backfillSince);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+    const floor = new Date(
+      Date.now() - DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000,
+    );
+    await this.connections.updateConfig(connection.id, {
+      config: {
+        ...((connection.config as Record<string, unknown>) ?? {}),
+        backfillSince: floor.toISOString(),
+      },
+      status: connection.status,
+    });
+    return floor;
   }
 
   private fromPolledIssue(
@@ -277,11 +401,13 @@ export class JiraCollector extends BaseSourceCollector {
     issue: JiraSearchIssue,
     mode: CollectionMode,
     sprintFieldId?: string | null,
+    storyPointsFieldIds: string[] = [],
   ): CanonicalEnvelope {
     const payload = this.mapIssueToPayload(
       issue.key,
       issue.fields ?? {},
       sprintFieldId,
+      storyPointsFieldIds,
     );
     const occurredAt =
       typeof issue.fields?.updated === 'string'
@@ -328,6 +454,7 @@ export class JiraCollector extends BaseSourceCollector {
     issueKey: string,
     fields: Record<string, unknown>,
     sprintFieldId?: string | null,
+    storyPointsFieldIds: string[] = [],
   ): PlanningStoryPayload {
     const project = fields.project as { key?: string } | undefined;
     const issuetype = fields.issuetype as
@@ -363,8 +490,7 @@ export class JiraCollector extends BaseSourceCollector {
       projectKey,
       type,
       status: status?.name ?? 'unknown',
-      storyPoints:
-        typeof fields.storyPoints === 'number' ? fields.storyPoints : undefined,
+      storyPoints: firstNumeric(fields, storyPointsFieldIds),
       title: typeof fields.summary === 'string' ? fields.summary : '',
       epicKey,
       parentKey,
@@ -385,14 +511,22 @@ export class JiraCollector extends BaseSourceCollector {
   }
 }
 
-function resolveBackfillFloor(backfillSince: string | undefined): Date {
-  if (backfillSince) {
-    const parsed = new Date(backfillSince);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed;
+/**
+ * First numeric value among the candidate field ids — a site can expose more
+ * than one story-point field (classic vs team-managed) with only one of them
+ * actually populated, and which one varies per project.
+ */
+function firstNumeric(
+  fields: Record<string, unknown>,
+  fieldIds: string[],
+): number | undefined {
+  for (const id of fieldIds) {
+    const value = fields[id];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
     }
   }
-  return new Date(Date.now() - DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000);
+  return undefined;
 }
 
 /** JQL date-time literal format: `yyyy/MM/dd HH:mm`, evaluated in the Jira instance's timezone. */

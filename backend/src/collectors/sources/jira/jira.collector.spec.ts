@@ -17,6 +17,7 @@ function baseConnection(overrides: Partial<Connection> = {}): Connection {
       // Pre-resolved as "no such field" by default so existing tests don't
       // need to stub `client.getFields` — see the dedicated resolution tests.
       sprintFieldId: null,
+      storyPointsFieldIds: [],
     },
     secretRef: 'JIRA_API_TOKEN',
     webhookSecretRef: null,
@@ -127,12 +128,13 @@ describe('JiraCollector.poll', () => {
     expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
       pageToken: 'tok_100',
     });
-    // 3 page-budget fetches, each continuing from the previous response's nextPageToken
-    expect(client.searchIssues.mock.calls.map((c) => c[3].pageToken)).toEqual([
-      'tok_100',
-      'tok_next',
-      'tok_next',
-    ]);
+    // Keeps paging within the tick, each fetch continuing from the previous
+    // response's nextPageToken. Asserted against the shape rather than a fixed
+    // count so tuning PAGE_BUDGET_PER_TICK doesn't break this test.
+    const tokens = client.searchIssues.mock.calls.map((c) => c[3].pageToken);
+    expect(tokens.length).toBeGreaterThan(1);
+    expect(tokens[0]).toBe('tok_100');
+    expect(tokens.slice(1).every((t) => t === 'tok_next')).toBe(true);
 
     const [, cursors] = connections.setSyncCursors.mock.calls[0] as [
       string,
@@ -140,6 +142,73 @@ describe('JiraCollector.poll', () => {
     ];
     // budget exhausted mid-pass — resumes from the last token next tick
     expect(cursors.resumePageToken).toBe('tok_next');
+  });
+
+  it('pins backfillSince onto connection.config on the first poll of a backfill pass, then reuses the pinned value instead of recomputing "now" on later polls', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    const before = Date.now();
+    await collector.poll(baseConnection()); // default config has no backfillSince yet
+    const after = Date.now();
+
+    expect(connections.updateConfig).toHaveBeenCalledWith('conn_1', {
+      config: expect.objectContaining({ backfillSince: expect.any(String) }),
+      status: 'active',
+    });
+    // `resolveCustomFieldIds` may also have written config this tick — pick the
+    // call that actually carries the pinned floor.
+    const pinnedCall = connections.updateConfig.mock.calls
+      .map(([, arg]) => arg as { config: Record<string, unknown> })
+      .find((arg) => arg.config.backfillSince !== undefined);
+    const pinnedIso = pinnedCall?.config.backfillSince as string;
+    const pinnedMs = new Date(pinnedIso).getTime();
+    const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+    expect(pinnedMs).toBeGreaterThanOrEqual(before - ninetyDaysMs - 1000);
+    expect(pinnedMs).toBeLessThanOrEqual(after - ninetyDaysMs + 1000);
+
+    jest.clearAllMocks();
+    client.searchIssues.mockResolvedValue({ issues: [] });
+    secrets.resolve.mockResolvedValue('tok');
+
+    // Second poll — simulating the pinned value now being persisted on the connection.
+    await collector.poll(
+      baseConnection({
+        config: {
+          siteUrl: 'https://acme.atlassian.net',
+          email: 'admin@acme.com',
+          sprintFieldId: null,
+          storyPointsFieldIds: [],
+          backfillSince: pinnedIso,
+        },
+      }),
+    );
+
+    const pinnedDate = new Date(pinnedIso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const expectedDatePart = `${pinnedDate.getFullYear()}/${pad(pinnedDate.getMonth() + 1)}/${pad(pinnedDate.getDate())}`;
+    const jql = client.searchIssues.mock.calls[0][3].jql as string;
+    expect(jql).toContain(expectedDatePart);
+    // Already pinned — must not overwrite it with a freshly recomputed value.
+    expect(connections.updateConfig).not.toHaveBeenCalled();
+  });
+
+  it('does not conclude the backfill is complete when a resumed page request fails (vs. genuinely running out of pages)', async () => {
+    client.searchIssues.mockResolvedValueOnce({ issues: [], failed: true });
+
+    const connection = baseConnection({
+      syncCursors: { resumePageToken: 'tok_stale' },
+    });
+    const envelopes = await collector.poll(connection);
+
+    expect(envelopes).toEqual([]);
+    expect(connections.setBackfillCompletedAt).not.toHaveBeenCalled();
+    const [, cursors] = connections.setSyncCursors.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    // Retries the SAME token next tick — never silently advances or "completes".
+    expect(cursors.resumePageToken).toBe('tok_stale');
+    expect(cursors.updatedCursor).toBeUndefined();
   });
 
   it('switches to incremental JQL floor once backfillDone (updatedCursor present)', async () => {
@@ -223,21 +292,21 @@ describe('JiraCollector.poll', () => {
     });
   });
 
-  it('does not re-query getFields once sprintFieldId has been resolved (including "no such field")', async () => {
+  it('does not re-query getFields once the custom-field ids are resolved (including "no such field")', async () => {
     client.searchIssues.mockResolvedValue({ issues: [] });
 
-    await collector.poll(baseConnection()); // default config has sprintFieldId: null
+    // default config has sprintFieldId: null + storyPointsFieldIds: []
+    await collector.poll(baseConnection());
 
     expect(client.getFields).not.toHaveBeenCalled();
+    // `storyPoints`, `epic` and `epicKey` are deliberately absent — they are
+    // not Jira Cloud v3 field ids and only ever resolved to undefined.
     expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
       fields: [
         'summary',
         'status',
         'issuetype',
         'project',
-        'storyPoints',
-        'epic',
-        'epicKey',
         'parent',
         'fixVersions',
         'assignee',
@@ -246,6 +315,79 @@ describe('JiraCollector.poll', () => {
         'updated',
       ],
     });
+  });
+
+  it('resolves every plausible story-point field and reads whichever one the issue actually populates', async () => {
+    // A site with both a team-managed and a classic story-point field, where
+    // only the classic one carries a value — the real shape of a migrated org.
+    client.getFields.mockResolvedValue([
+      { id: 'summary', name: 'Summary' },
+      {
+        id: 'customfield_11013',
+        name: 'Story point estimate',
+        schema: { custom: 'com.pyxis.greenhopper.jira:jsw-story-points' },
+      },
+      {
+        id: 'customfield_10300',
+        name: 'Story Points',
+        schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float' },
+      },
+    ]);
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('PAY-1', {
+          customfield_11013: null,
+          customfield_10300: 8,
+        }),
+      ],
+    });
+
+    const envelopes = await collector.poll(
+      baseConnection({
+        config: {
+          siteUrl: 'https://acme.atlassian.net',
+          email: 'admin@acme.com',
+          // both ids omitted — forces resolution
+        },
+      }),
+    );
+
+    expect(connections.updateConfig).toHaveBeenCalledWith('conn_1', {
+      config: expect.objectContaining({
+        storyPointsFieldIds: ['customfield_11013', 'customfield_10300'],
+      }),
+      status: 'active',
+    });
+    expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
+      fields: expect.arrayContaining([
+        'customfield_11013',
+        'customfield_10300',
+      ]),
+    });
+    // picks the populated one, not merely the first candidate
+    expect(envelopes[0].data).toMatchObject({ storyPoints: 8 });
+  });
+
+  it('does NOT cache "no such field" when the field lookup itself fails — a transient error must not permanently disable sprint/story-point collection', async () => {
+    client.getFields.mockResolvedValue(null); // lookup failed (401/429/5xx)
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(
+      baseConnection({
+        config: {
+          siteUrl: 'https://acme.atlassian.net',
+          email: 'admin@acme.com',
+          // unresolved — and must STAY unresolved after a failed lookup
+        },
+      }),
+    );
+
+    const wroteFieldIds = connections.updateConfig.mock.calls.some(
+      ([, arg]) =>
+        (arg as { config: Record<string, unknown> }).config
+          .storyPointsFieldIds !== undefined,
+    );
+    expect(wroteFieldIds).toBe(false);
   });
 
   it("picks the active sprint out of the field's array, falling back to the most recent one", async () => {

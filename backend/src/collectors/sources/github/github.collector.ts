@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Connection } from '@prisma/client';
 import {
   CodeCommitPayload,
@@ -42,12 +42,21 @@ interface GithubSyncCursors {
   prBackfillDone?: boolean;
   /** Next page to fetch — only meaningful while still backfilling. */
   prPage?: number;
+  /**
+   * Index WITHIN `prPage` where the last tick stopped (enrich budget or rate
+   * limit). Without it, a page holding more items than the per-tick enrich
+   * budget would restart at index 0 every tick, re-enrich the same first N,
+   * and never advance the page — the backfill would never finish.
+   */
+  prPageOffset?: number;
   /** Watermark: newest PR `updated_at` already ingested (steady-state incremental). */
   prNewestSeenAt?: string;
   /** Floor for the next `/commits?since=` call; advances once a full pass completes. */
   commitsCursor?: string;
   /** Page to resume from within the current cursor's pass. */
   commitsResumePage?: number;
+  /** Index within `commitsResumePage` where the last tick stopped — see `prPageOffset`. */
+  commitsPageOffset?: number;
 }
 
 interface SyncResult {
@@ -64,6 +73,7 @@ interface SyncResult {
 @Injectable()
 export class GithubCollector extends BaseSourceCollector {
   readonly source = 'github';
+  private readonly logger = new Logger(GithubCollector.name);
 
   constructor(
     private readonly client: GithubClient,
@@ -210,7 +220,7 @@ export class GithubCollector extends BaseSourceCollector {
     const cursors: GithubSyncCursors = {
       ...((connection.syncCursors as GithubSyncCursors | null) ?? {}),
     };
-    const backfillFloor = resolveBackfillFloor(config.backfillSince);
+    const backfillFloor = await this.resolveBackfillFloor(connection, config);
 
     const prResult = cursors.prBackfillDone
       ? await this.incrementalPullRequests(
@@ -276,6 +286,9 @@ export class GithubCollector extends BaseSourceCollector {
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
     let page = cursors.prPage ?? 1;
+    // Where in the current page the previous tick stopped. Resuming mid-page
+    // is what lets a page bigger than the enrich budget make progress at all.
+    let offset = cursors.prPageOffset ?? 0;
     let enrichBudget = PR_ENRICH_BUDGET_PER_TICK;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
@@ -285,8 +298,19 @@ export class GithubCollector extends BaseSourceCollector {
         page,
       );
       if (result.rateLimitedUntil) {
-        cursors.prPage = page;
+        this.suspendPrBackfill(cursors, page, offset);
         return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
+      }
+      if (result.failed) {
+        // Revoked token, renamed/deleted repo, SSO-blocked org. An empty page
+        // here means the request failed, NOT that history is exhausted —
+        // finishing the backfill on it would permanently mark the connection
+        // complete having collected nothing.
+        this.logger.error(
+          `GitHub PR backfill request failed for ${repoFullName} (connection ${connection.id}) — keeping cursors and retrying next tick instead of concluding the backfill is complete.`,
+        );
+        this.suspendPrBackfill(cursors, page, offset);
+        return { envelopes };
       }
       // Anchor the incremental watermark to the true newest PR, captured once
       // at the very start of backfill — regardless of how many ticks it takes.
@@ -298,16 +322,17 @@ export class GithubCollector extends BaseSourceCollector {
         this.finishPrBackfill(cursors);
         return { envelopes };
       }
-      for (const pr of result.items) {
+      for (let i = offset; i < result.items.length; i++) {
+        const pr = result.items[i];
         const updatedAt = pr.updated_at ?? pr.created_at;
         if (new Date(updatedAt) < backfillFloor) {
           this.finishPrBackfill(cursors);
           return { envelopes };
         }
         if (enrichBudget <= 0) {
-          // Resume at this exact page next tick — same rationale as
-          // syncCommits: never ingest a PR with permanently-missing stats.
-          cursors.prPage = page;
+          // Resume at this exact item next tick — never ingest a PR with
+          // permanently-missing stats, and never re-do the items above it.
+          this.suspendPrBackfill(cursors, page, i);
           return { envelopes };
         }
         const detail = await this.client.getPullRequestDetail(
@@ -320,7 +345,8 @@ export class GithubCollector extends BaseSourceCollector {
           this.fromPolledPull(connection, repoFullName, pr, 'backfill', detail),
         );
         if (detail.rateLimitedUntil) {
-          cursors.prPage = page;
+          // This PR is already enriched and emitted — resume after it.
+          this.suspendPrBackfill(cursors, page, i + 1);
           return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
         }
       }
@@ -329,15 +355,58 @@ export class GithubCollector extends BaseSourceCollector {
         return { envelopes };
       }
       page++;
+      offset = 0; // moved to a fresh page — start at its first item
     }
 
-    cursors.prPage = page; // budget exhausted — resume here next tick
+    this.suspendPrBackfill(cursors, page, offset); // budget exhausted
     return { envelopes };
+  }
+
+  /**
+   * Pins the backfill floor ONCE, on the first poll of a backfill pass, and
+   * caches it onto `connection.config.backfillSince` — the same self-heal
+   * `JiraCollector.resolveBackfillFloor` performs. Without it, an unset
+   * `backfillSince` recomputes `now - N days` fresh every tick, so the floor
+   * creeps forward while a multi-tick backfill is still walking and silently
+   * truncates the oldest slice of the window it was supposed to collect.
+   */
+  private async resolveBackfillFloor(
+    connection: Connection,
+    config: { backfillSince?: string },
+  ): Promise<Date> {
+    if (config.backfillSince) {
+      const parsed = new Date(config.backfillSince);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+    const floor = new Date(
+      Date.now() - DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000,
+    );
+    await this.connections.updateConfig(connection.id, {
+      config: {
+        ...((connection.config as Record<string, unknown>) ?? {}),
+        backfillSince: floor.toISOString(),
+      },
+      status: connection.status,
+    });
+    return floor;
+  }
+
+  /** Persist exactly where this tick stopped, so the next resumes there rather than at the top of the page. */
+  private suspendPrBackfill(
+    cursors: GithubSyncCursors,
+    page: number,
+    offset: number,
+  ): void {
+    cursors.prPage = page;
+    cursors.prPageOffset = offset > 0 ? offset : undefined;
   }
 
   private finishPrBackfill(cursors: GithubSyncCursors): void {
     cursors.prBackfillDone = true;
     cursors.prPage = undefined;
+    cursors.prPageOffset = undefined;
   }
 
   /** Steady-state: only page 1, stop as soon as we hit the known watermark. */
@@ -406,6 +475,8 @@ export class GithubCollector extends BaseSourceCollector {
     const since = cursors.commitsCursor ?? backfillFloor.toISOString();
     const mode: CollectionMode = cursors.commitsCursor ? 'poll' : 'backfill';
     let page = cursors.commitsResumePage ?? 1;
+    // Where in the current page the previous tick stopped — see `prPageOffset`.
+    let offset = cursors.commitsPageOffset ?? 0;
     // Captured at pass START (not completion) so nothing landing mid-pass is missed.
     const passStartedAt = this.nowIso();
     let enrichBudget = COMMIT_ENRICH_BUDGET_PER_TICK;
@@ -418,15 +489,24 @@ export class GithubCollector extends BaseSourceCollector {
         since,
       );
       if (result.rateLimitedUntil) {
-        cursors.commitsResumePage = page;
+        this.suspendCommitsPass(cursors, page, offset);
         return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
       }
-      for (const commit of result.items) {
+      if (result.failed) {
+        // See the equivalent guard in backfillPullRequests — a failed request
+        // must never advance the `since` watermark or end the pass.
+        this.logger.error(
+          `GitHub commit sync request failed for ${repoFullName} (connection ${connection.id}) — keeping cursors and retrying next tick instead of advancing the watermark.`,
+        );
+        this.suspendCommitsPass(cursors, page, offset);
+        return { envelopes };
+      }
+      for (let i = offset; i < result.items.length; i++) {
+        const commit = result.items[i];
         if (enrichBudget <= 0) {
-          // Resume at this exact page next tick — already-enriched commits
-          // above re-fetch as harmless idempotent duplicates; this one and
-          // the rest of the page get enriched fresh once budget resets.
-          cursors.commitsResumePage = page;
+          // Resume at this exact item next tick — never ingest a commit with
+          // permanently-missing stats, and never re-do the items above it.
+          this.suspendCommitsPass(cursors, page, i);
           return { envelopes };
         }
         const detail = await this.client.getCommitDetail(
@@ -439,20 +519,34 @@ export class GithubCollector extends BaseSourceCollector {
           this.fromPolledCommit(connection, repoFullName, commit, mode, detail),
         );
         if (detail.rateLimitedUntil) {
-          cursors.commitsResumePage = page;
+          // This commit is already enriched and emitted — resume after it.
+          this.suspendCommitsPass(cursors, page, i + 1);
           return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
         }
       }
       if (result.items.length === 0 || !result.hasNextPage) {
         cursors.commitsResumePage = undefined;
+        cursors.commitsPageOffset = undefined;
         cursors.commitsCursor = passStartedAt;
         return { envelopes };
       }
       page++;
+      offset = 0; // moved to a fresh page — start at its first item
     }
 
-    cursors.commitsResumePage = page; // budget exhausted — resume next tick, same `since`
+    // budget exhausted — resume next tick, same `since`
+    this.suspendCommitsPass(cursors, page, offset);
     return { envelopes };
+  }
+
+  /** Persist exactly where this tick stopped within the current `since` pass. */
+  private suspendCommitsPass(
+    cursors: GithubSyncCursors,
+    page: number,
+    offset: number,
+  ): void {
+    cursors.commitsResumePage = page;
+    cursors.commitsPageOffset = offset > 0 ? offset : undefined;
   }
 
   /**
@@ -584,16 +678,6 @@ export class GithubCollector extends BaseSourceCollector {
       data: payload as unknown as Record<string, unknown>,
     };
   }
-}
-
-function resolveBackfillFloor(backfillSince: string | undefined): Date {
-  if (backfillSince) {
-    const parsed = new Date(backfillSince);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed;
-    }
-  }
-  return new Date(Date.now() - DEFAULT_BACKFILL_DAYS * 24 * 60 * 60 * 1000);
 }
 
 function mapAction(

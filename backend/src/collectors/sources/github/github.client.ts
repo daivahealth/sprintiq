@@ -57,6 +57,14 @@ export interface GithubPage<T> {
   hasNextPage: boolean;
   /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
   rateLimitedUntil?: Date;
+  /**
+   * Set on any non-2xx, non-rate-limit response (revoked token, renamed or
+   * deleted repo, SSO-blocked org). Callers must never read this as "no more
+   * pages" — an empty `items` here means the request failed, not that the
+   * history is exhausted, so concluding a backfill on it would permanently
+   * mark the connection complete with nothing collected.
+   */
+  failed?: boolean;
 }
 
 /**
@@ -227,7 +235,7 @@ export class GithubClient {
     }
     if (!res.ok) {
       this.logger.warn(`GitHub request failed (${res.status}): ${url}`);
-      return { items: [], hasNextPage: false };
+      return { items: [], hasNextPage: false, failed: true };
     }
 
     const items = (await res.json()) as T[];
