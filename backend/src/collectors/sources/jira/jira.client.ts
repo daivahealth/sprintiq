@@ -11,6 +11,13 @@ export interface JiraSearchPage {
   nextPageToken?: string;
   /** Set when Jira signaled the token is rate-limited; caller should stop this tick. */
   rateLimitedUntil?: Date;
+  /**
+   * Set on any non-2xx, non-429 response (e.g. a resumed `pageToken` rejected
+   * as expired because the JQL text shifted since it was issued). Callers
+   * must never treat this the same as "no more pages" — an empty `issues`
+   * array here means the request failed, not that the search is exhausted.
+   */
+  failed?: boolean;
 }
 
 export interface JiraFieldMeta {
@@ -20,19 +27,24 @@ export interface JiraFieldMeta {
 }
 
 /**
- * Fields with a stable id/key across every Jira Cloud site. Sprint is NOT
- * one of these — it's always a custom field (e.g. `customfield_10020`) whose
- * numeric id differs per site, so it's resolved separately via `getFields`
- * and appended by the caller (see `JiraCollector.resolveSprintFieldId`).
+ * Fields with a stable id/key across every Jira Cloud site.
+ *
+ * Sprint and Story Points are NOT among them — both are custom fields whose
+ * numeric ids differ per site (e.g. `customfield_10020`), so they're resolved
+ * via `getFields` and appended by the caller (see
+ * `JiraCollector.resolveSprintFieldId` / `resolveStoryPointsFieldId`).
+ *
+ * Note the ids `storyPoints`, `epic`, and `epicKey` are deliberately absent:
+ * they are Jira Server/classic-era names that do not exist on Cloud's v3 API,
+ * which silently ignores unknown field ids rather than erroring — so
+ * requesting them produced permanently-undefined values, not an error. Epic
+ * linkage instead comes from `parent` (see `mapIssueToPayload`).
  */
 export const BASE_SEARCH_FIELDS = [
   'summary',
   'status',
   'issuetype',
   'project',
-  'storyPoints',
-  'epic',
-  'epicKey',
   'parent',
   'fixVersions',
   'assignee',
@@ -98,7 +110,7 @@ export class JiraClient {
     }
     if (!res.ok) {
       this.logger.warn(`Jira search failed (${res.status}): ${opts.jql}`);
-      return { issues: [] };
+      return { issues: [], failed: true };
     }
 
     const body = (await res.json()) as {
@@ -108,14 +120,23 @@ export class JiraClient {
     return { issues: body.issues ?? [], nextPageToken: body.nextPageToken };
   }
 
-  /** `GET /rest/api/3/field` — used once per site to resolve Sprint's custom-field id. */
+  /**
+   * `GET /rest/api/3/field` — used once per site to resolve the custom-field
+   * ids backing Sprint and Story Points.
+   *
+   * Returns `null` (NOT `[]`) when the lookup fails, so callers can tell a
+   * failed request apart from a site that genuinely has no such field. That
+   * distinction matters: the caller caches its answer permanently, and
+   * caching "not present" because of a transient 401/429 would silently
+   * disable sprint/story-point collection forever.
+   */
   async getFields(
     siteUrl: string,
     email: string,
     apiToken: string,
-  ): Promise<JiraFieldMeta[]> {
+  ): Promise<JiraFieldMeta[] | null> {
     if (!apiToken) {
-      return [];
+      return null;
     }
     const url = `${siteUrl.replace(/\/$/, '')}/rest/api/3/field`;
     const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
@@ -125,7 +146,7 @@ export class JiraClient {
     });
     if (!res.ok) {
       this.logger.warn(`Jira field lookup failed (${res.status})`);
-      return [];
+      return null;
     }
     return (await res.json()) as JiraFieldMeta[];
   }

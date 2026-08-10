@@ -66,6 +66,7 @@ describe('GithubCollector.poll', () => {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
       setRateLimitState: jest.fn().mockResolvedValue(undefined),
       setBackfillCompletedAt: jest.fn().mockResolvedValue(undefined),
+      updateConfig: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     secrets = {
       resolve: jest.fn().mockResolvedValue('tok'),
@@ -153,9 +154,142 @@ describe('GithubCollector.poll', () => {
       string,
       unknown
     >;
-    // resumes the SAME page next tick, mirroring syncCommits' behavior
+    // Resumes the SAME page, but at the exact item the budget ran out on —
+    // without the offset the next tick would re-enrich items 0-24 forever and
+    // the page (and therefore the whole backfill) would never advance.
     expect(cursors.prPage).toBe(1);
+    expect(cursors.prPageOffset).toBe(25);
     expect(cursors.prBackfillDone).toBeUndefined();
+  });
+
+  it('resumes mid-page from prPageOffset so a page larger than the enrich budget eventually completes', async () => {
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({ number: i + 1, updated_at: new Date().toISOString() }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    // Second tick: the first one stopped at index 25 of this same page.
+    const envelopes = await collector.poll(
+      baseConnection({
+        syncCursors: { prPage: 1, prPageOffset: 25 },
+        config: {
+          repoFullName: 'acme/payments',
+          backfillSince: new Date(
+            Date.now() - 90 * 24 * 60 * 60 * 1000,
+          ).toISOString(),
+        },
+      }),
+    );
+
+    // Only the 5 remaining items get enriched — not the 25 already done.
+    expect(envelopes).toHaveLength(5);
+    expect(client.getPullRequestDetail).toHaveBeenCalledTimes(5);
+    expect(client.getPullRequestDetail).toHaveBeenNthCalledWith(
+      1,
+      'acme/payments',
+      'tok',
+      26,
+    );
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    // Page exhausted with no next page — backfill genuinely finishes.
+    expect(cursors.prBackfillDone).toBe(true);
+    expect(cursors.prPageOffset).toBeUndefined();
+  });
+
+  it('never concludes the PR backfill is complete when the page request fails', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+      failed: true,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const connection = baseConnection({
+      syncCursors: { prPage: 3, prPageOffset: 10 },
+    });
+    const envelopes = await collector.poll(connection);
+
+    expect(envelopes).toEqual([]);
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.prBackfillDone).toBeUndefined();
+    expect(cursors.prPage).toBe(3);
+    expect(cursors.prPageOffset).toBe(10);
+    expect(connections.setBackfillCompletedAt).not.toHaveBeenCalled();
+  });
+
+  it('never advances the commit watermark when the commits request fails', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+      failed: true,
+    });
+
+    await collector.poll(baseConnection());
+
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    // `commitsCursor` advancing here would permanently skip the un-walked history.
+    expect(cursors.commitsCursor).toBeUndefined();
+  });
+
+  it('pins backfillSince onto config on the first poll, then reuses it instead of recomputing "now"', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const before = Date.now();
+    await collector.poll(baseConnection()); // config has no backfillSince
+    const after = Date.now();
+
+    expect(connections.updateConfig).toHaveBeenCalledWith('conn_1', {
+      config: expect.objectContaining({ backfillSince: expect.any(String) }),
+      status: 'active',
+    });
+    const call = connections.updateConfig.mock.calls[0][1] as {
+      config: Record<string, unknown>;
+    };
+    const pinnedMs = new Date(call.config.backfillSince as string).getTime();
+    const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+    expect(pinnedMs).toBeGreaterThanOrEqual(before - ninetyDaysMs - 1000);
+    expect(pinnedMs).toBeLessThanOrEqual(after - ninetyDaysMs + 1000);
+
+    jest.clearAllMocks();
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    secrets.resolve.mockResolvedValue('tok');
+
+    await collector.poll(
+      baseConnection({
+        config: {
+          repoFullName: 'acme/payments',
+          backfillSince: '2026-01-01T00:00:00.000Z',
+        },
+      }),
+    );
+
+    // Already pinned — must not be overwritten with a freshly recomputed value.
+    expect(connections.updateConfig).not.toHaveBeenCalled();
   });
 
   it('stops PR enrichment and persists resetAt when a PR-detail call is rate-limited during backfill', async () => {

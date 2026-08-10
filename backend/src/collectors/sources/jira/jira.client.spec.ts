@@ -104,6 +104,30 @@ describe('JiraClient', () => {
     );
   });
 
+  it('signals failed:true (not just empty issues) on a non-2xx, non-429 response', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        fakeResponse({ ok: false, status: 400 }),
+      ) as unknown as typeof fetch;
+
+    const page = await client.searchIssues(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      'tok',
+      {
+        jql: 'updated >= "2026/01/01 00:00"',
+        maxResults: 50,
+        fields: ['summary'],
+        pageToken: 'tok_expired',
+      },
+    );
+
+    expect(page.issues).toEqual([]);
+    expect(page.failed).toBe(true);
+    expect(page.nextPageToken).toBeUndefined();
+  });
+
   it('returns empty without calling fetch when no API token is configured', async () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
 
@@ -144,12 +168,12 @@ describe('JiraClient', () => {
       );
 
       expect(fields).toHaveLength(2);
-      expect(fields[1]).toMatchObject({ id: 'customfield_10020' });
+      expect(fields?.[1]).toMatchObject({ id: 'customfield_10020' });
       const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
       expect(url).toBe('https://acme.atlassian.net/rest/api/3/field');
     });
 
-    it('returns [] on a failed response instead of throwing', async () => {
+    it('returns null (not []) on a failed response, so callers can tell failure from "no such field"', async () => {
       global.fetch = jest
         .fn()
         .mockResolvedValue(
@@ -162,10 +186,10 @@ describe('JiraClient', () => {
         'tok',
       );
 
-      expect(fields).toEqual([]);
+      expect(fields).toBeNull();
     });
 
-    it('returns [] without calling fetch when no API token is configured', async () => {
+    it('returns null without calling fetch when no API token is configured', async () => {
       global.fetch = jest.fn() as unknown as typeof fetch;
 
       const fields = await client.getFields(
@@ -174,7 +198,7 @@ describe('JiraClient', () => {
         '',
       );
 
-      expect(fields).toEqual([]);
+      expect(fields).toBeNull();
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });
