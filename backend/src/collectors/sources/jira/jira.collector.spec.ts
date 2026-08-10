@@ -330,7 +330,9 @@ describe('JiraCollector.poll', () => {
       {
         id: 'customfield_10300',
         name: 'Story Points',
-        schema: { custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float' },
+        schema: {
+          custom: 'com.atlassian.jira.plugin.system.customfieldtypes:float',
+        },
       },
     ]);
     client.searchIssues.mockResolvedValue({

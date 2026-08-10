@@ -105,9 +105,11 @@ describe('JiraClient', () => {
   });
 
   it('signals failed:true (not just empty issues) on a non-2xx, non-429 response', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
-      fakeResponse({ ok: false, status: 400 }),
-    ) as unknown as typeof fetch;
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        fakeResponse({ ok: false, status: 400 }),
+      ) as unknown as typeof fetch;
 
     const page = await client.searchIssues(
       'https://acme.atlassian.net',
