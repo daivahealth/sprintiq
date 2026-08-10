@@ -29,8 +29,19 @@ npm install                   # runs prisma generate
 
 ```bash
 npm run prisma:deploy         # applies prisma/migrations
-npm run seed                  # tenant_seed + admin@seed.test/password123 + github connection (acme/payments)
+npm run seed                  # tenant_seed + admin@seed.test/password123 — nothing else
 ```
+
+The seed deliberately creates **no domain data and no connection** — just enough to log
+in. Delivery data must come from real configured collectors so every dashboard number
+stays traceable to source events; fabricated rows land in the same tables as collected
+ones and are indistinguishable once queried (they inflate metrics and show up in catalog
+pickers alongside real projects). To get data in, log in and configure GitHub/Jira under
+`/admin/configuration`.
+
+The webhook walkthrough in §5 therefore needs a connection you create yourself — see §7
+for creating one via `POST /api/admin/connections`, and use its id in place of
+`conn_seed_github` below.
 
 ## 4. Run the API
 
@@ -47,9 +58,9 @@ TOKEN=$(curl -s -X POST localhost:3000/api/auth/login -H 'Content-Type: applicat
   -d '{"email":"admin@seed.test","password":"password123"}' \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['accessToken'])")
 
-# b) (optional) create the story so the PR LINKS instead of orphaning
-#    via the API once a Jira collector/seed exists; for now insert directly:
-#    INSERT INTO planning_story (...) VALUES ('...','tenant_seed',...,'PAY-2231','PAY',...);
+# b) (optional) to make the PR LINK instead of orphan, the referenced story must
+#    already be collected — configure Jira at /admin/configuration and let it sync,
+#    then use a real issue key from your site in the PR title below.
 
 # c) send a signed GitHub PR-merged webhook
 BODY='{"action":"closed","number":4521,"pull_request":{"title":"PAY-2231 fix capture","state":"closed","merged":true,"created_at":"2026-06-29T14:00:00Z","merged_at":"2026-06-30T10:00:00Z","additions":142,"deletions":38,"changed_files":6,"head":{"ref":"feature/PAY-2231"},"base":{"ref":"main"},"user":{"login":"jdoe"}},"repository":{"full_name":"acme/payments"}}'
