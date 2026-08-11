@@ -58,6 +58,7 @@ describe('JiraCollector.poll', () => {
     client = {
       searchIssues: jest.fn(),
       getFields: jest.fn().mockResolvedValue([]),
+      getIssueChangelog: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<JiraClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
@@ -418,6 +419,202 @@ describe('JiraCollector.poll', () => {
     expect(envelopes[0].data).toMatchObject({
       sprint: { externalId: '2', name: 'Sprint 2' },
     });
+  });
+
+  it('extracts the status-transition timeline and current status category from the change log', async () => {
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        {
+          key: 'PAY-1',
+          fields: {
+            summary: 't',
+            project: { key: 'PAY' },
+            updated: '2026-06-05T00:00:00.000Z',
+            status: {
+              name: 'ACCEPTED IN UAT',
+              statusCategory: { key: 'done' },
+            },
+          },
+          changelog: {
+            total: 3,
+            histories: [
+              {
+                id: '900',
+                created: '2026-06-03T00:00:00.000Z',
+                author: { accountId: 'acc_1', displayName: 'Jane Doe' },
+                // an entry groups every field changed at once — only status counts
+                items: [
+                  { field: 'assignee', fromString: null, toString: 'Jane' },
+                  {
+                    field: 'status',
+                    fromString: 'In Progress',
+                    toString: 'ACCEPTED IN UAT',
+                  },
+                ],
+              },
+              {
+                id: '800',
+                created: '2026-06-01T00:00:00.000Z',
+                items: [
+                  { field: 'status', fromString: null, toString: 'To Do' },
+                ],
+              },
+              // no status item at all — must not become a transition
+              {
+                id: '850',
+                created: '2026-06-02T00:00:00.000Z',
+                items: [{ field: 'priority', toString: 'High' }],
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    const data = envelopes[0].data as unknown as {
+      statusCategory?: string;
+      transitions?: {
+        changelogId: string;
+        fromStatus?: string;
+        toStatus: string;
+        at: string;
+        authorName?: string;
+      }[];
+    };
+    expect(data.statusCategory).toBe('done');
+    // oldest-first, non-status entries dropped
+    expect(data.transitions).toEqual([
+      {
+        changelogId: '800',
+        fromStatus: undefined,
+        toStatus: 'To Do',
+        at: '2026-06-01T00:00:00.000Z',
+        authorLogin: undefined,
+        authorName: undefined,
+      },
+      {
+        changelogId: '900',
+        fromStatus: 'In Progress',
+        toStatus: 'ACCEPTED IN UAT',
+        at: '2026-06-03T00:00:00.000Z',
+        authorLogin: 'acc_1',
+        authorName: 'Jane Doe',
+      },
+    ]);
+  });
+
+  it('requests the change log inline rather than per issue', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(baseConnection());
+
+    expect(client.searchIssues.mock.calls[0][3]).toMatchObject({
+      withChangelog: true,
+    });
+    expect(client.getIssueChangelog).not.toHaveBeenCalled();
+  });
+
+  it('completes a change log the search truncated, and keeps the partial one if that fetch fails', async () => {
+    const truncated = {
+      key: 'PAY-1',
+      fields: {
+        summary: 't',
+        project: { key: 'PAY' },
+        updated: '2026-06-05T00:00:00.000Z',
+        status: { name: 'Done', statusCategory: { key: 'done' } },
+      },
+      // total exceeds what came back — the rest has to be fetched
+      changelog: {
+        total: 2,
+        histories: [
+          {
+            id: '900',
+            created: '2026-06-03T00:00:00.000Z',
+            items: [{ field: 'status', fromString: 'To Do', toString: 'Done' }],
+          },
+        ],
+      },
+    };
+    client.searchIssues.mockResolvedValue({ issues: [truncated] });
+    client.getIssueChangelog.mockResolvedValue([
+      {
+        id: '800',
+        created: '2026-06-01T00:00:00.000Z',
+        items: [{ field: 'status', fromString: null, toString: 'To Do' }],
+      },
+      {
+        id: '900',
+        created: '2026-06-03T00:00:00.000Z',
+        items: [{ field: 'status', fromString: 'To Do', toString: 'Done' }],
+      },
+    ]);
+
+    let envelopes = await collector.poll(baseConnection());
+    expect(client.getIssueChangelog).toHaveBeenCalledWith(
+      'https://acme.atlassian.net',
+      'admin@acme.com',
+      'tok',
+      'PAY-1',
+    );
+    let data = envelopes[0].data as unknown as { transitions?: unknown[] };
+    expect(data.transitions).toHaveLength(2);
+
+    // A failed completion fetch must not throw away the embedded entry.
+    jest.clearAllMocks();
+    secrets.resolve.mockResolvedValue('tok');
+    client.searchIssues.mockResolvedValue({ issues: [truncated] });
+    client.getIssueChangelog.mockResolvedValue(null);
+
+    envelopes = await collector.poll(baseConnection());
+    data = envelopes[0].data as unknown as { transitions?: unknown[] };
+    expect(data.transitions).toHaveLength(1);
+  });
+
+  it('turns an issue-updated webhook into the single transition it carries', async () => {
+    const body = JSON.stringify({
+      webhookEvent: 'jira:issue_updated',
+      user: { accountId: 'acc_9', displayName: 'Ken Chan' },
+      changelog: {
+        id: '4242',
+        items: [
+          { field: 'status', fromString: 'To Do', toString: 'In Progress' },
+        ],
+      },
+      issue: {
+        key: 'PAY-7',
+        fields: {
+          summary: 'x',
+          project: { key: 'PAY' },
+          updated: '2026-06-09T00:00:00.000Z',
+          status: {
+            name: 'In Progress',
+            statusCategory: { key: 'indeterminate' },
+          },
+        },
+      },
+    });
+
+    const envelopes = await collector.normalizeWebhook(
+      baseConnection(),
+      Buffer.from(body),
+      {},
+    );
+
+    const data = envelopes[0].data as unknown as {
+      statusCategory?: string;
+      transitions?: { changelogId: string; toStatus: string }[];
+    };
+    expect(data.statusCategory).toBe('indeterminate');
+    // Same changelog id the poller would see, so the two converge on one row.
+    expect(data.transitions).toEqual([
+      expect.objectContaining({
+        changelogId: '4242',
+        fromStatus: 'To Do',
+        toStatus: 'In Progress',
+      }),
+    ]);
   });
 
   it('maps subtask/epic hierarchy the same way normalizeWebhook does', async () => {

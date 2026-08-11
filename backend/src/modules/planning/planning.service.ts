@@ -3,6 +3,7 @@ import { Release, Sprint, Story } from '@prisma/client';
 import {
   PlanningSprintRef,
   PlanningStoryPayload,
+  PlanningTransitionRef,
 } from '../../common/events/contracts';
 import { PLANNING_STORY_EVENT_TYPES } from '../../common/events/event-types';
 import { DomainEvent } from '../../common/events/domain-event';
@@ -70,11 +71,19 @@ export class PlanningService implements OnModuleInit {
       );
     }
 
+    await this.recordTransitions(
+      event.tenantId,
+      connectionId,
+      p.externalKey,
+      p.transitions ?? [],
+    );
+
     const fields = {
       connectionId,
       projectKey: p.projectKey,
       type: p.type ?? 'story',
       status: p.status,
+      statusCategory: p.statusCategory ?? null,
       storyPoints: p.storyPoints ?? null,
       title: p.title,
       epicKey: p.epicKey ?? null,
@@ -104,6 +113,41 @@ export class PlanningService implements OnModuleInit {
     });
 
     this.logger.debug(`upserted ${fields.type} ${p.externalKey} (${p.status})`);
+  }
+
+  /**
+   * Appends the work item's status-transition timeline (`issue_status_history`).
+   *
+   * `createMany({ skipDuplicates })` on the (tenant, connection, changelogId)
+   * unique key makes this safe to replay: a backfill re-walk, a poll that
+   * re-includes the boundary issue, and a webhook for a transition already
+   * polled all converge on one row instead of duplicating the timeline — which
+   * would silently inflate every duration derived from it.
+   */
+  private async recordTransitions(
+    tenantId: string,
+    connectionId: string,
+    externalKey: string,
+    transitions: PlanningTransitionRef[],
+  ): Promise<void> {
+    if (transitions.length === 0) {
+      return;
+    }
+    await this.prisma.issueStatusHistory.createMany({
+      data: transitions.map((t) => ({
+        id: newId(),
+        tenantId,
+        connectionId,
+        externalKey,
+        changelogId: t.changelogId,
+        fromStatus: t.fromStatus ?? null,
+        toStatus: t.toStatus,
+        transitionedAt: new Date(t.at),
+        authorLogin: t.authorLogin ?? null,
+        authorName: t.authorName ?? null,
+      })),
+      skipDuplicates: true,
+    });
   }
 
   private async upsertSprint(

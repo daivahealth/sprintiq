@@ -204,6 +204,11 @@ model Story {
   // in this table so every work-item granularity is queryable (detailing).
   type             String    @default("story")
   status           String
+  // Workflow-independent bucket for `status` (Jira's statusCategory key):
+  // "new" | "indeterminate" | "done". Status NAMES are per-project and
+  // unbounded ("READY FOR ESTIMATION", "ACCEPTED IN UAT", …), so flow metrics
+  // classify on this instead of trying to enumerate names per tenant.
+  statusCategory   String?
   storyPoints      Int?
   title            String
   // Hierarchy + planning attribution (the "detailing" dimensions):
@@ -223,6 +228,34 @@ model Story {
   @@index([tenantId, epicKey])
   @@index([tenantId, sprintExternalId])
   @@map("planning_story")
+}
+
+// Append-only status-transition timeline per work item (`issue_status_history`
+// in DATA-MODEL.md). This is the basis for every flow metric — cycle_time,
+// wip/wip_age, flow_efficiency, blocked_time and aging_work_items all derive
+// from it (METRICS.md), because a story row alone only carries its CURRENT
+// status and can't say when it entered one.
+//
+// Sourced from Jira's changelog, keyed on that changelog entry's own id so a
+// re-walk of the same issue is naturally idempotent.
+model IssueStatusHistory {
+  id             String   @id
+  tenantId       String
+  connectionId   String
+  externalKey    String // e.g. PAY-2231
+  // Jira changelog history id — stable per transition, so it de-dupes re-fetches.
+  changelogId    String
+  // Null for the very first transition (issue creation has no prior status).
+  fromStatus     String?
+  toStatus       String
+  transitionedAt DateTime
+  authorLogin    String?
+  authorName     String?
+  createdAt      DateTime @default(now())
+
+  @@unique([tenantId, connectionId, changelogId])
+  @@index([tenantId, externalKey, transitionedAt])
+  @@map("planning_issue_status_history")
 }
 
 model Sprint {

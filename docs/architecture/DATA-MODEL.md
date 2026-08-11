@@ -81,13 +81,15 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 |---|---|---|
 | `project` | `id`, `tenant_id`, `connection_id`, `external_key`, `name` | has many epics, sprints |
 | `epic` | `id`, `tenant_id`, `project_id`, `external_key`, `title`, `status`, `target_date?` | has many stories |
-| `story` | `id`, `tenant_id`, `project_id`, `epic_id?`, `external_key` (e.g. `PAY-2231`), `type` (story/bug/task/spike), `status`, `story_points?`, `assignee_developer_id?`, `created_at`, `resolved_at?` | has many subtasks; linked to PRs/commits via graph |
+| `story` | `id`, `tenant_id`, `project_id`, `epic_id?`, `external_key` (e.g. `PAY-2231`), `type` (story/bug/task/spike), `status`, `status_category`, `story_points?`, `assignee_developer_id?`, `created_at`, `resolved_at?` | has many subtasks; linked to PRs/commits via graph. `status_category` is the workflow-independent bucket (`new`/`indeterminate`/`done`) — status *names* are per-project and unbounded (a real site has `READY FOR ESTIMATION`, `Story has open defects`, `ACCEPTED IN UAT`…), so flow metrics classify on the category, never the name. |
 | `subtask` | `id`, `tenant_id`, `story_id`, `external_key`, `status` | |
 | `sprint` | `id`, `tenant_id`, `project_id`, `external_id`, `name`, `state`, `start_at`, `end_at` | has many stories (scope) |
 | `sprint_scope` | `sprint_id`, `story_id`, `added_at`, `removed_at?`, `committed` (bool) | Captures scope changes → scope-creep metric. |
-| `issue_status_history` | `id`, `tenant_id`, `story_id`, `from_status`, `to_status`, `changed_at`, `source_event_id` | **Basis for cycle/lead/blocked time.** Append-only. |
+| `issue_status_history` | `id`, `tenant_id`, `connection_id`, `external_key`, `changelog_id`, `from_status?`, `to_status`, `transitioned_at`, `author_login?`, `author_name?` | **Basis for cycle/lead/blocked time.** Append-only. Implemented as `planning_issue_status_history`. |
 
 `external_key` (the Jira key) is the join target for correlation.
+
+`issue_status_history` keys on `external_key` rather than a `story_id` foreign key, and carries the source system's own `changelog_id` instead of a `source_event_id`. Both follow from how the timeline is collected: transitions arrive attached to the issue in the same payload as the story itself, so keying on `(tenant_id, connection_id, changelog_id)` makes a backfill re-walk, a boundary re-poll, and a webhook for an already-polled transition all converge on one row. Inserting the same transition twice would silently inflate every duration derived from it, which is the failure mode this key exists to prevent.
 
 ---
 
