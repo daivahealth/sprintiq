@@ -18,6 +18,7 @@ function baseConnection(overrides: Partial<Connection> = {}): Connection {
       // need to stub `client.getFields` — see the dedicated resolution tests.
       sprintFieldId: null,
       storyPointsFieldIds: [],
+      statusCategories: {},
     },
     secretRef: 'JIRA_API_TOKEN',
     webhookSecretRef: null,
@@ -59,6 +60,7 @@ describe('JiraCollector.poll', () => {
       searchIssues: jest.fn(),
       getFields: jest.fn().mockResolvedValue([]),
       getIssueChangelog: jest.fn().mockResolvedValue(null),
+      getStatusCategories: jest.fn().mockResolvedValue({}),
     } as unknown as jest.Mocked<JiraClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
@@ -179,6 +181,7 @@ describe('JiraCollector.poll', () => {
           email: 'admin@acme.com',
           sprintFieldId: null,
           storyPointsFieldIds: [],
+          statusCategories: {},
           backfillSince: pinnedIso,
         },
       }),
@@ -190,7 +193,14 @@ describe('JiraCollector.poll', () => {
     const jql = client.searchIssues.mock.calls[0][3].jql as string;
     expect(jql).toContain(expectedDatePart);
     // Already pinned — must not overwrite it with a freshly recomputed value.
-    expect(connections.updateConfig).not.toHaveBeenCalled();
+    // Asserted on the floor specifically, since other per-site caches
+    // (custom fields, status categories) legitimately write config too.
+    const rewrotefloor = connections.updateConfig.mock.calls.some(
+      ([, arg]) =>
+        (arg as { config: Record<string, unknown> }).config.backfillSince !==
+        pinnedIso,
+    );
+    expect(rewrotefloor).toBe(false);
   });
 
   it('does not conclude the backfill is complete when a resumed page request fails (vs. genuinely running out of pages)', async () => {

@@ -109,6 +109,7 @@ export class JiraCollector extends BaseSourceCollector {
     const cachedFields = connection.config as {
       sprintFieldId?: string | null;
       storyPointsFieldIds?: string[];
+      statusCategories?: Record<string, string>;
     } | null;
     // An issue webhook carries the single change-log entry for THIS edit
     // (`body.changelog`), not the issue's whole history — which is exactly the
@@ -130,6 +131,7 @@ export class JiraCollector extends BaseSourceCollector {
       cachedFields?.sprintFieldId,
       cachedFields?.storyPointsFieldIds ?? [],
       webhookChangelog,
+      cachedFields?.statusCategories ?? {},
     );
     const occurredAt: string = issue.fields?.updated ?? this.nowIso();
 
@@ -166,6 +168,8 @@ export class JiraCollector extends BaseSourceCollector {
       sprintFieldId?: string | null;
       /** Site-specific story-point custom-field ids, best-first; `[]` once resolved as absent. */
       storyPointsFieldIds?: string[];
+      /** Cached `status name -> category` for classifying transitions. */
+      statusCategories?: Record<string, string>;
     };
     if (!config.siteUrl || !config.email) {
       return [];
@@ -191,6 +195,11 @@ export class JiraCollector extends BaseSourceCollector {
 
     const { sprintFieldId, storyPointsFieldIds } =
       await this.resolveCustomFieldIds(connection, config, apiToken);
+    const statusCategories = await this.resolveStatusCategories(
+      connection,
+      config,
+      apiToken,
+    );
     const fields = [
       ...BASE_SEARCH_FIELDS,
       ...(sprintFieldId ? [sprintFieldId] : []),
@@ -254,6 +263,7 @@ export class JiraCollector extends BaseSourceCollector {
             sprintFieldId,
             storyPointsFieldIds,
             histories,
+            statusCategories,
           ),
         );
         const updated = issue.fields?.updated;
@@ -425,6 +435,50 @@ export class JiraCollector extends BaseSourceCollector {
   }
 
   /**
+   * The site's `status name -> category` map, cached on `connection.config`.
+   *
+   * Refreshed whenever a poll sees a status name the cache doesn't cover, so a
+   * workflow gaining a status doesn't permanently leave its transitions
+   * unclassified — the map is a snapshot of a mutable catalog, unlike the
+   * custom-field ids which are effectively fixed per site.
+   *
+   * A failed fetch keeps whatever is cached rather than overwriting it with
+   * nothing (the same reasoning as `resolveCustomFieldIds`).
+   */
+  private async resolveStatusCategories(
+    connection: Connection,
+    config: {
+      siteUrl?: string;
+      email?: string;
+      statusCategories?: Record<string, string>;
+    },
+    apiToken: string,
+  ): Promise<Record<string, string>> {
+    if (config.statusCategories) {
+      return config.statusCategories;
+    }
+    const fetched = await this.client.getStatusCategories(
+      config.siteUrl as string,
+      config.email as string,
+      apiToken,
+    );
+    if (!fetched) {
+      return {};
+    }
+    this.logger.log(
+      `Resolved ${Object.keys(fetched).length} Jira status categories for ${config.siteUrl}.`,
+    );
+    await this.connections.updateConfig(connection.id, {
+      config: {
+        ...((connection.config as Record<string, unknown>) ?? {}),
+        statusCategories: fetched,
+      },
+      status: connection.status,
+    });
+    return fetched;
+  }
+
+  /**
    * The change log embedded by `expand=changelog`, completed via a per-issue
    * fetch when the search returned only part of it (`total` exceeds what came
    * back). Truncation is rare — it needs a long-lived, heavily-worked issue —
@@ -463,6 +517,7 @@ export class JiraCollector extends BaseSourceCollector {
     sprintFieldId?: string | null,
     storyPointsFieldIds: string[] = [],
     changelog: JiraChangelogEntry[] = [],
+    statusCategories: Record<string, string> = {},
   ): CanonicalEnvelope {
     const payload = this.mapIssueToPayload(
       issue.key,
@@ -470,6 +525,7 @@ export class JiraCollector extends BaseSourceCollector {
       sprintFieldId,
       storyPointsFieldIds,
       changelog,
+      statusCategories,
     );
     const occurredAt =
       typeof issue.fields?.updated === 'string'
@@ -518,6 +574,7 @@ export class JiraCollector extends BaseSourceCollector {
     sprintFieldId?: string | null,
     storyPointsFieldIds: string[] = [],
     changelog: JiraChangelogEntry[] = [],
+    statusCategories: Record<string, string> = {},
   ): PlanningStoryPayload {
     const project = fields.project as { key?: string } | undefined;
     const issuetype = fields.issuetype as
@@ -555,7 +612,7 @@ export class JiraCollector extends BaseSourceCollector {
       type,
       status: status?.name ?? 'unknown',
       statusCategory: status?.statusCategory?.key ?? undefined,
-      transitions: parseTransitions(changelog),
+      transitions: parseTransitions(changelog, statusCategories),
       storyPoints: firstNumeric(fields, storyPointsFieldIds),
       title: typeof fields.summary === 'string' ? fields.summary : '',
       epicKey,
@@ -588,6 +645,7 @@ export class JiraCollector extends BaseSourceCollector {
  */
 function parseTransitions(
   changelog: JiraChangelogEntry[],
+  statusCategories: Record<string, string> = {},
 ): PlanningTransitionRef[] {
   const transitions: PlanningTransitionRef[] = [];
   for (const entry of changelog) {
@@ -602,13 +660,16 @@ function parseTransitions(
     if (!entry.id || typeof entry.created !== 'string') {
       continue;
     }
+    const fromStatus =
+      typeof item.fromString === 'string' && item.fromString
+        ? item.fromString
+        : undefined;
     transitions.push({
       changelogId: String(entry.id),
-      fromStatus:
-        typeof item.fromString === 'string' && item.fromString
-          ? item.fromString
-          : undefined,
+      fromStatus,
       toStatus: item.toString,
+      fromCategory: fromStatus ? statusCategories[fromStatus] : undefined,
+      toCategory: statusCategories[item.toString],
       at: entry.created,
       authorLogin: entry.author?.accountId ?? undefined,
       authorName: entry.author?.displayName ?? undefined,

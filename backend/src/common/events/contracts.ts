@@ -69,6 +69,13 @@ export interface PlanningTransitionRef {
   /** Absent for the first transition (there is no status before creation). */
   fromStatus?: string;
   toStatus: string;
+  /**
+   * Workflow-independent buckets ("new" | "indeterminate" | "done") for the
+   * status names above. Flow metrics classify on these because status names are
+   * per-project and unbounded; absent when the name isn't in the site catalog.
+   */
+  fromCategory?: string;
+  toCategory?: string;
   at: string; // ISO timestamp of the transition
   authorLogin?: string;
   authorName?: string;

@@ -142,12 +142,119 @@ export class PlanningService implements OnModuleInit {
         changelogId: t.changelogId,
         fromStatus: t.fromStatus ?? null,
         toStatus: t.toStatus,
+        fromCategory: t.fromCategory ?? null,
+        toCategory: t.toCategory ?? null,
         transitionedAt: new Date(t.at),
         authorLogin: t.authorLogin ?? null,
         authorName: t.authorName ?? null,
       })),
       skipDuplicates: true,
     });
+  }
+
+  /**
+   * Per-item flow timestamps derived from `issue_status_history`: when the item
+   * FIRST entered work ("indeterminate") and when it FIRST reached a done
+   * category, plus when it entered its current status.
+   *
+   * "First" rather than "last" is deliberate — real workflows bounce (this
+   * site's items routinely go In QA -> Story has open defects -> In Development
+   * and back). Cycle time measures from the start of work to the first time it
+   * was called done; taking the last entry would silently shrink every item
+   * that was ever reopened.
+   */
+  async flowTimestamps(
+    tenantId: string,
+    projectKeys?: string[],
+  ): Promise<
+    Map<
+      string,
+      {
+        firstInProgressAt?: Date;
+        firstDoneAt?: Date;
+        currentStatusEnteredAt?: Date;
+      }
+    >
+  > {
+    const rows = await this.prisma.issueStatusHistory.findMany({
+      where: {
+        tenantId,
+        ...(projectKeys?.length
+          ? {
+              externalKey: {
+                in: await this.keysForProjects(tenantId, projectKeys),
+              },
+            }
+          : {}),
+      },
+      orderBy: { transitionedAt: 'asc' },
+      select: {
+        externalKey: true,
+        toCategory: true,
+        transitionedAt: true,
+      },
+    });
+
+    const out = new Map<
+      string,
+      {
+        firstInProgressAt?: Date;
+        firstDoneAt?: Date;
+        currentStatusEnteredAt?: Date;
+      }
+    >();
+    for (const r of rows) {
+      const e = out.get(r.externalKey) ?? {};
+      if (r.toCategory === 'indeterminate' && !e.firstInProgressAt) {
+        e.firstInProgressAt = r.transitionedAt;
+      }
+      if (r.toCategory === 'done' && !e.firstDoneAt) {
+        e.firstDoneAt = r.transitionedAt;
+      }
+      // rows are ascending, so the last one seen is the most recent
+      e.currentStatusEnteredAt = r.transitionedAt;
+      out.set(r.externalKey, e);
+    }
+    return out;
+  }
+
+  /**
+   * Minimal work-item rows for flow aggregation — deliberately NOT
+   * `listWorkItems`, which caps at 500 for table display. An aggregate computed
+   * over an arbitrary 500-item slice but reported as the whole scope is exactly
+   * the kind of number that reads as authoritative while being wrong, so this
+   * selects only the columns flow needs and applies no limit.
+   */
+  async listFlowItems(
+    tenantId: string,
+    projectKeys?: string[],
+  ): Promise<
+    { externalKey: string; projectKey: string; status: string; type: string }[]
+  > {
+    return this.prisma.story.findMany({
+      where: {
+        tenantId,
+        ...(projectKeys?.length ? { projectKey: { in: projectKeys } } : {}),
+        type: { not: 'epic' },
+      },
+      select: {
+        externalKey: true,
+        projectKey: true,
+        status: true,
+        type: true,
+      },
+    });
+  }
+
+  private async keysForProjects(
+    tenantId: string,
+    projectKeys: string[],
+  ): Promise<string[]> {
+    const rows = await this.prisma.story.findMany({
+      where: { tenantId, projectKey: { in: projectKeys } },
+      select: { externalKey: true },
+    });
+    return rows.map((r) => r.externalKey);
   }
 
   private async upsertSprint(

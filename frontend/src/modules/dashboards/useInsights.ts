@@ -107,6 +107,44 @@ export interface EfficiencyView {
   computedAt: string;
 }
 
+/**
+ * Flow metrics from the status-transition timeline. Distinct from
+ * `EfficiencyView.storyCycle`, which measures resolved−created (lead time) and
+ * so counts backlog waiting as if it were work.
+ */
+export interface FlowMetricsView {
+  cycleTime: {
+    sampleSize: number;
+    p50Days: number | null;
+    p85Days: number | null;
+    /** Completions inside the threshold — workflow click-through, not delivery. */
+    excludedInstant: number;
+    instantThresholdSeconds: number;
+  };
+  wip: {
+    count: number;
+    p50Days: number | null;
+    p85Days: number | null;
+    oldestDays: number | null;
+  };
+  aging: {
+    thresholdDays: number;
+    count: number;
+    items: {
+      externalKey: string;
+      projectKey: string;
+      status: string;
+      daysInStatus: number;
+    }[];
+  };
+  coverage: {
+    itemsInScope: number;
+    itemsWithHistory: number;
+    coveragePct: number | null;
+  };
+  computedAt: string;
+}
+
 export interface SprintCatalogItem extends SprintSummary {}
 
 export type ActivityWindow = 'day' | 'week' | 'month';
@@ -271,6 +309,16 @@ export function useEfficiency(scope: Scope, from: string) {
     queryKey: ['efficiency', params.toString()],
     queryFn: () =>
       api.get<EfficiencyView>(`/api/dashboards/efficiency?${params}`),
+  });
+}
+
+export function useFlowMetrics(projects: string[], agingDays = 7) {
+  const params = new URLSearchParams();
+  if (projects.length) params.set('projects', projects.join(','));
+  params.set('agingDays', String(agingDays));
+  return useQuery({
+    queryKey: ['flow', params.toString()],
+    queryFn: () => api.get<FlowMetricsView>(`/api/dashboards/flow?${params}`),
   });
 }
 

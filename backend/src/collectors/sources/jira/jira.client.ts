@@ -181,6 +181,51 @@ export class JiraClient {
   }
 
   /**
+   * `GET /rest/api/3/status` — the site's status catalog, flattened to
+   * `name -> statusCategory key` ("new" | "indeterminate" | "done").
+   *
+   * Change-log entries identify statuses by NAME only, so this is what makes a
+   * transition classifiable: without it there's no way to know that entering
+   * "In Development" means work started while "READY FOR ESTIMATION" doesn't.
+   *
+   * A name can appear more than once (statuses are per-workflow objects); the
+   * first category wins, which is right for all but genuinely ambiguous names.
+   * Returns `null` on failure so a transient error is never cached as "this
+   * site has no statuses".
+   */
+  async getStatusCategories(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+  ): Promise<Record<string, string> | null> {
+    if (!apiToken) {
+      return null;
+    }
+    const url = `${siteUrl.replace(/\/$/, '')}/rest/api/3/status`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      this.logger.warn(`Jira status catalog fetch failed (${res.status})`);
+      return null;
+    }
+    const list = (await res.json()) as {
+      name?: string;
+      statusCategory?: { key?: string };
+    }[];
+    const map: Record<string, string> = {};
+    for (const s of list) {
+      const key = s.statusCategory?.key;
+      if (s.name && key && map[s.name] === undefined) {
+        map[s.name] = key;
+      }
+    }
+    return map;
+  }
+
+  /**
    * `GET /rest/api/3/issue/{key}/changelog` — completes a change log that came
    * back truncated from the search endpoint (`changelog.total` greater than the
    * entries actually returned). Only worth calling for those issues: it's one

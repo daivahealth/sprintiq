@@ -248,6 +248,13 @@ model IssueStatusHistory {
   // Null for the very first transition (issue creation has no prior status).
   fromStatus     String?
   toStatus       String
+  // Workflow-independent buckets for the status names above, resolved from the
+  // site's status catalog at collection time. Flow metrics classify on these:
+  // status NAMES are per-project and unbounded, so "when did this enter
+  // in-progress" is only answerable via the category. Null when the name wasn't
+  // in the catalog (a status deleted since the transition happened).
+  fromCategory   String?
+  toCategory     String?
   transitionedAt DateTime
   authorLogin    String?
   authorName     String?
