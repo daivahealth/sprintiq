@@ -190,6 +190,12 @@ export class JiraCollector extends BaseSourceCollector {
       connection.secretRef,
     );
     if (!apiToken) {
+      // Recorded, not silent: with no credential every pass returns zero events
+      // forever, which is indistinguishable from a healthy idle connection.
+      await this.connections.setSyncHealth(
+        connection.id,
+        `No credential resolved for secret ref "${connection.secretRef ?? '(unset)'}" — set it in admin/configuration or as an environment variable.`,
+      );
       return [];
     }
 
@@ -225,6 +231,7 @@ export class JiraCollector extends BaseSourceCollector {
     let lastSeenUpdatedAt: string | undefined;
     let rateLimitedUntil: Date | undefined;
     let passComplete = false;
+    let passFailure: string | undefined;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const page = await this.client.searchIssues(
@@ -246,6 +253,8 @@ export class JiraCollector extends BaseSourceCollector {
         this.logger.error(
           `Jira search failed for connection ${connection.id} — will retry the same page next tick instead of concluding the backfill is complete.`,
         );
+        passFailure =
+          'Jira rejected the search request (check the API token, site URL and account permissions).';
         break;
       }
       for (const issue of page.issues) {
@@ -297,6 +306,8 @@ export class JiraCollector extends BaseSourceCollector {
       connection.id,
       rateLimitedUntil ? { resetAt: rateLimitedUntil.toISOString() } : {},
     );
+    // Cleared on a clean pass so a connection recovers by itself.
+    await this.connections.setSyncHealth(connection.id, passFailure ?? null);
 
     // Checked against the PERSISTED flag (not an in-memory before/after cursor
     // snapshot) so this self-heals connections that already reached poll mode

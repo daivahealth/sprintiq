@@ -67,6 +67,7 @@ describe('JiraCollector.poll', () => {
       setRateLimitState: jest.fn().mockResolvedValue(undefined),
       updateConfig: jest.fn().mockResolvedValue(undefined),
       setBackfillCompletedAt: jest.fn().mockResolvedValue(undefined),
+      setSyncHealth: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     secrets = {
       resolve: jest.fn().mockResolvedValue('tok'),
@@ -201,6 +202,37 @@ describe('JiraCollector.poll', () => {
         pinnedIso,
     );
     expect(rewrotefloor).toBe(false);
+  });
+
+  it('records why a pass failed on the connection, so zero events stops reading as healthy', async () => {
+    client.searchIssues.mockResolvedValueOnce({ issues: [], failed: true });
+
+    await collector.poll(baseConnection());
+
+    expect(connections.setSyncHealth).toHaveBeenCalledWith(
+      'conn_1',
+      expect.stringContaining('Jira rejected'),
+    );
+  });
+
+  it('records a missing credential rather than returning silently', async () => {
+    secrets.resolve.mockResolvedValue('');
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes).toEqual([]);
+    expect(connections.setSyncHealth).toHaveBeenCalledWith(
+      'conn_1',
+      expect.stringContaining('No credential resolved'),
+    );
+  });
+
+  it('clears the recorded failure on a clean pass so a connection recovers by itself', async () => {
+    client.searchIssues.mockResolvedValue({ issues: [] });
+
+    await collector.poll(baseConnection());
+
+    expect(connections.setSyncHealth).toHaveBeenCalledWith('conn_1', null);
   });
 
   it('does not conclude the backfill is complete when a resumed page request fails (vs. genuinely running out of pages)', async () => {

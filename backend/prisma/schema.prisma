@@ -67,6 +67,13 @@ model Connection {
   syncLagSeconds    Int       @default(0)
   // Set once, the first tick the historical backfill (all entity types) fully completes.
   backfillCompletedAt DateTime?
+  // Health of the most recent sync pass. A pass that reached the source but was
+  // rejected (revoked token, renamed repo, expired page token) still returns
+  // zero events, which is indistinguishable from "nothing changed" — so without
+  // this a broken connection reports a successful sync and shows as healthy
+  // indefinitely. Cleared on the next clean pass.
+  lastError         String?
+  lastErrorAt       DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 

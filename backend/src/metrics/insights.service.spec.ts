@@ -236,3 +236,44 @@ describe('InsightsService.flowMetrics', () => {
     });
   });
 });
+
+describe('InsightsService aggregate scope', () => {
+  let planning: jest.Mocked<PlanningService>;
+  let code: jest.Mocked<CodeService>;
+  let correlation: jest.Mocked<CorrelationService>;
+  let service: InsightsService;
+
+  beforeEach(() => {
+    planning = {
+      listWorkItems: jest.fn().mockResolvedValue([]),
+      listAllWorkItems: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<PlanningService>;
+    code = {
+      listDashboardPullRequests: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<CodeService>;
+    correlation = {
+      prRefsByStoryId: jest.fn().mockResolvedValue(new Map()),
+    } as unknown as jest.Mocked<CorrelationService>;
+    const tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('tenant-a'),
+    } as unknown as jest.Mocked<TenantContextService>;
+    service = new InsightsService(tenantContext, planning, code, correlation);
+  });
+
+  // listWorkItems caps at 500 for table display. Using it for an aggregate
+  // computed a denominator over an arbitrary slice while presenting it as the
+  // whole scope — on a real tenant, 500 where 12,675 existed.
+  it('efficiency derives its denominators from the uncapped query', async () => {
+    await service.efficiency([], [], new Date('2026-06-01T00:00:00.000Z'));
+
+    expect(planning.listAllWorkItems).toHaveBeenCalled();
+    expect(planning.listWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('productivity sums throughput from the uncapped query', async () => {
+    await service.productivity([], [], new Date('2026-06-01T00:00:00.000Z'));
+
+    expect(planning.listAllWorkItems).toHaveBeenCalled();
+    expect(planning.listWorkItems).not.toHaveBeenCalled();
+  });
+});

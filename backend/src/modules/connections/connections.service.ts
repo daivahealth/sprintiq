@@ -23,6 +23,13 @@ export interface ConnectionSyncStatus {
   earliestEventAt: Date | null;
   latestEventAt: Date | null;
   rateLimitedUntil: string | null;
+  /**
+   * Why the last pass didn't reach the source, if it didn't. Zero events is
+   * ambiguous on its own — this is what separates "nothing changed" from
+   * "couldn't run".
+   */
+  lastError: string | null;
+  lastErrorAt: Date | null;
 }
 
 export interface SyncRunHistoryEntry {
@@ -224,6 +231,8 @@ export class ConnectionsService {
         earliestEventAt: stats?._min.occurredAt ?? null,
         latestEventAt: stats?._max.occurredAt ?? null,
         rateLimitedUntil,
+        lastError: c.lastError,
+        lastErrorAt: c.lastErrorAt,
       };
     });
 
@@ -332,6 +341,25 @@ export class ConnectionsService {
     await this.prisma.connection.update({
       where: { id },
       data: { rateLimitState: state as Prisma.InputJsonValue },
+    });
+  }
+
+  /**
+   * Records whether the last sync pass actually succeeded against the source.
+   *
+   * A pass that reached the source and was rejected still returns zero events,
+   * which reads identically to "nothing changed" — so this is what stops a
+   * connection with a revoked token from reporting healthy indefinitely.
+   * Passing `null` clears it, so a connection recovers on its next clean pass
+   * rather than wearing a stale error.
+   */
+  async setSyncHealth(id: string, error: string | null): Promise<void> {
+    await this.prisma.connection.update({
+      where: { id },
+      data: {
+        lastError: error ? error.slice(0, 500) : null,
+        lastErrorAt: error ? new Date() : null,
+      },
     });
   }
 

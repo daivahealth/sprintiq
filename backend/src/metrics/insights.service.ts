@@ -462,7 +462,9 @@ export class InsightsService {
     const tenantId = this.tenantContext.requireTenantId();
     const end = to ?? new Date();
 
-    const items = await this.planning.listWorkItems(tenantId, {
+    // Uncapped: this is summed per week, so a display cap would under-report
+    // throughput while still presenting it as the whole window.
+    const items = await this.planning.listAllWorkItems(tenantId, {
       projects: projectKeys,
       from,
       to: end,
@@ -531,8 +533,10 @@ export class InsightsService {
       .filter((h) => h >= 0)
       .sort((a, b) => a - b);
 
+    // Uncapped: `storiesTotal` and the traceability percentages below are
+    // denominators over the whole scope, not a page of it.
     const items = (
-      await this.planning.listWorkItems(tenantId, {
+      await this.planning.listAllWorkItems(tenantId, {
         projects: projectKeys,
         from,
         to: end,

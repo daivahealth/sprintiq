@@ -95,6 +95,9 @@ export interface ConfigurationConnectionSummary {
   status?: "active" | "disabled";
   lastSyncAt?: string | null;
   syncLagSeconds?: number;
+  /** Why the last pass was rejected, if it was — zero events alone can't say. */
+  lastError?: string | null;
+  lastErrorAt?: string | null;
 }
 
 export interface TenantConfiguration {
@@ -180,6 +183,9 @@ export interface ConnectionSyncStatus {
   earliestEventAt: string | null;
   latestEventAt: string | null;
   rateLimitedUntil: string | null;
+  /** Why the last pass didn't reach the source, if it didn't. */
+  lastError: string | null;
+  lastErrorAt: string | null;
 }
 export interface SyncRunHistoryEntry {
   id: string;

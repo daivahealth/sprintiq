@@ -607,6 +607,25 @@ function ConnectionLinkageNotice({
     );
   }
 
+  // A rejected pass still stamps lastSyncAt and returns zero events, so
+  // "last synced 2 minutes ago" reads identically whether the token works or
+  // was revoked. The recorded error is the only thing that separates them.
+  if (connection.lastError) {
+    return (
+      <div className="space-y-1 rounded-md border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
+        <p>
+          <span className="font-medium">Not collecting.</span> The last sync
+          reached the source but was rejected
+          {connection.lastErrorAt
+            ? ` ${timeAgo(connection.lastErrorAt)}`
+            : ''}
+          .
+        </p>
+        <p className="text-xs">{connection.lastError}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-md border border-success-border bg-success-bg px-3 py-2 text-sm text-success-fg">
       <span className="font-medium">Collecting.</span>{' '}

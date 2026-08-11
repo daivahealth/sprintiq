@@ -46,6 +46,14 @@ export interface ConfigurationConnectionSummary {
   status?: string;
   lastSyncAt?: Date | null;
   syncLagSeconds?: number;
+  /**
+   * Why the last pass failed, if it did. Without this the screen shows
+   * "Collecting — last synced 2 minutes ago" for a connection whose token was
+   * revoked, because a rejected pass still updates `lastSyncAt` and returns
+   * zero events, which is indistinguishable from nothing having changed.
+   */
+  lastError?: string | null;
+  lastErrorAt?: Date | null;
 }
 
 export interface TenantConfigurationView extends TenantConfiguration {
@@ -493,6 +501,8 @@ export class ConfigurationsService {
             status: connection.status,
             lastSyncAt: connection.lastSyncAt,
             syncLagSeconds: connection.syncLagSeconds,
+            lastError: connection.lastError,
+            lastErrorAt: connection.lastErrorAt,
           }
         : { linked: false },
       secretsConfigured,

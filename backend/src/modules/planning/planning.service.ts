@@ -14,6 +14,9 @@ import { PrismaService } from '../../database/prisma.service';
 /** Statuses treated as "done" for velocity/health math (tenant-tunable later). */
 export const DONE_STATUSES = ['Done', 'Closed', 'Resolved'];
 
+/** Row cap for work-item TABLES. Aggregates must not use it — see `listWorkItems`. */
+const WORK_ITEM_DISPLAY_LIMIT = 500;
+
 /** Work-item detail filters — the detailing dimensions (DASHBOARDS.md). */
 export interface WorkItemFilters {
   projects?: string[];
@@ -347,36 +350,60 @@ export class PlanningService implements OnModuleInit {
   }
 
   /** Work items at any granularity: story/bug/subtask/epic × sprint/release/epic/assignee. */
+  /**
+   * Work items for TABLE DISPLAY — capped at `WORK_ITEM_DISPLAY_LIMIT`.
+   *
+   * Never use this to compute an aggregate. The cap silently narrows the set a
+   * number is derived from while the number still reads as covering the whole
+   * scope: on a real tenant this reported 500 items where 12,675 existed, a 25x
+   * under-count on every denominator. Use `listAllWorkItems` for anything
+   * summed, averaged, or percentaged.
+   */
   listWorkItems(tenantId: string, filters: WorkItemFilters): Promise<Story[]> {
     return this.prisma.story.findMany({
-      where: {
-        tenantId,
-        ...(filters.projects && filters.projects.length > 0
-          ? { projectKey: { in: filters.projects } }
-          : {}),
-        ...(filters.types && filters.types.length > 0
-          ? { type: { in: filters.types } }
-          : {}),
-        ...(filters.sprintExternalId
-          ? { sprintExternalId: filters.sprintExternalId }
-          : {}),
-        ...(filters.epicKey ? { epicKey: filters.epicKey } : {}),
-        ...(filters.release ? { releases: { has: filters.release } } : {}),
-        ...(filters.assigneeLogin
-          ? { assigneeLogin: filters.assigneeLogin }
-          : {}),
-        ...(filters.from || filters.to
-          ? {
-              updatedAt: {
-                ...(filters.from ? { gte: filters.from } : {}),
-                ...(filters.to ? { lte: filters.to } : {}),
-              },
-            }
-          : {}),
-      },
+      where: this.workItemWhere(tenantId, filters),
       orderBy: { externalKey: 'asc' },
-      take: 500,
+      take: WORK_ITEM_DISPLAY_LIMIT,
     });
+  }
+
+  /** Same filters as `listWorkItems`, uncapped — for aggregates. */
+  listAllWorkItems(
+    tenantId: string,
+    filters: WorkItemFilters,
+  ): Promise<Story[]> {
+    return this.prisma.story.findMany({
+      where: this.workItemWhere(tenantId, filters),
+      orderBy: { externalKey: 'asc' },
+    });
+  }
+
+  private workItemWhere(tenantId: string, filters: WorkItemFilters) {
+    return {
+      tenantId,
+      ...(filters.projects && filters.projects.length > 0
+        ? { projectKey: { in: filters.projects } }
+        : {}),
+      ...(filters.types && filters.types.length > 0
+        ? { type: { in: filters.types } }
+        : {}),
+      ...(filters.sprintExternalId
+        ? { sprintExternalId: filters.sprintExternalId }
+        : {}),
+      ...(filters.epicKey ? { epicKey: filters.epicKey } : {}),
+      ...(filters.release ? { releases: { has: filters.release } } : {}),
+      ...(filters.assigneeLogin
+        ? { assigneeLogin: filters.assigneeLogin }
+        : {}),
+      ...(filters.from || filters.to
+        ? {
+            updatedAt: {
+              ...(filters.from ? { gte: filters.from } : {}),
+              ...(filters.to ? { lte: filters.to } : {}),
+            },
+          }
+        : {}),
+    };
   }
 
   /** Items committed to a sprint (velocity / health / risk inputs). */
