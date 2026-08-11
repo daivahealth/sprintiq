@@ -70,7 +70,17 @@ function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
   const isRateLimited = Boolean(c.rateLimitedUntil);
   return (
     <TableBodyRow hoverable={false}>
-      <td className="py-2.5 pr-4 font-medium text-fg-secondary">{c.name}</td>
+      <td className="py-2.5 pr-4 font-medium text-fg-secondary">
+        {c.name}
+        {c.lastError && (
+          <span
+            className="mt-0.5 block text-xs font-normal text-danger-fg"
+            title={c.lastError}
+          >
+            {c.lastError}
+          </span>
+        )}
+      </td>
       <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
         {c.eventsIngested.toLocaleString()}
       </td>
@@ -84,7 +94,12 @@ function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
         every {formatInterval(c.syncIntervalMinutes)}
       </td>
       <td className="py-2.5">
-        {isRateLimited ? (
+        {/* Failure outranks progress: a connection that can't reach the source
+            isn't "backfilling", it's stuck, and a rejected pass still advances
+            lastSyncAt so the timestamp alone won't reveal it. */}
+        {c.lastError ? (
+          <Badge tone="bad">failing</Badge>
+        ) : isRateLimited ? (
           <Badge tone="warn">rate-limited</Badge>
         ) : c.backfillCompletedAt ? (
           <Badge tone="good">complete</Badge>

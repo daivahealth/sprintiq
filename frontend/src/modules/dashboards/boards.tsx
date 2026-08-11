@@ -10,6 +10,7 @@ import {
   useActiveSprintsHealth,
   useActiveSprintsRisk,
   useEfficiency,
+  useFlowMetrics,
   useForecast,
   useProductivity,
   useSprintCatalog,
@@ -544,6 +545,161 @@ export function ProductivityBoard() {
             {timeAgo(query.data.computedAt)}.
           </ProvenanceNote>
         </Card>
+      )}
+    </div>
+  );
+}
+
+const days = (v: number | null) => (v === null ? '—' : `${v}d`);
+
+/**
+ * Flow board — cycle time, WIP and ageing, all reconstructed from the
+ * status-transition timeline rather than an item's current status.
+ *
+ * Coverage is shown alongside the numbers, not buried: these metrics can only
+ * be computed for items that actually have a transition history, so a headline
+ * p50 built on a fraction of the scope would otherwise read as authoritative.
+ */
+export function FlowBoard() {
+  const { scope } = useScope();
+  const query = useFlowMetrics(scope.projects);
+  const d = query.data;
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-6">
+      <BoardHeader
+        title="Flow"
+        subtitle="Cycle time, work in progress and ageing, from the status-transition timeline."
+      />
+      <ScopeBar />
+      {query.isLoading && <LoadingCard />}
+      {query.isError && <ErrorCard error={query.error} />}
+      {d && (
+        <>
+          <Card className="space-y-4">
+            <h4 className="text-sm font-medium text-fg-muted">
+              Cycle time — start of work to first done
+            </h4>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Stat
+                label="Cycle p50"
+                value={days(d.cycleTime.p50Days)}
+                hint={`${d.cycleTime.sampleSize} completed items`}
+              />
+              <Stat label="Cycle p85" value={days(d.cycleTime.p85Days)} />
+              <Stat
+                label="In progress"
+                value={d.wip.count}
+                hint="items started, not yet done"
+              />
+              <Stat
+                label="Oldest in progress"
+                value={days(d.wip.oldestDays)}
+              />
+            </div>
+            <ProvenanceNote>
+              Measured between the first transition into an in-progress status
+              and the first into a done status — not resolved−created, which
+              would count backlog waiting as work.
+              {d.cycleTime.excludedInstant > 0 && (
+                <>
+                  {' '}
+                  {d.cycleTime.excludedInstant} completions finished within{' '}
+                  {d.cycleTime.instantThresholdSeconds}s of starting and are
+                  excluded: that's an item being clicked through several
+                  workflow states in one action, not work taking no time.
+                  Counting them would pull p50 to zero.
+                </>
+              )}
+            </ProvenanceNote>
+          </Card>
+
+          <Card className="space-y-4">
+            <h4 className="text-sm font-medium text-fg-muted">
+              Work-in-progress age
+            </h4>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Stat label="WIP age p50" value={days(d.wip.p50Days)} />
+              <Stat label="WIP age p85" value={days(d.wip.p85Days)} />
+              <Stat
+                label={`Ageing (> ${d.aging.thresholdDays}d in status)`}
+                value={d.aging.count}
+              />
+            </div>
+          </Card>
+
+          <Card className="space-y-3">
+            <h4 className="text-sm font-medium text-fg-muted">
+              Ageing items — longest in their current status
+            </h4>
+            {d.aging.items.length === 0 ? (
+              <p className="text-sm text-fg-subtle">
+                Nothing has been sitting in one status longer than{' '}
+                {d.aging.thresholdDays} days.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-fg-subtle">
+                      <th className="py-2 pr-4 font-medium">Item</th>
+                      <th className="py-2 pr-4 font-medium">Project</th>
+                      <th className="py-2 pr-4 font-medium">Status</th>
+                      <th className="py-2 pr-4 font-medium">Days in status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {d.aging.items.map((i) => (
+                      <tr
+                        key={i.externalKey}
+                        className="border-t border-border-subtle"
+                      >
+                        <td className="py-2 pr-4 font-medium text-fg-secondary">
+                          {i.externalKey}
+                        </td>
+                        <td className="py-2 pr-4 text-fg-muted">
+                          {i.projectKey}
+                        </td>
+                        <td className="py-2 pr-4 text-fg-muted">{i.status}</td>
+                        <td className="py-2 pr-4 tabular-nums text-fg-muted">
+                          {i.daysInStatus}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          <Card className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-sm font-medium text-fg-muted">
+                Metric coverage
+              </h4>
+              <Badge
+                tone={
+                  (d.coverage.coveragePct ?? 0) >= 80
+                    ? 'good'
+                    : (d.coverage.coveragePct ?? 0) >= 40
+                      ? 'warn'
+                      : 'bad'
+                }
+              >
+                {d.coverage.coveragePct === null
+                  ? 'no data'
+                  : `${d.coverage.coveragePct}% of items`}
+              </Badge>
+            </div>
+            <ProvenanceNote className="border-t-0 pt-0">
+              {d.coverage.itemsWithHistory} of {d.coverage.itemsInScope} items in
+              scope have a transition history. The rest are excluded rather than
+              counted as zero — items collected before transition history was
+              available, or whose statuses aren't in the site catalog, cannot be
+              measured. Computed {timeAgo(d.computedAt)}.
+            </ProvenanceNote>
+          </Card>
+        </>
       )}
     </div>
   );

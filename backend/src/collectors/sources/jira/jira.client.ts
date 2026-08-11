@@ -1,8 +1,32 @@
 import { Injectable, Logger } from '@nestjs/common';
 
+/** One entry in an issue's change log; `items` covers every field changed together. */
+export interface JiraChangelogEntry {
+  id: string;
+  created: string;
+  author?: { accountId?: string; displayName?: string; emailAddress?: string };
+  items?: {
+    field?: string;
+    fieldId?: string;
+    fromString?: string | null;
+    toString?: string | null;
+  }[];
+}
+
 export interface JiraSearchIssue {
   key: string;
   fields: Record<string, unknown>;
+  /**
+   * Present only when the search requested `expand=changelog`. `total` is the
+   * issue's full change-log length, which can exceed `histories.length` — see
+   * `getIssueChangelog` for the fetch that completes a truncated one.
+   */
+  changelog?: {
+    startAt?: number;
+    maxResults?: number;
+    total?: number;
+    histories?: JiraChangelogEntry[];
+  };
 }
 
 export interface JiraSearchPage {
@@ -76,6 +100,8 @@ export class JiraClient {
       maxResults: number;
       fields: string[];
       pageToken?: string;
+      /** Adds `expand=changelog`, returning each issue's status-transition history inline. */
+      withChangelog?: boolean;
     },
   ): Promise<JiraSearchPage> {
     if (!apiToken) {
@@ -95,6 +121,9 @@ export class JiraClient {
         jql: opts.jql,
         maxResults: opts.maxResults,
         fields: opts.fields,
+        // Must be a comma-separated STRING — this endpoint rejects an array
+        // outright with 400 "Invalid request payload".
+        ...(opts.withChangelog ? { expand: 'changelog' } : {}),
         ...(opts.pageToken ? { nextPageToken: opts.pageToken } : {}),
       }),
     });
@@ -149,5 +178,106 @@ export class JiraClient {
       return null;
     }
     return (await res.json()) as JiraFieldMeta[];
+  }
+
+  /**
+   * `GET /rest/api/3/status` — the site's status catalog, flattened to
+   * `name -> statusCategory key` ("new" | "indeterminate" | "done").
+   *
+   * Change-log entries identify statuses by NAME only, so this is what makes a
+   * transition classifiable: without it there's no way to know that entering
+   * "In Development" means work started while "READY FOR ESTIMATION" doesn't.
+   *
+   * A name can appear more than once (statuses are per-workflow objects); the
+   * first category wins, which is right for all but genuinely ambiguous names.
+   * Returns `null` on failure so a transient error is never cached as "this
+   * site has no statuses".
+   */
+  async getStatusCategories(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+  ): Promise<Record<string, string> | null> {
+    if (!apiToken) {
+      return null;
+    }
+    const url = `${siteUrl.replace(/\/$/, '')}/rest/api/3/status`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      this.logger.warn(`Jira status catalog fetch failed (${res.status})`);
+      return null;
+    }
+    const list = (await res.json()) as {
+      name?: string;
+      statusCategory?: { key?: string };
+    }[];
+    const map: Record<string, string> = {};
+    for (const s of list) {
+      const key = s.statusCategory?.key;
+      if (s.name && key && map[s.name] === undefined) {
+        map[s.name] = key;
+      }
+    }
+    return map;
+  }
+
+  /**
+   * `GET /rest/api/3/issue/{key}/changelog` — completes a change log that came
+   * back truncated from the search endpoint (`changelog.total` greater than the
+   * entries actually returned). Only worth calling for those issues: it's one
+   * request each, so using it as the primary source would be an N+1 across the
+   * whole backfill.
+   *
+   * Returns `null` on failure so the caller can keep the partial history it
+   * already has rather than mistaking a failed fetch for "no more entries".
+   */
+  async getIssueChangelog(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+    issueKey: string,
+    maxResults = 100,
+  ): Promise<JiraChangelogEntry[] | null> {
+    if (!apiToken) {
+      return null;
+    }
+    const base = `${siteUrl.replace(/\/$/, '')}/rest/api/3/issue/${encodeURIComponent(issueKey)}/changelog`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+    const entries: JiraChangelogEntry[] = [];
+    let startAt = 0;
+
+    // Bounded: a single issue's history is small, but never loop unbounded on
+    // a paginated endpoint whose `isLast` we don't control.
+    for (let page = 0; page < 10; page++) {
+      const res = await fetch(
+        `${base}?startAt=${startAt}&maxResults=${maxResults}`,
+        {
+          headers: {
+            Authorization: `Basic ${auth}`,
+            Accept: 'application/json',
+          },
+        },
+      );
+      if (!res.ok) {
+        this.logger.warn(
+          `Jira changelog fetch failed (${res.status}) for ${issueKey}`,
+        );
+        return null;
+      }
+      const body = (await res.json()) as {
+        values?: JiraChangelogEntry[];
+        isLast?: boolean;
+      };
+      entries.push(...(body.values ?? []));
+      if (body.isLast !== false || (body.values ?? []).length === 0) {
+        break;
+      }
+      startAt += maxResults;
+    }
+    return entries;
   }
 }

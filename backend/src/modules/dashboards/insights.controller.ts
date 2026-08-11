@@ -78,6 +78,14 @@ export const DASHBOARD_REGISTRY: {
     roles: ALL_ROLES,
   },
   {
+    key: 'flow',
+    title: 'Flow',
+    path: '/flow',
+    description:
+      'Cycle time, WIP and ageing from the status-transition timeline.',
+    roles: ALL_ROLES,
+  },
+  {
     key: 'project-activity',
     title: 'Project Activity',
     path: '/project-activity',
@@ -267,6 +275,28 @@ export class InsightsController {
       scopeRepos,
       fromDate,
       parseDate(to),
+    );
+    return { ...view, computedAt: new Date().toISOString() };
+  }
+
+  /**
+   * Flow metrics from the status-transition timeline. `agingDays` is the
+   * threshold beyond which an in-progress item counts as ageing (METRICS.md
+   * makes this tenant-configurable; it's a query param until that config
+   * surface exists).
+   */
+  @Get('flow')
+  async flow(
+    @Query('projects') projects?: string,
+    @Query('agingDays') agingDays?: string,
+  ) {
+    const threshold = Number(agingDays ?? 7);
+    if (!Number.isFinite(threshold) || threshold <= 0) {
+      throw new BadRequestException('agingDays must be a positive number.');
+    }
+    const view = await this.insights.flowMetrics(
+      parseList(projects),
+      threshold,
     );
     return { ...view, computedAt: new Date().toISOString() };
   }

@@ -113,6 +113,68 @@ export interface EfficiencyView {
   };
 }
 
+/**
+ * A completion faster than this isn't work finishing — it's someone clicking an
+ * item through several workflow states in one action. Observed on a real site
+ * as ~48% of all completions, so counting them would report a p50 cycle time of
+ * zero and make the whole metric useless.
+ */
+const INSTANT_COMPLETION_SECONDS = 60;
+
+/**
+ * Flow metrics derived from `issue_status_history` (METRICS.md: cycle_time,
+ * wip/wip_age, aging_work_items). Distinct from the `storyCycle` in
+ * `EfficiencyView`, which is `resolvedAt - createdAt` — that's lead_time, and
+ * it counts backlog sitting time as if it were work.
+ */
+export interface FlowMetricsView {
+  cycleTime: {
+    sampleSize: number;
+    p50Days: number | null;
+    p85Days: number | null;
+    /**
+     * Completions where in-progress and done landed within
+     * `instantThresholdSeconds` of each other. These are workflow
+     * book-keeping — someone clicking an item through several states in one
+     * action — not work taking no time, so they're excluded from the
+     * percentiles above and reported here instead. On a real site this can be
+     * ~half of all completions, which would otherwise drag p50 to zero and
+     * make the metric read as instant delivery.
+     */
+    excludedInstant: number;
+    instantThresholdSeconds: number;
+  };
+  wip: {
+    count: number;
+    /** Age since entering work, for items currently in progress. */
+    p50Days: number | null;
+    p85Days: number | null;
+    oldestDays: number | null;
+  };
+  aging: {
+    /** In-progress items sitting in their current status beyond the threshold. */
+    thresholdDays: number;
+    count: number;
+    items: {
+      externalKey: string;
+      projectKey: string;
+      status: string;
+      daysInStatus: number;
+    }[];
+  };
+  /**
+   * How much of the scope this is actually computable for. Flow metrics are
+   * only as good as the transition history behind them: items collected before
+   * transitions existed, or whose statuses aren't in the site catalog, have no
+   * timeline and are excluded rather than counted as zero.
+   */
+  coverage: {
+    itemsInScope: number;
+    itemsWithHistory: number;
+    coveragePct: number | null;
+  };
+}
+
 export interface ProjectActivityRow {
   projectKey: string; // '(unlinked repos)' bucket for repos mapped to no project
   commits: number;
@@ -400,7 +462,9 @@ export class InsightsService {
     const tenantId = this.tenantContext.requireTenantId();
     const end = to ?? new Date();
 
-    const items = await this.planning.listWorkItems(tenantId, {
+    // Uncapped: this is summed per week, so a display cap would under-report
+    // throughput while still presenting it as the whole window.
+    const items = await this.planning.listAllWorkItems(tenantId, {
       projects: projectKeys,
       from,
       to: end,
@@ -469,8 +533,10 @@ export class InsightsService {
       .filter((h) => h >= 0)
       .sort((a, b) => a - b);
 
+    // Uncapped: `storiesTotal` and the traceability percentages below are
+    // denominators over the whole scope, not a page of it.
     const items = (
-      await this.planning.listWorkItems(tenantId, {
+      await this.planning.listAllWorkItems(tenantId, {
         projects: projectKeys,
         from,
         to: end,
@@ -514,6 +580,106 @@ export class InsightsService {
         prsWithStoryPct: pct(prsWithStory, prs.length),
         storiesTotal: items.length,
         prsTotal: prs.length,
+      },
+    };
+  }
+
+  /**
+   * cycle_time / wip / wip_age / aging_work_items, all sourced from the
+   * status-transition timeline rather than the current status.
+   *
+   * flow_efficiency and blocked_time are deliberately absent: they need
+   * active-vs-waiting split WITHIN in-progress, and Jira's status category
+   * can't provide it — "In Development" and "Blocked in QA" are both
+   * `indeterminate`. That split needs a per-tenant status classification, so
+   * guessing it here would produce a confident-looking number built on a
+   * heuristic nobody agreed to.
+   */
+  async flowMetrics(
+    projectKeys: string[],
+    agingThresholdDays = 7,
+  ): Promise<FlowMetricsView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const now = Date.now();
+
+    // listFlowItems, not listWorkItems: the latter caps at 500 for table
+    // display, which would silently compute these aggregates over a slice.
+    const items = await this.planning.listFlowItems(tenantId, projectKeys);
+    const flow = await this.planning.flowTimestamps(tenantId, projectKeys);
+
+    const cycleDays: number[] = [];
+    const wipAges: number[] = [];
+    const aging: FlowMetricsView['aging']['items'] = [];
+    let withHistory = 0;
+    let excludedInstant = 0;
+
+    for (const item of items) {
+      const f = flow.get(item.externalKey);
+      if (!f) {
+        continue;
+      }
+      withHistory++;
+
+      if (f.firstInProgressAt && f.firstDoneAt) {
+        const seconds =
+          (f.firstDoneAt.getTime() - f.firstInProgressAt.getTime()) / 1000;
+        // Negative: marked done before work started (a status reshuffle can do
+        // this) — noise either way, so it's grouped with the instant bucket.
+        if (seconds < INSTANT_COMPLETION_SECONDS) {
+          excludedInstant++;
+        } else {
+          cycleDays.push(seconds / 86_400);
+        }
+      }
+
+      // Currently in progress: entered work, not yet done.
+      const inProgress = Boolean(f.firstInProgressAt) && !f.firstDoneAt;
+      if (inProgress && f.firstInProgressAt) {
+        wipAges.push((now - f.firstInProgressAt.getTime()) / 86_400_000);
+        const daysInStatus = f.currentStatusEnteredAt
+          ? (now - f.currentStatusEnteredAt.getTime()) / 86_400_000
+          : 0;
+        if (daysInStatus > agingThresholdDays) {
+          aging.push({
+            externalKey: item.externalKey,
+            projectKey: item.projectKey,
+            status: item.status,
+            daysInStatus: round2(daysInStatus) ?? 0,
+          });
+        }
+      }
+    }
+
+    cycleDays.sort((a, b) => a - b);
+    const agesSorted = [...wipAges].sort((a, b) => a - b);
+
+    return {
+      cycleTime: {
+        sampleSize: cycleDays.length,
+        p50Days: round2(percentile(cycleDays, 50)),
+        p85Days: round2(percentile(cycleDays, 85)),
+        excludedInstant,
+        instantThresholdSeconds: INSTANT_COMPLETION_SECONDS,
+      },
+      wip: {
+        count: wipAges.length,
+        p50Days: round2(percentile(agesSorted, 50)),
+        p85Days: round2(percentile(agesSorted, 85)),
+        oldestDays: round2(
+          agesSorted.length ? agesSorted[agesSorted.length - 1] : null,
+        ),
+      },
+      aging: {
+        thresholdDays: agingThresholdDays,
+        count: aging.length,
+        items: aging
+          .sort((a, b) => b.daysInStatus - a.daysInStatus)
+          .slice(0, 20),
+      },
+      coverage: {
+        itemsInScope: items.length,
+        itemsWithHistory: withHistory,
+        coveragePct: pct(withHistory, items.length),
       },
     };
   }

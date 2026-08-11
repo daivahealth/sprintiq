@@ -77,6 +77,38 @@ describe('JiraClient', () => {
     expect(body.nextPageToken).toBe('tok_1');
   });
 
+  it('sends expand as a comma-separated STRING when the change log is requested (an array is rejected with 400)', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(fakeResponse({ body: {} })) as unknown as typeof fetch;
+
+    await client.searchIssues('https://acme.atlassian.net', 'a@b.com', 'tok', {
+      jql: 'updated >= "2026/01/01 00:00"',
+      maxResults: 50,
+      fields: ['summary'],
+      withChangelog: true,
+    });
+
+    const init = (global.fetch as jest.Mock).mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body.expand).toBe('changelog');
+  });
+
+  it('omits expand entirely when the change log is not requested', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(fakeResponse({ body: {} })) as unknown as typeof fetch;
+
+    await client.searchIssues('https://acme.atlassian.net', 'a@b.com', 'tok', {
+      jql: 'updated >= "2026/01/01 00:00"',
+      maxResults: 50,
+      fields: ['summary'],
+    });
+
+    const init = (global.fetch as jest.Mock).mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(init.body as string).expand).toBeUndefined();
+  });
+
   it('signals rateLimitedUntil from Retry-After on a 429', async () => {
     global.fetch = jest.fn().mockResolvedValue(
       fakeResponse({
@@ -144,6 +176,54 @@ describe('JiraClient', () => {
 
     expect(page.issues).toEqual([]);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  describe('getIssueChangelog', () => {
+    it('pages through the full history until isLast', async () => {
+      const page1 = {
+        values: [{ id: '1', created: '2026-06-01T00:00:00.000Z', items: [] }],
+        isLast: false,
+      };
+      const page2 = {
+        values: [{ id: '2', created: '2026-06-02T00:00:00.000Z', items: [] }],
+        isLast: true,
+      };
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(fakeResponse({ body: page1 }))
+        .mockResolvedValueOnce(
+          fakeResponse({ body: page2 }),
+        ) as unknown as typeof fetch;
+
+      const entries = await client.getIssueChangelog(
+        'https://acme.atlassian.net',
+        'a@b.com',
+        'tok',
+        'PAY-1',
+      );
+
+      expect(entries?.map((e) => e.id)).toEqual(['1', '2']);
+      expect((global.fetch as jest.Mock).mock.calls[0][0]).toContain(
+        '/rest/api/3/issue/PAY-1/changelog',
+      );
+    });
+
+    it('returns null on failure so the caller keeps the partial history it already has', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          fakeResponse({ ok: false, status: 500 }),
+        ) as unknown as typeof fetch;
+
+      const entries = await client.getIssueChangelog(
+        'https://acme.atlassian.net',
+        'a@b.com',
+        'tok',
+        'PAY-1',
+      );
+
+      expect(entries).toBeNull();
+    });
   });
 
   describe('getFields', () => {

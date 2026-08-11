@@ -42,6 +42,8 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Window:** rolling 30/90d. **Scopes:** team, project, developer*, story-type.
 - **Source:** `issue_status_history`, graph (`commit_implements_story`).
 - **Notes:** if no in-progress transition exists, fall back to first-linked-commit timestamp; flag estimation method in lineage.
+- **Implemented** (`GET /api/dashboards/flow`, Flow board). Boundaries are the FIRST transition into an `indeterminate` status category and the FIRST into `done` — first, not last, because real workflows bounce (items routinely go In QA → Story has open defects → In Development and back), and taking the last would silently shrink every item that was ever reopened. Classification uses the status *category*, never the name: names are per-project and unbounded.
+- **Instant completions are excluded and disclosed.** A completion where in-progress and done land within 60s is workflow book-keeping — someone clicking an item through several states in one action — not work taking no time. On a real site this was ~48% of all completions and dragged p50 to literally zero, so these are counted separately (`cycleTime.excludedInstant`) rather than averaged in.
 
 ### lead_time
 - **Definition:** total time from request to delivery.
@@ -72,22 +74,26 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Formula:** `count(story where status ∈ in-progress-set at t)`; age = `now − in_progress_at`.
 - **Window:** point-in-time + trend. **Scopes:** team, developer*.
 - **Source:** `issue_status_history`. **Notes:** high WIP × high age is the bottleneck signal feeding rules.
+- **Implemented** (Flow board). "In progress" = has entered an `indeterminate` category and not yet reached `done`; age runs from that first in-progress transition.
 
 ### flow_efficiency
 - **Definition:** fraction of cycle time spent actively working vs waiting.
 - **Formula:** `active_time / (active_time + wait_time)` where wait = time in blocked/queue/review-wait states.
 - **Window:** rolling 30/90d. **Scopes:** team, project.
 - **Source:** `issue_status_history`. **Notes:** the single best "where's the friction" flow metric; <40% is typically alarming.
+- **NOT implemented, deliberately.** This needs an active-vs-waiting split *within* in-progress, and the status category can't provide it — "In Development" and "Blocked in QA" are both `indeterminate`. Splitting them requires a per-tenant status classification (which names count as waiting/blocked); inferring it from name substrings would produce a confident-looking number resting on a heuristic nobody agreed to. Blocked by the same missing config as `blocked_time`.
 
 ### blocked_time
 - **Definition:** time work items spend blocked/waiting.
 - **Formula:** `Σ duration in blocked-set states`. **Window:** sprint/rolling. **Scopes:** team, story.
 - **Source:** `issue_status_history`.
+- **NOT implemented, deliberately.** The transition timeline is collected and would support this, but "blocked-set states" has no source-side definition — Jira's status category puts blocked and actively-worked states in the same `indeterminate` bucket. Needs the per-tenant status classification described under `flow_efficiency`.
 
 ### aging_work_items
 - **Definition:** items exceeding an age threshold for their status.
 - **Formula:** `count where (now − status_entered_at) > threshold(status)`. **Window:** point-in-time. **Scopes:** team, developer*.
 - **Source:** `issue_status_history`. **Notes:** threshold configurable per tenant.
+- **Implemented** (Flow board), measured from the most recent transition. The threshold is an `agingDays` query param (default 7) until the per-tenant config surface exists.
 
 ### planning_accuracy
 - **Definition:** estimate vs actual.

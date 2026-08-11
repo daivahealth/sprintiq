@@ -3,6 +3,7 @@ import { Connection } from '@prisma/client';
 import {
   PlanningSprintRef,
   PlanningStoryPayload,
+  PlanningTransitionRef,
 } from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
@@ -14,7 +15,12 @@ import {
   EnvelopeActor,
 } from '../../ingestion/canonical-envelope';
 import { BaseSourceCollector } from '../../framework/source-collector';
-import { BASE_SEARCH_FIELDS, JiraClient, JiraSearchIssue } from './jira.client';
+import {
+  BASE_SEARCH_FIELDS,
+  JiraChangelogEntry,
+  JiraClient,
+  JiraSearchIssue,
+} from './jira.client';
 
 /** Jira Software's Sprint field always carries this custom-field schema type, regardless of its per-site numeric id. */
 const SPRINT_FIELD_CUSTOM_TYPE = 'com.pyxis.greenhopper.jira:gh-sprint';
@@ -103,12 +109,29 @@ export class JiraCollector extends BaseSourceCollector {
     const cachedFields = connection.config as {
       sprintFieldId?: string | null;
       storyPointsFieldIds?: string[];
+      statusCategories?: Record<string, string>;
     } | null;
+    // An issue webhook carries the single change-log entry for THIS edit
+    // (`body.changelog`), not the issue's whole history — which is exactly the
+    // transition that just happened. Keyed on the same changelog id as the
+    // poller's, so webhook and poll converge on one row.
+    const webhookChangelog: JiraChangelogEntry[] = body.changelog?.id
+      ? [
+          {
+            id: String(body.changelog.id),
+            created: issue.fields?.updated ?? this.nowIso(),
+            author: body.user,
+            items: body.changelog.items,
+          },
+        ]
+      : [];
     const payload = this.mapIssueToPayload(
       issue.key,
       issue.fields ?? {},
       cachedFields?.sprintFieldId,
       cachedFields?.storyPointsFieldIds ?? [],
+      webhookChangelog,
+      cachedFields?.statusCategories ?? {},
     );
     const occurredAt: string = issue.fields?.updated ?? this.nowIso();
 
@@ -145,6 +168,8 @@ export class JiraCollector extends BaseSourceCollector {
       sprintFieldId?: string | null;
       /** Site-specific story-point custom-field ids, best-first; `[]` once resolved as absent. */
       storyPointsFieldIds?: string[];
+      /** Cached `status name -> category` for classifying transitions. */
+      statusCategories?: Record<string, string>;
     };
     if (!config.siteUrl || !config.email) {
       return [];
@@ -165,11 +190,22 @@ export class JiraCollector extends BaseSourceCollector {
       connection.secretRef,
     );
     if (!apiToken) {
+      // Recorded, not silent: with no credential every pass returns zero events
+      // forever, which is indistinguishable from a healthy idle connection.
+      await this.connections.setSyncHealth(
+        connection.id,
+        `No credential resolved for secret ref "${connection.secretRef ?? '(unset)'}" — set it in admin/configuration or as an environment variable.`,
+      );
       return [];
     }
 
     const { sprintFieldId, storyPointsFieldIds } =
       await this.resolveCustomFieldIds(connection, config, apiToken);
+    const statusCategories = await this.resolveStatusCategories(
+      connection,
+      config,
+      apiToken,
+    );
     const fields = [
       ...BASE_SEARCH_FIELDS,
       ...(sprintFieldId ? [sprintFieldId] : []),
@@ -195,13 +231,14 @@ export class JiraCollector extends BaseSourceCollector {
     let lastSeenUpdatedAt: string | undefined;
     let rateLimitedUntil: Date | undefined;
     let passComplete = false;
+    let passFailure: string | undefined;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const page = await this.client.searchIssues(
         config.siteUrl,
         config.email,
         apiToken,
-        { jql, maxResults: PAGE_SIZE, fields, pageToken },
+        { jql, maxResults: PAGE_SIZE, fields, pageToken, withChangelog: true },
       );
       if (page.rateLimitedUntil) {
         rateLimitedUntil = page.rateLimitedUntil;
@@ -216,9 +253,17 @@ export class JiraCollector extends BaseSourceCollector {
         this.logger.error(
           `Jira search failed for connection ${connection.id} — will retry the same page next tick instead of concluding the backfill is complete.`,
         );
+        passFailure =
+          'Jira rejected the search request (check the API token, site URL and account permissions).';
         break;
       }
       for (const issue of page.issues) {
+        const histories = await this.resolveChangelog(
+          config.siteUrl,
+          config.email,
+          apiToken,
+          issue,
+        );
         envelopes.push(
           this.fromPolledIssue(
             connection,
@@ -226,6 +271,8 @@ export class JiraCollector extends BaseSourceCollector {
             mode,
             sprintFieldId,
             storyPointsFieldIds,
+            histories,
+            statusCategories,
           ),
         );
         const updated = issue.fields?.updated;
@@ -259,6 +306,8 @@ export class JiraCollector extends BaseSourceCollector {
       connection.id,
       rateLimitedUntil ? { resetAt: rateLimitedUntil.toISOString() } : {},
     );
+    // Cleared on a clean pass so a connection recovers by itself.
+    await this.connections.setSyncHealth(connection.id, passFailure ?? null);
 
     // Checked against the PERSISTED flag (not an in-memory before/after cursor
     // snapshot) so this self-heals connections that already reached poll mode
@@ -396,18 +445,98 @@ export class JiraCollector extends BaseSourceCollector {
     return floor;
   }
 
+  /**
+   * The site's `status name -> category` map, cached on `connection.config`.
+   *
+   * Refreshed whenever a poll sees a status name the cache doesn't cover, so a
+   * workflow gaining a status doesn't permanently leave its transitions
+   * unclassified — the map is a snapshot of a mutable catalog, unlike the
+   * custom-field ids which are effectively fixed per site.
+   *
+   * A failed fetch keeps whatever is cached rather than overwriting it with
+   * nothing (the same reasoning as `resolveCustomFieldIds`).
+   */
+  private async resolveStatusCategories(
+    connection: Connection,
+    config: {
+      siteUrl?: string;
+      email?: string;
+      statusCategories?: Record<string, string>;
+    },
+    apiToken: string,
+  ): Promise<Record<string, string>> {
+    if (config.statusCategories) {
+      return config.statusCategories;
+    }
+    const fetched = await this.client.getStatusCategories(
+      config.siteUrl as string,
+      config.email as string,
+      apiToken,
+    );
+    if (!fetched) {
+      return {};
+    }
+    this.logger.log(
+      `Resolved ${Object.keys(fetched).length} Jira status categories for ${config.siteUrl}.`,
+    );
+    await this.connections.updateConfig(connection.id, {
+      config: {
+        ...((connection.config as Record<string, unknown>) ?? {}),
+        statusCategories: fetched,
+      },
+      status: connection.status,
+    });
+    return fetched;
+  }
+
+  /**
+   * The change log embedded by `expand=changelog`, completed via a per-issue
+   * fetch when the search returned only part of it (`total` exceeds what came
+   * back). Truncation is rare — it needs a long-lived, heavily-worked issue —
+   * so this stays a bounded exception rather than an N+1 across the backfill.
+   *
+   * A failed completion fetch keeps the partial history we already have: some
+   * transitions beat silently dropping the issue's timeline entirely.
+   */
+  private async resolveChangelog(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+    issue: JiraSearchIssue,
+  ): Promise<JiraChangelogEntry[]> {
+    const embedded = issue.changelog?.histories ?? [];
+    const total = issue.changelog?.total ?? embedded.length;
+    if (total <= embedded.length) {
+      return embedded;
+    }
+    this.logger.log(
+      `Change log for ${issue.key} truncated in search (${embedded.length}/${total}) — fetching the full history.`,
+    );
+    const full = await this.client.getIssueChangelog(
+      siteUrl,
+      email,
+      apiToken,
+      issue.key,
+    );
+    return full ?? embedded;
+  }
+
   private fromPolledIssue(
     connection: Connection,
     issue: JiraSearchIssue,
     mode: CollectionMode,
     sprintFieldId?: string | null,
     storyPointsFieldIds: string[] = [],
+    changelog: JiraChangelogEntry[] = [],
+    statusCategories: Record<string, string> = {},
   ): CanonicalEnvelope {
     const payload = this.mapIssueToPayload(
       issue.key,
       issue.fields ?? {},
       sprintFieldId,
       storyPointsFieldIds,
+      changelog,
+      statusCategories,
     );
     const occurredAt =
       typeof issue.fields?.updated === 'string'
@@ -455,6 +584,8 @@ export class JiraCollector extends BaseSourceCollector {
     fields: Record<string, unknown>,
     sprintFieldId?: string | null,
     storyPointsFieldIds: string[] = [],
+    changelog: JiraChangelogEntry[] = [],
+    statusCategories: Record<string, string> = {},
   ): PlanningStoryPayload {
     const project = fields.project as { key?: string } | undefined;
     const issuetype = fields.issuetype as
@@ -479,7 +610,8 @@ export class JiraCollector extends BaseSourceCollector {
     const parentKey: string | undefined =
       isSubtask && parent?.key ? parent.key : undefined;
 
-    const status = fields.status as { name?: string } | undefined;
+    const status = fields.status as
+      { name?: string; statusCategory?: { key?: string } } | undefined;
     const assignee = fields.assignee as
       { name?: string; accountId?: string; displayName?: string } | undefined;
     const priority = fields.priority as { name?: string } | undefined;
@@ -490,6 +622,8 @@ export class JiraCollector extends BaseSourceCollector {
       projectKey,
       type,
       status: status?.name ?? 'unknown',
+      statusCategory: status?.statusCategory?.key ?? undefined,
+      transitions: parseTransitions(changelog, statusCategories),
       storyPoints: firstNumeric(fields, storyPointsFieldIds),
       title: typeof fields.summary === 'string' ? fields.summary : '',
       epicKey,
@@ -509,6 +643,50 @@ export class JiraCollector extends BaseSourceCollector {
           : undefined,
     };
   }
+}
+
+/**
+ * Status changes out of a Jira change log, oldest first.
+ *
+ * A change-log entry groups every field edited in one action, so an entry that
+ * changed assignee AND status yields exactly one transition here — the others
+ * are ignored. Matching is on `field === 'status'` (the display name) OR
+ * `fieldId === 'status'`, since Jira populates them inconsistently across
+ * classic and team-managed projects.
+ */
+function parseTransitions(
+  changelog: JiraChangelogEntry[],
+  statusCategories: Record<string, string> = {},
+): PlanningTransitionRef[] {
+  const transitions: PlanningTransitionRef[] = [];
+  for (const entry of changelog) {
+    const item = (entry.items ?? []).find(
+      (i) => i.field === 'status' || i.fieldId === 'status',
+    );
+    // `toString` is the status NAME. An entry without one isn't a usable
+    // transition — recording it would put a null target in the timeline.
+    if (!item || typeof item.toString !== 'string' || !item.toString) {
+      continue;
+    }
+    if (!entry.id || typeof entry.created !== 'string') {
+      continue;
+    }
+    const fromStatus =
+      typeof item.fromString === 'string' && item.fromString
+        ? item.fromString
+        : undefined;
+    transitions.push({
+      changelogId: String(entry.id),
+      fromStatus,
+      toStatus: item.toString,
+      fromCategory: fromStatus ? statusCategories[fromStatus] : undefined,
+      toCategory: statusCategories[item.toString],
+      at: entry.created,
+      authorLogin: entry.author?.accountId ?? undefined,
+      authorName: entry.author?.displayName ?? undefined,
+    });
+  }
+  return transitions.sort((a, b) => a.at.localeCompare(b.at));
 }
 
 /**

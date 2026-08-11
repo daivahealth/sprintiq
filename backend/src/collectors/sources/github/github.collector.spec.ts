@@ -67,6 +67,7 @@ describe('GithubCollector.poll', () => {
       setRateLimitState: jest.fn().mockResolvedValue(undefined),
       setBackfillCompletedAt: jest.fn().mockResolvedValue(undefined),
       updateConfig: jest.fn().mockResolvedValue(undefined),
+      setSyncHealth: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     secrets = {
       resolve: jest.fn().mockResolvedValue('tok'),
@@ -201,6 +202,34 @@ describe('GithubCollector.poll', () => {
     // Page exhausted with no next page — backfill genuinely finishes.
     expect(cursors.prBackfillDone).toBe(true);
     expect(cursors.prPageOffset).toBeUndefined();
+  });
+
+  it('records why a pass failed on the connection, so zero events stops reading as healthy', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+      failed: true,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    await collector.poll(baseConnection());
+
+    expect(connections.setSyncHealth).toHaveBeenCalledWith(
+      'conn_1',
+      expect.stringContaining('GitHub rejected'),
+    );
+  });
+
+  it('clears the recorded failure on a clean pass so a connection recovers by itself', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    await collector.poll(baseConnection());
+
+    expect(connections.setSyncHealth).toHaveBeenCalledWith('conn_1', null);
   });
 
   it('never concludes the PR backfill is complete when the page request fails', async () => {

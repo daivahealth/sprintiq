@@ -12,6 +12,7 @@ import {
 } from '../modules/dashboards/activity-boards';
 import {
   EfficiencyBoard,
+  FlowBoard,
   ForecastBoard,
   ProductivityBoard,
   SprintHealthBoard,
@@ -61,6 +62,7 @@ export function AppRouter() {
       <Route path="/forecast" element={<Page><ForecastBoard /></Page>} />
       <Route path="/productivity" element={<Page><ProductivityBoard /></Page>} />
       <Route path="/efficiency" element={<Page><EfficiencyBoard /></Page>} />
+      <Route path="/flow" element={<Page><FlowBoard /></Page>} />
       <Route path="/project-activity" element={<Page><ProjectActivityBoard /></Page>} />
       <Route path="/developer-activity" element={<Page><DeveloperActivityBoard /></Page>} />
       <Route path="/top-repos" element={<Page><TopRepos /></Page>} />

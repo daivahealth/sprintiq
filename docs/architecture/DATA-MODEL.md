@@ -69,7 +69,7 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 | `developer_identity` | `id`, `tenant_id`, `canonical_developer_id`, `source_system`, `source_login`, `email?`, `confidence`, `linked_user_id?` | **Identity resolution**: maps many source logins (Git author, Jira account, SSO) to one canonical developer. |
 | `developer` | `id`, `tenant_id`, `display_name`, `primary_team_id?` | Canonical person referenced by the graph & metrics. May or may not be a platform `user`. |
 | `tenant_configuration` | `id`, `tenant_id`, `namespace` (`github`, `jira`, `llm`, `notifications`, `metrics`, `security`), `key`, `values` (JSONB), `secret_refs` (JSONB), `status` | Tenant-wide admin settings and policy defaults. Secret values are never stored here; only references to vault/KMS/env secret names. |
-| `connection` | `id`, `tenant_id`, `source_system`, `name`, `config`, `secret_ref` (OAuth/app-install/PAT token), `webhook_secret_ref`, `sync_cursors` (JSONB), `rate_limit_state`, `status`, `last_sync_at`, `sync_lag` | BC-0 registry; one per Jira instance / GitHub org / etc. Holds collector credentials, webhook secrets, and per-entity poll cursors (all secrets by reference). |
+| `connection` | `id`, `tenant_id`, `source_system`, `name`, `config`, `secret_ref` (OAuth/app-install/PAT token), `webhook_secret_ref`, `sync_cursors` (JSONB), `rate_limit_state`, `status`, `last_sync_at`, `sync_lag`, `last_error`, `last_error_at` | BC-0 registry; one per Jira instance / GitHub org / etc. Holds collector credentials, webhook secrets, and per-entity poll cursors (all secrets by reference). `last_error` records why the most recent pass failed and is cleared on the next clean one — without it a rejected pass is indistinguishable from an idle healthy one, since both collect zero events and both stamp `last_sync_at`. |
 
 > Identity resolution is a **core risk** (§16 R1). Links carry `confidence` and `method`; ambiguous matches are queued for review, not silently merged.
 
@@ -81,13 +81,15 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 |---|---|---|
 | `project` | `id`, `tenant_id`, `connection_id`, `external_key`, `name` | has many epics, sprints |
 | `epic` | `id`, `tenant_id`, `project_id`, `external_key`, `title`, `status`, `target_date?` | has many stories |
-| `story` | `id`, `tenant_id`, `project_id`, `epic_id?`, `external_key` (e.g. `PAY-2231`), `type` (story/bug/task/spike), `status`, `story_points?`, `assignee_developer_id?`, `created_at`, `resolved_at?` | has many subtasks; linked to PRs/commits via graph |
+| `story` | `id`, `tenant_id`, `project_id`, `epic_id?`, `external_key` (e.g. `PAY-2231`), `type` (story/bug/task/spike), `status`, `status_category`, `story_points?`, `assignee_developer_id?`, `created_at`, `resolved_at?` | has many subtasks; linked to PRs/commits via graph. `status_category` is the workflow-independent bucket (`new`/`indeterminate`/`done`) — status *names* are per-project and unbounded (a real site has `READY FOR ESTIMATION`, `Story has open defects`, `ACCEPTED IN UAT`…), so flow metrics classify on the category, never the name. |
 | `subtask` | `id`, `tenant_id`, `story_id`, `external_key`, `status` | |
 | `sprint` | `id`, `tenant_id`, `project_id`, `external_id`, `name`, `state`, `start_at`, `end_at` | has many stories (scope) |
 | `sprint_scope` | `sprint_id`, `story_id`, `added_at`, `removed_at?`, `committed` (bool) | Captures scope changes → scope-creep metric. |
-| `issue_status_history` | `id`, `tenant_id`, `story_id`, `from_status`, `to_status`, `changed_at`, `source_event_id` | **Basis for cycle/lead/blocked time.** Append-only. |
+| `issue_status_history` | `id`, `tenant_id`, `connection_id`, `external_key`, `changelog_id`, `from_status?`, `to_status`, `transitioned_at`, `author_login?`, `author_name?` | **Basis for cycle/lead/blocked time.** Append-only. Implemented as `planning_issue_status_history`. |
 
 `external_key` (the Jira key) is the join target for correlation.
+
+`issue_status_history` keys on `external_key` rather than a `story_id` foreign key, and carries the source system's own `changelog_id` instead of a `source_event_id`. Both follow from how the timeline is collected: transitions arrive attached to the issue in the same payload as the story itself, so keying on `(tenant_id, connection_id, changelog_id)` makes a backfill re-walk, a boundary re-poll, and a webhook for an already-polled transition all converge on one row. Inserting the same transition twice would silently inflate every duration derived from it, which is the failure mode this key exists to prevent.
 
 ---
 

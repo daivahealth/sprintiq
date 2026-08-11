@@ -3,6 +3,7 @@ import { Release, Sprint, Story } from '@prisma/client';
 import {
   PlanningSprintRef,
   PlanningStoryPayload,
+  PlanningTransitionRef,
 } from '../../common/events/contracts';
 import { PLANNING_STORY_EVENT_TYPES } from '../../common/events/event-types';
 import { DomainEvent } from '../../common/events/domain-event';
@@ -12,6 +13,9 @@ import { PrismaService } from '../../database/prisma.service';
 
 /** Statuses treated as "done" for velocity/health math (tenant-tunable later). */
 export const DONE_STATUSES = ['Done', 'Closed', 'Resolved'];
+
+/** Row cap for work-item TABLES. Aggregates must not use it — see `listWorkItems`. */
+const WORK_ITEM_DISPLAY_LIMIT = 500;
 
 /** Work-item detail filters — the detailing dimensions (DASHBOARDS.md). */
 export interface WorkItemFilters {
@@ -70,11 +74,19 @@ export class PlanningService implements OnModuleInit {
       );
     }
 
+    await this.recordTransitions(
+      event.tenantId,
+      connectionId,
+      p.externalKey,
+      p.transitions ?? [],
+    );
+
     const fields = {
       connectionId,
       projectKey: p.projectKey,
       type: p.type ?? 'story',
       status: p.status,
+      statusCategory: p.statusCategory ?? null,
       storyPoints: p.storyPoints ?? null,
       title: p.title,
       epicKey: p.epicKey ?? null,
@@ -104,6 +116,148 @@ export class PlanningService implements OnModuleInit {
     });
 
     this.logger.debug(`upserted ${fields.type} ${p.externalKey} (${p.status})`);
+  }
+
+  /**
+   * Appends the work item's status-transition timeline (`issue_status_history`).
+   *
+   * `createMany({ skipDuplicates })` on the (tenant, connection, changelogId)
+   * unique key makes this safe to replay: a backfill re-walk, a poll that
+   * re-includes the boundary issue, and a webhook for a transition already
+   * polled all converge on one row instead of duplicating the timeline — which
+   * would silently inflate every duration derived from it.
+   */
+  private async recordTransitions(
+    tenantId: string,
+    connectionId: string,
+    externalKey: string,
+    transitions: PlanningTransitionRef[],
+  ): Promise<void> {
+    if (transitions.length === 0) {
+      return;
+    }
+    await this.prisma.issueStatusHistory.createMany({
+      data: transitions.map((t) => ({
+        id: newId(),
+        tenantId,
+        connectionId,
+        externalKey,
+        changelogId: t.changelogId,
+        fromStatus: t.fromStatus ?? null,
+        toStatus: t.toStatus,
+        fromCategory: t.fromCategory ?? null,
+        toCategory: t.toCategory ?? null,
+        transitionedAt: new Date(t.at),
+        authorLogin: t.authorLogin ?? null,
+        authorName: t.authorName ?? null,
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  /**
+   * Per-item flow timestamps derived from `issue_status_history`: when the item
+   * FIRST entered work ("indeterminate") and when it FIRST reached a done
+   * category, plus when it entered its current status.
+   *
+   * "First" rather than "last" is deliberate — real workflows bounce (this
+   * site's items routinely go In QA -> Story has open defects -> In Development
+   * and back). Cycle time measures from the start of work to the first time it
+   * was called done; taking the last entry would silently shrink every item
+   * that was ever reopened.
+   */
+  async flowTimestamps(
+    tenantId: string,
+    projectKeys?: string[],
+  ): Promise<
+    Map<
+      string,
+      {
+        firstInProgressAt?: Date;
+        firstDoneAt?: Date;
+        currentStatusEnteredAt?: Date;
+      }
+    >
+  > {
+    const rows = await this.prisma.issueStatusHistory.findMany({
+      where: {
+        tenantId,
+        ...(projectKeys?.length
+          ? {
+              externalKey: {
+                in: await this.keysForProjects(tenantId, projectKeys),
+              },
+            }
+          : {}),
+      },
+      orderBy: { transitionedAt: 'asc' },
+      select: {
+        externalKey: true,
+        toCategory: true,
+        transitionedAt: true,
+      },
+    });
+
+    const out = new Map<
+      string,
+      {
+        firstInProgressAt?: Date;
+        firstDoneAt?: Date;
+        currentStatusEnteredAt?: Date;
+      }
+    >();
+    for (const r of rows) {
+      const e = out.get(r.externalKey) ?? {};
+      if (r.toCategory === 'indeterminate' && !e.firstInProgressAt) {
+        e.firstInProgressAt = r.transitionedAt;
+      }
+      if (r.toCategory === 'done' && !e.firstDoneAt) {
+        e.firstDoneAt = r.transitionedAt;
+      }
+      // rows are ascending, so the last one seen is the most recent
+      e.currentStatusEnteredAt = r.transitionedAt;
+      out.set(r.externalKey, e);
+    }
+    return out;
+  }
+
+  /**
+   * Minimal work-item rows for flow aggregation — deliberately NOT
+   * `listWorkItems`, which caps at 500 for table display. An aggregate computed
+   * over an arbitrary 500-item slice but reported as the whole scope is exactly
+   * the kind of number that reads as authoritative while being wrong, so this
+   * selects only the columns flow needs and applies no limit.
+   */
+  async listFlowItems(
+    tenantId: string,
+    projectKeys?: string[],
+  ): Promise<
+    { externalKey: string; projectKey: string; status: string; type: string }[]
+  > {
+    return this.prisma.story.findMany({
+      where: {
+        tenantId,
+        ...(projectKeys?.length ? { projectKey: { in: projectKeys } } : {}),
+        type: { not: 'epic' },
+      },
+      select: {
+        externalKey: true,
+        projectKey: true,
+        status: true,
+        type: true,
+      },
+    });
+  }
+
+  private async keysForProjects(
+    tenantId: string,
+    projectKeys: string[],
+  ): Promise<string[]> {
+    const rows = await this.prisma.story.findMany({
+      where: { tenantId, projectKey: { in: projectKeys } },
+      select: { externalKey: true },
+    });
+    return rows.map((r) => r.externalKey);
   }
 
   private async upsertSprint(
@@ -196,36 +350,60 @@ export class PlanningService implements OnModuleInit {
   }
 
   /** Work items at any granularity: story/bug/subtask/epic × sprint/release/epic/assignee. */
+  /**
+   * Work items for TABLE DISPLAY — capped at `WORK_ITEM_DISPLAY_LIMIT`.
+   *
+   * Never use this to compute an aggregate. The cap silently narrows the set a
+   * number is derived from while the number still reads as covering the whole
+   * scope: on a real tenant this reported 500 items where 12,675 existed, a 25x
+   * under-count on every denominator. Use `listAllWorkItems` for anything
+   * summed, averaged, or percentaged.
+   */
   listWorkItems(tenantId: string, filters: WorkItemFilters): Promise<Story[]> {
     return this.prisma.story.findMany({
-      where: {
-        tenantId,
-        ...(filters.projects && filters.projects.length > 0
-          ? { projectKey: { in: filters.projects } }
-          : {}),
-        ...(filters.types && filters.types.length > 0
-          ? { type: { in: filters.types } }
-          : {}),
-        ...(filters.sprintExternalId
-          ? { sprintExternalId: filters.sprintExternalId }
-          : {}),
-        ...(filters.epicKey ? { epicKey: filters.epicKey } : {}),
-        ...(filters.release ? { releases: { has: filters.release } } : {}),
-        ...(filters.assigneeLogin
-          ? { assigneeLogin: filters.assigneeLogin }
-          : {}),
-        ...(filters.from || filters.to
-          ? {
-              updatedAt: {
-                ...(filters.from ? { gte: filters.from } : {}),
-                ...(filters.to ? { lte: filters.to } : {}),
-              },
-            }
-          : {}),
-      },
+      where: this.workItemWhere(tenantId, filters),
       orderBy: { externalKey: 'asc' },
-      take: 500,
+      take: WORK_ITEM_DISPLAY_LIMIT,
     });
+  }
+
+  /** Same filters as `listWorkItems`, uncapped — for aggregates. */
+  listAllWorkItems(
+    tenantId: string,
+    filters: WorkItemFilters,
+  ): Promise<Story[]> {
+    return this.prisma.story.findMany({
+      where: this.workItemWhere(tenantId, filters),
+      orderBy: { externalKey: 'asc' },
+    });
+  }
+
+  private workItemWhere(tenantId: string, filters: WorkItemFilters) {
+    return {
+      tenantId,
+      ...(filters.projects && filters.projects.length > 0
+        ? { projectKey: { in: filters.projects } }
+        : {}),
+      ...(filters.types && filters.types.length > 0
+        ? { type: { in: filters.types } }
+        : {}),
+      ...(filters.sprintExternalId
+        ? { sprintExternalId: filters.sprintExternalId }
+        : {}),
+      ...(filters.epicKey ? { epicKey: filters.epicKey } : {}),
+      ...(filters.release ? { releases: { has: filters.release } } : {}),
+      ...(filters.assigneeLogin
+        ? { assigneeLogin: filters.assigneeLogin }
+        : {}),
+      ...(filters.from || filters.to
+        ? {
+            updatedAt: {
+              ...(filters.from ? { gte: filters.from } : {}),
+              ...(filters.to ? { lte: filters.to } : {}),
+            },
+          }
+        : {}),
+    };
   }
 
   /** Items committed to a sprint (velocity / health / risk inputs). */

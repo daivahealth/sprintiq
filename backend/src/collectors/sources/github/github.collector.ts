@@ -62,6 +62,8 @@ interface GithubSyncCursors {
 interface SyncResult {
   envelopes: CanonicalEnvelope[];
   rateLimitedUntil?: Date;
+  /** The source rejected a request this pass — surfaced on the connection's health. */
+  failed?: boolean;
 }
 
 /**
@@ -214,6 +216,12 @@ export class GithubCollector extends BaseSourceCollector {
       connection.secretRef,
     );
     if (!token) {
+      // Recorded, not silent: with no credential every pass returns zero events
+      // forever, which is indistinguishable from a healthy idle connection.
+      await this.connections.setSyncHealth(
+        connection.id,
+        `No credential resolved for secret ref "${connection.secretRef ?? '(unset)'}" — set it in admin/configuration or as an environment variable.`,
+      );
       return [];
     }
 
@@ -239,6 +247,7 @@ export class GithubCollector extends BaseSourceCollector {
 
     const envelopes = [...prResult.envelopes];
     let rateLimitedUntil = prResult.rateLimitedUntil;
+    let failed = prResult.failed ?? false;
 
     if (!rateLimitedUntil) {
       const commitResult = await this.syncCommits(
@@ -250,6 +259,7 @@ export class GithubCollector extends BaseSourceCollector {
       );
       envelopes.push(...commitResult.envelopes);
       rateLimitedUntil = commitResult.rateLimitedUntil;
+      failed = failed || (commitResult.failed ?? false);
     }
 
     await this.connections.setSyncCursors(
@@ -259,6 +269,13 @@ export class GithubCollector extends BaseSourceCollector {
     await this.connections.setRateLimitState(
       connection.id,
       rateLimitedUntil ? { resetAt: rateLimitedUntil.toISOString() } : {},
+    );
+    // Cleared on a clean pass so a connection recovers by itself.
+    await this.connections.setSyncHealth(
+      connection.id,
+      failed
+        ? 'GitHub rejected a request (check the token scope, repository access and that the repo still exists under this name).'
+        : null,
     );
 
     // Checked against the PERSISTED flag (not an in-memory before/after cursor
@@ -310,7 +327,7 @@ export class GithubCollector extends BaseSourceCollector {
           `GitHub PR backfill request failed for ${repoFullName} (connection ${connection.id}) — keeping cursors and retrying next tick instead of concluding the backfill is complete.`,
         );
         this.suspendPrBackfill(cursors, page, offset);
-        return { envelopes };
+        return { envelopes, failed: true };
       }
       // Anchor the incremental watermark to the true newest PR, captured once
       // at the very start of backfill — regardless of how many ticks it takes.
@@ -499,7 +516,7 @@ export class GithubCollector extends BaseSourceCollector {
           `GitHub commit sync request failed for ${repoFullName} (connection ${connection.id}) — keeping cursors and retrying next tick instead of advancing the watermark.`,
         );
         this.suspendCommitsPass(cursors, page, offset);
-        return { envelopes };
+        return { envelopes, failed: true };
       }
       for (let i = offset; i < result.items.length; i++) {
         const commit = result.items[i];
