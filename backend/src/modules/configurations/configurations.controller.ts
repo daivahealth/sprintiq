@@ -17,6 +17,8 @@ import {
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
+import { GithubReviewReconcilerService } from '../../collectors/sources/github/github-review-reconciler.service';
+import { JiraStoryDateReconcilerService } from '../../collectors/sources/jira/jira-story-date-reconciler.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
@@ -86,6 +88,8 @@ export class ConfigurationsController {
     private readonly githubOrgSync: GithubOrgSyncService,
     private readonly commitReconciler: GithubCommitReconcilerService,
     private readonly prReconciler: GithubPrReconcilerService,
+    private readonly reviewReconciler: GithubReviewReconcilerService,
+    private readonly storyDateReconciler: JiraStoryDateReconcilerService,
     private readonly correlation: CorrelationService,
   ) {}
 
@@ -209,6 +213,37 @@ export class ConfigurationsController {
   @Post('github/reconcile-pr-stats')
   async reconcilePrStats(@CurrentUser() user: AuthUser) {
     return this.prReconciler.reconcile(user.tenantId);
+  }
+
+  /**
+   * One-off maintenance: fetches the review timeline for PRs ingested before
+   * reviews were collected. The regular sync will never reach them — it only
+   * walks PRs newer than the `prNewestSeenAt` watermark, and every existing PR
+   * sits behind it (see `GithubReviewReconcilerService`).
+   *
+   * Bounded per invocation (one API call per PR) and resumable — re-run until
+   * `remaining` is 0.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/reconcile-reviews')
+  async reconcileReviews(@CurrentUser() user: AuthUser) {
+    return this.reviewReconciler.reconcile(user.tenantId);
+  }
+
+  /**
+   * One-off maintenance: fills in `story.sourceCreatedAt` (Jira's own `created`
+   * date) for work items ingested before that field was collected, so they
+   * rejoin `lead_time` instead of being excluded.
+   *
+   * A cursor reset and re-walk cannot do this: the Jira idempotency key is
+   * derived from the issue's `updated` timestamp, so re-collecting an unchanged
+   * issue produces the same key and is dropped as a duplicate before it reaches
+   * the projector (see `JiraStoryDateReconcilerService`).
+   */
+  @Roles(Role.ADMIN)
+  @Post('jira/reconcile-story-dates')
+  async reconcileStoryDates(@CurrentUser() user: AuthUser) {
+    return this.storyDateReconciler.reconcile(user.tenantId);
   }
 
   /**

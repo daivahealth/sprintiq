@@ -740,6 +740,126 @@ export function EfficiencyBoard() {
                 value={d.storyCycle.p85Days === null ? '—' : `${d.storyCycle.p85Days}d`}
               />
             </div>
+            <ProvenanceNote>
+              Story cycle here is lead time — Jira resolved date minus Jira
+              created date — so it includes backlog waiting. For time spent
+              actually being worked, see cycle time on the Flow board.
+              {d.storyCycle.excludedNoCreatedAt > 0 && (
+                <>
+                  {' '}
+                  {d.storyCycle.excludedNoCreatedAt} resolved items carry no
+                  Jira creation date and are excluded: they were collected
+                  before that field was requested and haven't changed since, so
+                  the sync hasn't re-walked them. They rejoin the metric on
+                  their next update, or immediately after a Jira re-backfill.
+                </>
+              )}
+            </ProvenanceNote>
+          </Card>
+          <Card className="space-y-4">
+            <h4 className="text-sm font-medium text-fg-muted">
+              Review quality
+            </h4>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Stat
+                label="Reviewed before merge"
+                value={
+                  d.review.mergedWithReviewPct === null
+                    ? '—'
+                    : `${d.review.mergedWithReviewPct}%`
+                }
+                hint={`${d.review.mergedTotal} merged PRs`}
+              />
+              <Stat
+                label="Time to first review p50"
+                value={formatHours(d.review.timeToFirstReview.p50Hours)}
+                hint={`p85 ${formatHours(d.review.timeToFirstReview.p85Hours)}`}
+              />
+              <Stat
+                label="Approval → merge p50"
+                value={formatHours(d.review.mergeTime.p50Hours)}
+              />
+              <Stat
+                label="Self-merged"
+                value={
+                  d.review.selfMergedPct === null
+                    ? '—'
+                    : `${d.review.selfMergedPct}%`
+                }
+                hint={`${d.review.selfMergedCount} of ${d.review.selfMergeSampleSize} with a known merger`}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Stat
+                label="Active reviewers"
+                value={String(d.review.reviewerCount)}
+                hint="humans only"
+              />
+              <Stat
+                label="Busiest reviewer share"
+                value={
+                  d.review.topReviewerSharePct === null
+                    ? '—'
+                    : `${d.review.topReviewerSharePct}%`
+                }
+                hint="concentration, not a ranking"
+              />
+              <Stat
+                label="Comments per PR p50"
+                value={
+                  d.review.reviewDepth.p50Comments === null
+                    ? '—'
+                    : String(d.review.reviewDepth.p50Comments)
+                }
+                hint={`${d.review.reviewDepth.sampleSize} PRs counted`}
+              />
+              <Stat
+                label="Rubber-stamped"
+                value={
+                  d.review.rubberStamp.pct === null
+                    ? '—'
+                    : `${d.review.rubberStamp.pct}%`
+                }
+                hint={`${d.review.rubberStamp.count} of ${d.review.rubberStamp.sampleSize} PRs over ${d.review.rubberStamp.sizeThreshold} lines`}
+              />
+            </div>
+            <ProvenanceNote>
+              Merged PRs only — an open PR hasn't finished waiting for review,
+              so counting it would improve coverage purely because work is
+              still in flight. Self-merge counts only PRs the author merged
+              with no approval from anyone else. Rubber-stamped means a large
+              PR approved without a single <em>inline</em> comment — review
+              discussion held in the PR conversation instead of on the diff
+              is not counted, so read a high rate as "worth a look", not as
+              proof nobody read the code.
+              {d.review.botReviews > 0 && (
+                <>
+                  {' '}
+                  {d.review.botReviews} automated reviews are excluded from
+                  every figure here — a bot approving in seconds otherwise
+                  flatters coverage and drags review latency toward zero while
+                  no human has looked at the change.
+                  {d.review.botOnlyReviewedPrs > 0 && (
+                    <>
+                      {' '}
+                      {d.review.botOnlyReviewedPrs} merged PRs were reviewed
+                      <em> only</em> by a bot and count as unreviewed.
+                    </>
+                  )}
+                </>
+              )}
+              {d.review.excludedNoReviewData > 0 && (
+                <>
+                  {' '}
+                  {d.review.excludedNoReviewData} merged PRs are excluded
+                  because their reviews haven't been collected yet — a PR with
+                  no review record is indistinguishable from a genuinely
+                  unreviewed one, and counting them together would report an
+                  alarming self-merge rate that is really just incomplete
+                  collection.
+                </>
+              )}
+            </ProvenanceNote>
           </Card>
           <Card className="space-y-4">
             <h4 className="text-sm font-medium text-fg-muted">

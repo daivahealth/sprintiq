@@ -15,6 +15,8 @@ Authoritative definitions for every metric SprintIQ computes — exact inputs, f
 - **Metric health:** each value is paired with `linkage_coverage` + `data_freshness` + `confidence` so consumers know how much to trust it. **A metric below its coverage floor is shown as "low confidence," never silently.**
 - **Ethics:** individual-scope values are diagnostic/supportive, RBAC-gated, never ranked. Anti-vanity metrics (LOC, commit count) are explicitly labeled *context, not performance*.
 - **Exclusions (global defaults):** bot/automation accounts excluded from people metrics; merge commits excluded from authorship churn; reverts flagged; draft PRs excluded from review-time until marked ready. Exclusions are configurable per tenant and recorded in `metric_definition`.
+  - **Bot exclusion is implemented for reviews** (`pr_review.is_bot`, classified at collection time from GitHub's own `user.type == "Bot"`, falling back to the `name[bot]` login convention). Every Review Quality figure and every `pr_cycle_time` sub-phase counts humans only; bot reviews are reported separately (`review.botReviews`), and a merged PR whose **only** review was automated counts as unreviewed (`review.botOnlyReviewedPrs`) — reviewed on paper, not in practice. This is not cosmetic: on a real tenant an AI review bot was the second-busiest reviewer at 15% of all reviews, reporting a 5-minute median time-to-first-review that was the bot's response time, not the team's.
+  - **Still open:** bot exclusion on the commit/author side, merge-commit exclusion from churn, revert flagging, draft-PR handling, and making any of it per-tenant configurable. Today the rules are code-level defaults, not `metric_definition` rows.
 
 Each metric below: **Definition · Formula · Window · Scopes · Source · Notes/edge-cases.**
 
@@ -47,9 +49,13 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 
 ### lead_time
 - **Definition:** total time from request to delivery.
-- **Formula:** `resolved_at − created_at` (p50/p85).
+- **Formula:** `resolved_at − source_created_at` (p50/p85).
 - **Window:** rolling 30/90d. **Scopes:** team, project, story-type.
 - **Source:** `story`.
+- **Implemented** (`GET /api/dashboards/efficiency`, Efficiency board, reported as "story cycle"). Note this counts backlog waiting as part of the total — for time spent actually being worked, use `cycle_time` off the transition timeline.
+- **Measured from the source's creation date, never the row's.** `story.source_created_at` is Jira's `fields.created`; `story.created_at` is when the row was inserted, which for a backfilled tenant is the day the backfill ran. Computing lead time from the latter made every pre-existing item look days old instead of months, and the negative results were dropped by a `>= 0` guard — so the metric reported a plausible p50 over whichever few items happened to be created *after* ingestion began, with no indication anything was wrong.
+- **Items with no source creation date are excluded and disclosed** (`storyCycle.excludedNoCreatedAt`), never estimated from the ingestion date. This covers items collected before `created` was requested from Jira.
+- **Repairing already-collected items needs `POST /admin/configurations/jira/reconcile-story-dates`, not a re-walk.** The Jira idempotency key is `jira:{issueKey}:{eventType}:{updated}`, so re-collecting an unchanged issue produces the identical key and is dropped as a duplicate before it reaches the projector — a cursor reset repairs only the issues that happened to change on their own, which were never the problem. The reconciler batches 100 issues per request (`key in (...)`, `fields=['created']`) and writes the rows directly, the same documented exception as GitHub's stat reconcilers.
 
 ### lead_time_for_changes *(DORA)*
 - **Definition:** time from code committed to running in production.
@@ -147,9 +153,18 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 
 ## 3. Review Quality (Git)
 
+> **Implemented** (`GET /api/dashboards/efficiency`, Efficiency board "Review quality" card): review_coverage, review_latency/time_to_first_review, review_time, merge_time, self_merge_rate, and reviewer distribution. All scoped to **merged** PRs — an open PR hasn't finished waiting for review, so including it would improve coverage purely because work is still in flight.
+>
+> **Merged PRs whose reviews haven't been collected yet are excluded from every percentage and reported** (`review.excludedNoReviewData`), keyed on `pull_request.reviews_fetched_at` — an explicit "we asked" marker, not an inference from absent rows. A PR with no review record is indistinguishable from a genuinely unreviewed one, and merging the two would report an alarming self-merge rate that is really just incomplete collection.
+>
+> `self_merge_rate` carries its **own** denominator (`review.selfMergeSampleSize`): it needs `merged_by`, which only arrives on the PR detail call, so PRs backfilled by the reviews reconciler alone don't have it. Counting those as "not a self-merge" would dilute the rate toward zero.
+>
+> `review_depth` and `rubber_stamp_rate` are **not** implemented — see below.
+
 ### review_coverage
 - **Definition:** share of merged PRs with ≥1 substantive review.
 - **Formula:** `count(PR with ≥1 review having comments OR approval by non-author) / count(merged PR)`. **Window:** rolling 30d. **Scopes:** repo, team. **Source:** `pull_request`, `pr_review`.
+- Implemented as ≥1 *submitted* review of any state. "Substantive" is not yet enforced: distinguishing a real review from a bare approval needs comment counts (see `review_depth`).
 
 ### reviewer_load / distribution
 - **Definition:** reviews per reviewer and concentration.
@@ -159,6 +174,10 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 ### review_depth
 - **Definition:** scrutiny per PR; and **rubber_stamp_rate**.
 - **Formula:** `comments_per_PR` (p50); rubber_stamp_rate = `count(approved with 0 comments AND size > threshold)/count(approved large PRs)`. **Window:** rolling. **Scopes:** repo, team. **Source:** `pr_review`, `pull_request`.
+- **Implemented** (Efficiency board "Review quality"). Inline comment counts come from `GET /pulls/{n}/comments`, which attributes each comment to its `pull_request_review_id` — a 4th per-PR call on top of detail + commits + reviews.
+- It is deliberately **not** approximated from `has_body`: a review body is a summary note, and "approved with no summary note" is a different claim from "approved without engaging with the diff". Reporting one as the other would put a rubber-stamp accusation on teams that simply approve tersely.
+- **`rubber_stamp_rate` only asks its question where the answer means something.** Restricted to PRs over `sizeThreshold` (default 200 changed lines) — a one-line fix approved without comment is not a rubber stamp — and to reviews whose comments were **actually counted** (`pr_review.comments_counted`). An uncounted zero is not evidence of anything, and without that guard every PR collected before comment counting existed would be indicted retroactively.
+- **It counts *inline* review comments only, and that materially limits what it can claim.** `GET /pulls/{n}/comments` returns comments anchored to the diff; review discussion held in the PR **conversation** (`/issues/{n}/comments`) is a separate endpoint SprintIQ does not collect. A team that reviews thoroughly but writes its feedback in the conversation tab therefore scores as rubber-stamping. On a real tenant this reported **97.9%** (229 of 234 large PRs), which is a serious-sounding accusation resting on one of two possible comment surfaces — so the metric is presented as "worth a look", never as proof nobody read the code. Collecting conversation comments would settle it (api/README.md §12 #17).
 
 ### self_merge_rate
 - **Definition:** PRs merged by author without independent review.
@@ -302,6 +321,8 @@ All composites are **weighted, normalized blends** of section metrics. Every `co
 - **Incremental on event:** affected metric_values recompute when relevant domain events arrive (PR merged, story transitioned, deploy finished).
 - **Scheduled rollups:** the Scheduler (M17) recomputes aggregates, percentiles, composites, and forecasts on cadence (e.g., hourly aggregates, per-sprint-close finalization).
 - **Freshness:** `metric_health.data_freshness` reflects the newest contributing event; stale beyond threshold → shown as stale.
+  - **Implemented tenant-wide, not yet per metric** (`GET /api/dashboards/freshness`, rendered on every board via the Scope Bar). Ingestion is poll-only on a 4-hour default interval, so the reported age is the **oldest** successful sync across active connections — the honest bound on a screen that mixes Jira and GitHub facts. Connections that have never synced (data absent, not old) and those whose last pass failed (frozen at an unknown age) are surfaced separately. Per-metric freshness derived from each value's own contributing events arrives with `metric_health`.
+  - A view's `computedAt` is when the **query** ran, not how fresh the data is. It was previously the only timestamp on screen, which read as freshness and made four-hour-old figures look live.
 - **Lineage:** each value links to its source events/correlation links (`lineage_link`) so every dashboard number is traceable (architecture guarantee).
 - **Coverage floors:** correlated metrics (anything depending on linkage) carry `linkage_coverage`; below the per-metric floor they render as "low confidence."
 

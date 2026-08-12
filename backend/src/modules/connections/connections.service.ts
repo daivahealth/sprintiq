@@ -72,6 +72,30 @@ export interface SyncStatusView {
   sources: SourceSyncStatus[];
 }
 
+/**
+ * How current the data behind a dashboard number actually is
+ * (METRICS.md §9 `data_freshness`).
+ *
+ * Deliberately the WORST case across the tenant's active connections, not an
+ * average or the newest: a board mixes Jira and GitHub facts, so the oldest
+ * sync is the honest bound on the whole screen. A connection that has never
+ * synced, or is failing, makes the number unbounded rather than merely old —
+ * both are reported separately instead of being folded into a timestamp that
+ * would still look recent.
+ */
+export interface DataFreshness {
+  /** Oldest successful sync across active connections; null if none has ever synced. */
+  lastSyncAt: Date | null;
+  /** Seconds since `lastSyncAt`; null when nothing has synced yet. */
+  staleSeconds: number | null;
+  /** Active connections with no successful sync yet — their data is absent, not stale. */
+  neverSynced: number;
+  /** Active connections whose last pass failed, so their slice is frozen at an unknown age. */
+  failing: { sourceSystem: string; name: string; error: string }[];
+  /** Per-source newest sync, so the UI can say which side is behind. */
+  sources: { sourceSystem: string; lastSyncAt: Date | null }[];
+}
+
 const HISTORY_PAGE_SIZE = 20;
 
 export interface CreateConnectionInput {
@@ -151,6 +175,72 @@ export class ConnectionsService {
       where: { id },
       data: { lastSyncAt: new Date(), syncLagSeconds: lagSeconds },
     });
+  }
+
+  /**
+   * How stale the tenant's data is right now — what every dashboard shows
+   * beside its numbers so a four-hour-old figure isn't read as live.
+   *
+   * Only `active` connections count: a disabled one isn't expected to be
+   * current, so including it would report permanent staleness for a source the
+   * tenant deliberately turned off.
+   */
+  async getDataFreshness(tenantId: string): Promise<DataFreshness> {
+    const connections = await this.prisma.connection.findMany({
+      where: { tenantId, status: 'active' },
+      select: {
+        sourceSystem: true,
+        name: true,
+        lastSyncAt: true,
+        lastError: true,
+      },
+    });
+
+    const synced = connections.filter(
+      (c): c is (typeof connections)[number] & { lastSyncAt: Date } =>
+        c.lastSyncAt !== null,
+    );
+    // The OLDEST sync bounds the whole screen: a board mixes sources, so the
+    // freshest one says nothing about the number sitting next to it.
+    const lastSyncAt = synced.length
+      ? synced.reduce(
+          (oldest, c) => (c.lastSyncAt < oldest ? c.lastSyncAt : oldest),
+          synced[0].lastSyncAt,
+        )
+      : null;
+
+    // Per source: the NEWEST sync among its connections. A never-synced
+    // connection must not pin its source to null once a sibling has synced —
+    // it is already counted in `neverSynced`.
+    const bySource = new Map<string, Date | null>();
+    for (const c of connections) {
+      if (!bySource.has(c.sourceSystem)) {
+        bySource.set(c.sourceSystem, c.lastSyncAt);
+        continue;
+      }
+      const current = bySource.get(c.sourceSystem) ?? null;
+      if (c.lastSyncAt && (current === null || c.lastSyncAt > current)) {
+        bySource.set(c.sourceSystem, c.lastSyncAt);
+      }
+    }
+
+    return {
+      lastSyncAt,
+      staleSeconds: lastSyncAt
+        ? Math.max(0, Math.round((Date.now() - lastSyncAt.getTime()) / 1000))
+        : null,
+      neverSynced: connections.length - synced.length,
+      failing: connections
+        .filter((c) => c.lastError)
+        .map((c) => ({
+          sourceSystem: c.sourceSystem,
+          name: c.name,
+          error: c.lastError as string,
+        })),
+      sources: [...bySource.entries()]
+        .map(([sourceSystem, at]) => ({ sourceSystem, lastSyncAt: at }))
+        .sort((a, b) => a.sourceSystem.localeCompare(b.sourceSystem)),
+    };
   }
 
   /** Marks the connection's one-time historical backfill as complete (Sync Status screen). */

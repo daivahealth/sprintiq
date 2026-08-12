@@ -355,9 +355,33 @@ describe('JiraCollector.poll', () => {
         'assignee',
         'priority',
         'resolutiondate',
+        'created',
         'updated',
       ],
     });
+  });
+
+  it("carries Jira's own creation date so lead time isn't measured from the ingestion date", async () => {
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('PAY-1', {
+          created: '2026-01-04T09:30:00.000Z',
+          resolutiondate: '2026-03-02T11:00:00.000Z',
+        }),
+        // An issue whose `created` Jira didn't return stays undefined rather
+        // than defaulting to now — a wrong date here becomes a wrong metric,
+        // while an absent one is excluded and disclosed downstream.
+        issue('PAY-2'),
+      ],
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes[0].data).toMatchObject({
+      externalKey: 'PAY-1',
+      sourceCreatedAt: '2026-01-04T09:30:00.000Z',
+    });
+    expect(envelopes[1].data.sourceCreatedAt).toBeUndefined();
   });
 
   it('resolves every plausible story-point field and reads whichever one the issue actually populates', async () => {

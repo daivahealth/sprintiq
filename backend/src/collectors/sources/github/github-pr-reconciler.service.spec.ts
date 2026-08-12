@@ -30,7 +30,7 @@ function connection(overrides: Partial<Connection> = {}): Connection {
 
 describe('GithubPrReconcilerService', () => {
   let prisma: {
-    pullRequest: { findMany: jest.Mock; update: jest.Mock };
+    pullRequest: { findMany: jest.Mock; update: jest.Mock; count: jest.Mock };
     connection: { findUnique: jest.Mock };
   };
   let secrets: jest.Mocked<SecretsService>;
@@ -42,6 +42,7 @@ describe('GithubPrReconcilerService', () => {
       pullRequest: {
         findMany: jest.fn(),
         update: jest.fn().mockResolvedValue(undefined),
+        count: jest.fn().mockResolvedValue(0),
       },
       connection: { findUnique: jest.fn().mockResolvedValue(connection()) },
     };
@@ -73,15 +74,22 @@ describe('GithubPrReconcilerService', () => {
 
     const result = await service.reconcile('tenant-a');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       candidates: 2,
       updated: 2,
       skipped: 0,
       rateLimited: false,
+      remaining: 0,
     });
     expect(prisma.pullRequest.update).toHaveBeenCalledWith({
       where: { id: 'p1' },
-      data: { additions: 5, deletions: 2, changedFiles: 1 },
+      data: {
+        additions: 5,
+        deletions: 2,
+        changedFiles: 1,
+        // Stamped so a scheduled sweep terminates instead of re-asking forever.
+        detailFetchedAt: expect.any(Date),
+      },
     });
     expect(client.getPullRequestDetail).toHaveBeenCalledWith(
       'athmahealth/api',
@@ -152,19 +160,51 @@ describe('GithubPrReconcilerService', () => {
     expect(prisma.pullRequest.update).not.toHaveBeenCalled();
   });
 
-  it('queries for rows still at 0/0/0', async () => {
+  it('queries for rows still at 0/0/0, and merged rows with no known merger', async () => {
     prisma.pullRequest.findMany.mockResolvedValue([]);
 
     await service.reconcile('tenant-a');
 
+    // `merged_by` lives only on this same detail response, so a PR backfilled
+    // for reviews alone never got it — and self_merge_rate can't be computed
+    // without it.
     expect(prisma.pullRequest.findMany).toHaveBeenCalledWith({
       where: {
         tenantId: 'tenant-a',
-        additions: 0,
-        deletions: 0,
-        changedFiles: 0,
+        // Only rows never asked about. Without this a PR the source can never
+        // satisfy — an empty diff, a merger whose account is gone — stays a
+        // candidate forever, which a scheduled sweep would re-fetch every tick.
+        detailFetchedAt: null,
+        OR: [
+          { additions: 0, deletions: 0, changedFiles: 0 },
+          { state: 'merged', mergedBy: null },
+        ],
       },
       take: 200,
     });
+  });
+
+  it('does not reset good stats on a PR selected only for its missing merger', async () => {
+    prisma.pullRequest.findMany.mockResolvedValue([
+      {
+        id: 'pr_1',
+        connectionId: 'conn_1',
+        repoFullName: 'acme/api',
+        externalNumber: '1',
+      },
+    ]);
+    client.getPullRequestDetail.mockResolvedValue({ mergedBy: 'asmith' });
+
+    await service.reconcile('tenant-a');
+
+    const data = prisma.pullRequest.update.mock.calls[0][0].data as Record<
+      string,
+      unknown
+    >;
+    expect(data).toEqual({
+      mergedBy: 'asmith',
+      detailFetchedAt: expect.any(Date),
+    });
+    expect(data.additions).toBeUndefined();
   });
 });

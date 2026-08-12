@@ -226,6 +226,13 @@ model Story {
   assigneeLogin    String?
   assigneeName     String?
   priority         String?
+  // When the item was created in JIRA — distinct from `createdAt` below, which
+  // is when this row was inserted (i.e. the backfill's run date). lead_time
+  // (METRICS.md) is `resolvedAt - sourceCreatedAt`; measuring it from
+  // `createdAt` reports the age of our database, not the age of the work.
+  // Null for items collected before this field was requested from Jira, until
+  // they are re-walked — such items are excluded from lead time, not guessed.
+  sourceCreatedAt  DateTime?
   resolvedAt       DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -327,15 +334,85 @@ model PullRequest {
   changedFiles   Int       @default(0)
   commitMessages String[]  @default([])
   openedAt       DateTime?
+  // Derived from the review timeline at collection time: first review of any
+  // kind, and the first APPROVED. Both drive the pr_cycle_time sub-phases
+  // (METRICS.md §2), which are the part that makes a slow PR actionable.
   firstReviewAt  DateTime?
   approvedAt     DateTime?
   mergedAt       DateTime?
+  // Who merged it — `self_merge_rate` is "merged by the author with no
+  // non-author approval", so the merger and the approvals are both required.
+  mergedBy       String?
+  // When this PR's review timeline was last fetched. The discriminator between
+  // "genuinely had no reviews" and "we never asked" — those are the same
+  // absence of `code_pr_review` rows, and conflating them reports incomplete
+  // collection as an alarming self-merge rate. Set even when the fetch found
+  // zero reviews, because that is itself an answer.
+  reviewsFetchedAt DateTime?
+  // When the PR detail endpoint was last fetched for this row. Same purpose as
+  // `reviewsFetchedAt`: without it, a PR that GitHub will never fill in — a
+  // genuinely empty diff, or one merged by a since-deleted account so
+  // `merged_by` is null forever — stays a reconciler candidate permanently.
+  // Harmless for a hand-run endpoint; on a schedule it re-fetches those rows
+  // every tick, burning the rate limit for eternity.
+  detailFetchedAt  DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   @@unique([tenantId, repoFullName, externalNumber])
   @@index([tenantId, repoFullName])
+  @@index([tenantId, reviewsFetchedAt])
+  @@index([tenantId, detailFetchedAt])
   @@map("code_pull_request")
+}
+
+// One submitted review on a pull request (`pr_review` in DATA-MODEL.md) — the
+// basis for the whole Review Quality family (METRICS.md §3) and for
+// time_to_first_review / review_time / merge_time, none of which are derivable
+// from the pull_request row alone.
+//
+// Keyed on GitHub's own review id so a re-poll of the same PR converges on one
+// row instead of duplicating the timeline — the same reasoning as
+// issue_status_history's changelog id. Reviews are immutable once submitted,
+// so there is nothing to update on conflict.
+model PrReview {
+  id             String   @id
+  tenantId       String
+  connectionId   String
+  repoFullName   String
+  // Denormalized rather than a pull_request FK, matching how every other fact
+  // in this schema addresses externals: source ids are VARCHAR, never re-minted.
+  externalNumber String
+  /// GitHub's review id — stable per review, so re-collection de-dupes.
+  externalId     String
+  reviewerLogin  String?
+  /// Automation, not a person. Recorded at collection time from GitHub's own
+  /// `user.type == "Bot"`, falling back to the `name[bot]` login convention.
+  /// People metrics (coverage, latency, reviewer load) exclude these — a bot
+  /// approving in seconds otherwise flatters both review coverage and review
+  /// latency while no human has looked at the change (METRICS.md §0).
+  isBot          Boolean  @default(false)
+  /// approved | changes_requested | commented | dismissed
+  state          String
+  /// Inline review comments attributed to this review, from the PR's review-
+  /// comments endpoint. Drives review_depth and rubber_stamp_rate.
+  commentCount   Int      @default(0)
+  /// Whether the comment counts for this PR were actually fetched. Without it,
+  /// "reviewed with zero comments" (a rubber stamp) is indistinguishable from
+  /// "we never counted", and rubber_stamp_rate would indict every PR collected
+  /// before comment counting existed.
+  commentsCounted Boolean @default(false)
+  /// Whether the review carried a written body — the honest "substantive"
+  /// signal available without the comments endpoint.
+  hasBody        Boolean  @default(false)
+  submittedAt    DateTime
+  createdAt      DateTime @default(now())
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId, repoFullName, externalNumber])
+  @@index([tenantId, reviewerLogin, submittedAt])
+  @@index([tenantId, isBot])
+  @@map("code_pr_review")
 }
 
 model Commit {

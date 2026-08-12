@@ -99,6 +99,15 @@ export class PlanningService implements OnModuleInit {
       resolvedAt: p.resolvedAt ? new Date(p.resolvedAt) : null,
     };
 
+    // Jira's own creation timestamp — never defaulted to `new Date()` or to the
+    // row's `createdAt`: a wrong date here silently becomes a wrong lead_time,
+    // whereas null is excluded from the metric and disclosed. Applied to the
+    // update only when the event actually carries one, so an event from a path
+    // that doesn't collect it can never wipe a value already resolved.
+    const sourceCreatedAt = p.sourceCreatedAt
+      ? new Date(p.sourceCreatedAt)
+      : undefined;
+
     await this.prisma.story.upsert({
       where: {
         tenantId_externalKey: {
@@ -110,9 +119,13 @@ export class PlanningService implements OnModuleInit {
         id: newId(),
         tenantId: event.tenantId,
         externalKey: p.externalKey,
+        sourceCreatedAt: sourceCreatedAt ?? null,
         ...fields,
       },
-      update: fields,
+      update: {
+        ...fields,
+        ...(sourceCreatedAt ? { sourceCreatedAt } : {}),
+      },
     });
 
     this.logger.debug(`upserted ${fields.type} ${p.externalKey} (${p.status})`);

@@ -361,3 +361,132 @@ describe('ConnectionsService.getSyncStatus', () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * `data_freshness` (METRICS.md §9). Poll-only ingestion runs on a 4-hour
+ * default interval, so a board's numbers can be hours old while the page was
+ * rendered a second ago — these assertions pin the "report the worst case,
+ * never an average" contract that makes the disclosure honest.
+ */
+describe('ConnectionsService.getDataFreshness', () => {
+  const prisma = {
+    connection: { findMany: jest.fn() },
+  } as unknown as PrismaService;
+
+  const svc = new ConnectionsService(prisma);
+  const findMany = prisma.connection.findMany as jest.Mock;
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('reads only the calling tenant, and only active connections', async () => {
+    findMany.mockResolvedValue([]);
+
+    await svc.getDataFreshness('tenant-a');
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: 'tenant-a', status: 'active' },
+      }),
+    );
+  });
+
+  it('reports the OLDEST sync, because a board mixes sources', async () => {
+    const recent = new Date(Date.now() - 60_000);
+    const old = new Date(Date.now() - 4 * 60 * 60_000);
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'github',
+        name: 'acme/api',
+        lastSyncAt: recent,
+        lastError: null,
+      },
+      {
+        sourceSystem: 'jira',
+        name: 'acme jira',
+        lastSyncAt: old,
+        lastError: null,
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    // Reporting `recent` here would tell a PM the Jira-derived sprint numbers
+    // beside it were a minute old when they are four hours old.
+    expect(f.lastSyncAt).toEqual(old);
+    expect(f.staleSeconds).toBeGreaterThanOrEqual(4 * 60 * 60 - 5);
+    expect(f.sources).toEqual([
+      { sourceSystem: 'github', lastSyncAt: recent },
+      { sourceSystem: 'jira', lastSyncAt: old },
+    ]);
+  });
+
+  it('counts never-synced connections separately from stale ones', async () => {
+    const recent = new Date(Date.now() - 60_000);
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'github',
+        name: 'acme/api',
+        lastSyncAt: recent,
+        lastError: null,
+      },
+      {
+        sourceSystem: 'jira',
+        name: 'acme jira',
+        lastSyncAt: null,
+        lastError: null,
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    // A connection that never ran has no age — its data is absent, not old.
+    // Folding it into `lastSyncAt` would report a healthy-looking timestamp.
+    expect(f.neverSynced).toBe(1);
+    expect(f.lastSyncAt).toEqual(recent);
+  });
+
+  it("a never-synced connection doesn't pin its source to null once a sibling has synced", async () => {
+    const recent = new Date(Date.now() - 60_000);
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'github',
+        name: 'acme/new',
+        lastSyncAt: null,
+        lastError: null,
+      },
+      {
+        sourceSystem: 'github',
+        name: 'acme/api',
+        lastSyncAt: recent,
+        lastError: null,
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    expect(f.sources).toEqual([{ sourceSystem: 'github', lastSyncAt: recent }]);
+    expect(f.neverSynced).toBe(1);
+  });
+
+  it('surfaces failing connections, whose slice is frozen at an unknown age', async () => {
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'jira',
+        name: 'acme jira',
+        lastSyncAt: new Date(Date.now() - 60_000),
+        lastError: 'Jira rejected the search request',
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    // lastSyncAt alone looks healthy — a rejected pass still stamps it.
+    expect(f.failing).toEqual([
+      {
+        sourceSystem: 'jira',
+        name: 'acme jira',
+        error: 'Jira rejected the search request',
+      },
+    ]);
+  });
+});

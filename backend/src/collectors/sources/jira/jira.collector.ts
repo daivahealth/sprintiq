@@ -637,6 +637,8 @@ export class JiraCollector extends BaseSourceCollector {
       assigneeLogin: assignee?.name ?? assignee?.accountId ?? undefined,
       assigneeName: assignee?.displayName ?? undefined,
       priority: priority?.name ?? undefined,
+      sourceCreatedAt:
+        typeof fields.created === 'string' ? fields.created : undefined,
       resolvedAt:
         typeof fields.resolutiondate === 'string'
           ? fields.resolutiondate

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { MultiSelect } from "../../components/multi-select";
 import { FilterBar, SegmentedControl } from "../../components/ui";
 import { TIME_PRESETS, useScope } from "../../lib/scope";
+import { FreshnessNote } from "./FreshnessNote";
 import { useProjects, useRepos } from "./useCatalog";
 
 /**
@@ -72,6 +73,10 @@ export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
           graph)
         </p>
       )}
+
+      {/* Every board renders the Scope Bar, so freshness lands on all of them
+          from one place rather than being threaded through each read model. */}
+      <FreshnessNote />
     </FilterBar>
   );
 }

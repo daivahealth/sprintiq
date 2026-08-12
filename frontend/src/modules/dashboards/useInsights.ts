@@ -97,20 +97,57 @@ export interface ProductivityWeek {
 
 export interface EfficiencyView {
   prCycle: { sampleSize: number; p50Hours: number | null; p85Hours: number | null };
-  storyCycle: { sampleSize: number; p50Days: number | null; p85Days: number | null };
+  storyCycle: {
+    sampleSize: number;
+    p50Days: number | null;
+    p85Days: number | null;
+    /** Resolved items with no Jira creation date — lead time is unmeasurable for them. */
+    excludedNoCreatedAt: number;
+  };
   traceability: {
     storiesWithCodePct: number | null;
     prsWithStoryPct: number | null;
     storiesTotal: number;
     prsTotal: number;
   };
+  /** Review Quality + pr_cycle_time sub-phases, from the collected review timeline. */
+  review: {
+    mergedWithReviewPct: number | null;
+    mergedTotal: number;
+    /** Merged PRs whose reviews aren't collected yet — excluded from the percentages. */
+    excludedNoReviewData: number;
+    timeToFirstReview: {
+      sampleSize: number;
+      p50Hours: number | null;
+      p85Hours: number | null;
+    };
+    reviewTime: { sampleSize: number; p50Hours: number | null };
+    mergeTime: { sampleSize: number; p50Hours: number | null };
+    selfMergedPct: number | null;
+    selfMergedCount: number;
+    /** PRs where the merger is known — the self-merge denominator. */
+    selfMergeSampleSize: number;
+    reviewerCount: number;
+    topReviewerSharePct: number | null;
+    /** Automated reviews, excluded from every figure above. */
+    botReviews: number;
+    /** Merged PRs whose only review was a bot — reviewed on paper, not in practice. */
+    botOnlyReviewedPrs: number;
+    reviewDepth: { sampleSize: number; p50Comments: number | null };
+    rubberStamp: {
+      sampleSize: number;
+      count: number;
+      pct: number | null;
+      sizeThreshold: number;
+    };
+  };
   computedAt: string;
 }
 
 /**
  * Flow metrics from the status-transition timeline. Distinct from
- * `EfficiencyView.storyCycle`, which measures resolved−created (lead time) and
- * so counts backlog waiting as if it were work.
+ * `EfficiencyView.storyCycle`, which measures resolved−(Jira) created (lead
+ * time) and so counts backlog waiting as if it were work.
  */
 export interface FlowMetricsView {
   cycleTime: {
@@ -200,6 +237,32 @@ function scopeParams(scope: Scope, from?: string): URLSearchParams {
   if (scope.repos.length > 0) params.set('repos', scope.repos.join(','));
   if (from) params.set('from', from);
   return params;
+}
+
+/**
+ * How current the collected data is (METRICS.md §9). Deliberately separate
+ * from each view's `computedAt`, which only says when the QUERY ran — with
+ * polling on a 4-hour default interval, "computed just now" over four-hour-old
+ * facts is the misreading this exists to prevent.
+ */
+export interface FreshnessView {
+  /** Oldest successful sync across active connections — the bound on the whole screen. */
+  lastSyncAt: string | null;
+  staleSeconds: number | null;
+  neverSynced: number;
+  failing: { sourceSystem: string; name: string; error: string }[];
+  sources: { sourceSystem: string; lastSyncAt: string | null }[];
+}
+
+export function useFreshness() {
+  return useQuery({
+    queryKey: ['freshness'],
+    queryFn: () => api.get<FreshnessView>('/api/dashboards/freshness'),
+    // Re-checked on an interval: staleness grows on its own, without any
+    // user action to invalidate the cache.
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
 }
 
 export function useAssignments() {

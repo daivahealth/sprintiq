@@ -104,12 +104,72 @@ export interface EfficiencyView {
     sampleSize: number;
     p50Days: number | null;
     p85Days: number | null;
+    /**
+     * Resolved items carrying no Jira creation date, so lead time can't be
+     * measured for them. Disclosed rather than silently narrowing the
+     * denominator — see `computeEfficiency`.
+     */
+    excludedNoCreatedAt: number;
   };
   traceability: {
     storiesWithCodePct: number | null; // Jira → GitHub direction
     prsWithStoryPct: number | null; // GitHub → Jira direction
     storiesTotal: number;
     prsTotal: number;
+  };
+  /**
+   * Review Quality (METRICS.md §3) + the pr_cycle_time sub-phases, all from
+   * the collected `pr_review` timeline. Bot reviews are excluded from every
+   * figure here and reported separately (METRICS.md §0 exclusions).
+   */
+  review: {
+    /** Merged PRs with at least one review — the denominator for the rest. */
+    mergedWithReviewPct: number | null;
+    mergedTotal: number;
+    /** Merged PRs whose reviews we haven't collected yet; excluded from the percentages. */
+    excludedNoReviewData: number;
+    timeToFirstReview: {
+      sampleSize: number;
+      p50Hours: number | null;
+      p85Hours: number | null;
+    };
+    /** first review → first approval. */
+    reviewTime: { sampleSize: number; p50Hours: number | null };
+    /** first approval → merge. */
+    mergeTime: { sampleSize: number; p50Hours: number | null };
+    /** Merged by the author with no approval from anyone else. */
+    selfMergedPct: number | null;
+    selfMergedCount: number;
+    /**
+     * PRs where the merger is actually known. `merged_by` only arrives on the
+     * PR detail call, so PRs reconciled for reviews alone don't have it — they
+     * are excluded from the self-merge rate rather than counted as "not a
+     * self-merge", which would dilute it toward zero.
+     */
+    selfMergeSampleSize: number;
+    /** Distinct reviewers, and the busiest one's share — a bottleneck/bus-factor signal. */
+    reviewerCount: number;
+    topReviewerSharePct: number | null;
+    /**
+     * Bot reviews, excluded from every figure above and reported separately.
+     * A bot approving in seconds otherwise flatters both review coverage and
+     * review latency while no human has looked at the change.
+     */
+    botReviews: number;
+    /** Merged PRs whose ONLY review was automated — reviewed on paper, not in practice. */
+    botOnlyReviewedPrs: number;
+    /** Inline comments per merged PR (human reviews only). */
+    reviewDepth: { sampleSize: number; p50Comments: number | null };
+    /**
+     * Large PRs approved by a human without a single inline comment.
+     * Only counts PRs whose comments were actually counted.
+     */
+    rubberStamp: {
+      sampleSize: number;
+      count: number;
+      pct: number | null;
+      sizeThreshold: number;
+    };
   };
 }
 
@@ -122,10 +182,18 @@ export interface EfficiencyView {
 const INSTANT_COMPLETION_SECONDS = 60;
 
 /**
+ * `rubber_stamp_rate` only asks its question of PRs big enough that a silent
+ * approval is notable. A one-line fix approved without comment is not a
+ * rubber stamp. Tenant-configurable once the metric-config surface exists
+ * (METRICS.md §0 exclusions).
+ */
+const RUBBER_STAMP_SIZE_THRESHOLD = 200;
+
+/**
  * Flow metrics derived from `issue_status_history` (METRICS.md: cycle_time,
  * wip/wip_age, aging_work_items). Distinct from the `storyCycle` in
- * `EfficiencyView`, which is `resolvedAt - createdAt` — that's lead_time, and
- * it counts backlog sitting time as if it were work.
+ * `EfficiencyView`, which is `resolvedAt - sourceCreatedAt` — that's lead_time,
+ * and it counts backlog sitting time as if it were work.
  */
 export interface FlowMetricsView {
   cycleTime: {
@@ -543,9 +611,22 @@ export class InsightsService {
       })
     ).filter((i) => i.type !== 'epic');
     const resolved = items.filter((i) => i.resolvedAt);
-    const storyDays = resolved
+    // lead_time is `resolvedAt - sourceCreatedAt` (Jira's own creation date).
+    // It is NOT measured from the row's `createdAt`, which is when the backfill
+    // inserted it: for any item that existed before we first collected it, that
+    // is the day of the backfill, making every historical item look days old
+    // instead of months. Those came out negative and were dropped by a `>= 0`
+    // filter, so the metric quietly reported a p50 over whichever handful of
+    // items happened to be created AFTER ingestion started.
+    //
+    // Items with no `sourceCreatedAt` (collected before the field was
+    // requested, and not yet re-walked) are counted and reported instead of
+    // being estimated from anything.
+    const withCreated = resolved.filter((i) => i.sourceCreatedAt);
+    const storyDays = withCreated
       .map(
-        (i) => (i.resolvedAt!.getTime() - i.createdAt.getTime()) / 86_400_000,
+        (i) =>
+          (i.resolvedAt!.getTime() - i.sourceCreatedAt!.getTime()) / 86_400_000,
       )
       .filter((d) => d >= 0)
       .sort((a, b) => a - b);
@@ -574,12 +655,226 @@ export class InsightsService {
         sampleSize: storyDays.length,
         p50Days: round2(percentile(storyDays, 50)),
         p85Days: round2(percentile(storyDays, 85)),
+        excludedNoCreatedAt: resolved.length - withCreated.length,
       },
       traceability: {
         storiesWithCodePct: pct(storiesWithCode, items.length),
         prsWithStoryPct: pct(prsWithStory, prs.length),
         storiesTotal: items.length,
         prsTotal: prs.length,
+      },
+      review: await this.reviewMetrics(tenantId, merged),
+    };
+  }
+
+  /**
+   * Review Quality (METRICS.md §3) + the pr_cycle_time sub-phases.
+   *
+   * Scoped to MERGED PRs: an open PR hasn't finished waiting for review, so
+   * counting it would report a coverage figure that improves purely because
+   * work is still in flight.
+   *
+   * PRs whose reviews haven't been collected yet are excluded from every
+   * percentage and reported as `excludedNoReviewData` — a PR with no review
+   * ROW is indistinguishable from a genuinely unreviewed one, and silently
+   * merging the two would report an alarming self-merge rate that is really
+   * just incomplete collection. `firstReviewAt` is the discriminator: the
+   * collector sets it (or explicitly null) only when it actually fetched the
+   * reviews.
+   */
+  private async reviewMetrics(
+    tenantId: string,
+    merged: PullRequest[],
+  ): Promise<EfficiencyView['review']> {
+    const reviews = await this.code.listReviewsForPullRequests(
+      tenantId,
+      merged.map((pr) => ({
+        repoFullName: pr.repoFullName,
+        externalNumber: pr.externalNumber,
+      })),
+    );
+    // Bots are excluded from every people metric below (METRICS.md §0). On a
+    // real tenant an AI review bot was the 2nd-busiest "reviewer" at 15% of
+    // all reviews, answering in seconds — left in, it flatters review coverage
+    // AND drags review latency toward zero while no human has seen the change.
+    const humanReviews = reviews.filter((r) => !r.isBot);
+    const botReviews = reviews.length - humanReviews.length;
+
+    const byPr = new Map<string, typeof reviews>();
+    for (const r of humanReviews) {
+      const key = `${r.repoFullName}#${r.externalNumber}`;
+      byPr.set(key, [...(byPr.get(key) ?? []), r]);
+    }
+    const anyReviewByPr = new Set(
+      reviews.map((r) => `${r.repoFullName}#${r.externalNumber}`),
+    );
+
+    // Collected = the review timeline was actually fetched for this PR,
+    // including when the answer was "none". `reviewsFetchedAt` is the explicit
+    // marker rather than an inference from absent rows, because "no reviews"
+    // and "never asked" are the same absence and must not be conflated.
+    const collected = merged.filter((pr) => pr.reviewsFetchedAt !== null);
+    const prKey = (pr: PullRequest) =>
+      `${pr.repoFullName}#${pr.externalNumber}`;
+    // Reviewed = reviewed BY A HUMAN. `firstReviewAt` can't be used directly
+    // any more: the collector derives it from all reviews including bots.
+    const reviewed = collected.filter((pr) => byPr.has(prKey(pr)));
+    const botOnlyReviewedPrs = collected.filter(
+      (pr) => !byPr.has(prKey(pr)) && anyReviewByPr.has(prKey(pr)),
+    ).length;
+
+    /** Earliest human review on a PR — the honest first-review timestamp. */
+    const firstHumanReviewAt = (pr: PullRequest): Date | undefined => {
+      const rs = byPr.get(prKey(pr)) ?? [];
+      return rs.length
+        ? rs.reduce(
+            (min, r) => (r.submittedAt < min ? r.submittedAt : min),
+            rs[0].submittedAt,
+          )
+        : undefined;
+    };
+    const firstHumanApprovalAt = (pr: PullRequest): Date | undefined => {
+      const rs = (byPr.get(prKey(pr)) ?? []).filter(
+        (r) => r.state === 'approved',
+      );
+      return rs.length
+        ? rs.reduce(
+            (min, r) => (r.submittedAt < min ? r.submittedAt : min),
+            rs[0].submittedAt,
+          )
+        : undefined;
+    };
+
+    const hours = (a: Date, b: Date) => (b.getTime() - a.getTime()) / 3_600_000;
+    // All three phases run off HUMAN review timestamps. Using the stored
+    // firstReviewAt/approvedAt would silently measure the bot: on a real
+    // tenant that reported a 5-minute median time-to-first-review, which is a
+    // bot's response time, not the team's.
+    const ttfr = reviewed
+      .filter((pr) => pr.openedAt)
+      .map((pr) => hours(pr.openedAt!, firstHumanReviewAt(pr)!))
+      .filter((h) => h >= 0)
+      .sort((a, b) => a - b);
+    const reviewTime = collected
+      .map((pr) => ({
+        first: firstHumanReviewAt(pr),
+        approved: firstHumanApprovalAt(pr),
+      }))
+      .filter((x) => x.first && x.approved)
+      .map((x) => hours(x.first!, x.approved!))
+      .filter((h) => h >= 0)
+      .sort((a, b) => a - b);
+    const mergeTime = collected
+      .map((pr) => ({
+        approved: firstHumanApprovalAt(pr),
+        merged: pr.mergedAt,
+      }))
+      .filter((x) => x.approved && x.merged)
+      .map((x) => hours(x.approved!, x.merged!))
+      .filter((h) => h >= 0)
+      .sort((a, b) => a - b);
+
+    // review_depth: inline comments per merged PR, human reviews only, and
+    // only where the count actually ran.
+    const depthPerPr = collected
+      .map((pr) => (byPr.get(prKey(pr)) ?? []).filter((r) => r.commentsCounted))
+      .filter((rs) => rs.length > 0)
+      .map((rs) => rs.reduce((sum, r) => sum + r.commentCount, 0))
+      .sort((a, b) => a - b);
+
+    // rubber_stamp_rate: a LARGE PR approved by a human who left no inline
+    // comment at all. Restricted to PRs whose comments were counted — an
+    // uncounted zero is not evidence of anything.
+    const rubberStampSample = collected.filter((pr) => {
+      const size = (pr.additions ?? 0) + (pr.deletions ?? 0);
+      if (size <= RUBBER_STAMP_SIZE_THRESHOLD) {
+        return false;
+      }
+      const rs = byPr.get(prKey(pr)) ?? [];
+      return rs.some((r) => r.state === 'approved' && r.commentsCounted);
+    });
+    const rubberStamped = rubberStampSample.filter((pr) => {
+      const rs = (byPr.get(prKey(pr)) ?? []).filter((r) => r.commentsCounted);
+      return rs.reduce((sum, r) => sum + r.commentCount, 0) === 0;
+    });
+
+    // Self-merge: merged by the author AND approved by nobody else. Both
+    // halves matter — an author merging their own reviewed-and-approved PR is
+    // normal practice, not a governance gap.
+    //
+    // Only PRs whose merger is known can answer this at all. `merged_by` comes
+    // from the PR detail call, so a PR reconciled for reviews alone lacks it —
+    // treating that as "not a self-merge" would dilute the rate toward zero,
+    // so it gets its own denominator.
+    const selfMergeSample = collected.filter(
+      (pr) => pr.mergedBy && pr.authorLogin,
+    );
+    const selfMerged = selfMergeSample.filter((pr) => {
+      if (pr.mergedBy !== pr.authorLogin) {
+        return false;
+      }
+      const prReviews =
+        byPr.get(`${pr.repoFullName}#${pr.externalNumber}`) ?? [];
+      return !prReviews.some(
+        (r) => r.state === 'approved' && r.reviewerLogin !== pr.authorLogin,
+      );
+    });
+
+    // Reviewer load, excluding self-reviews so a team of one doesn't read as
+    // perfectly distributed. Team-level distribution only — never a ranking.
+    const authorByPr = new Map(
+      merged.map((pr) => [
+        `${pr.repoFullName}#${pr.externalNumber}`,
+        pr.authorLogin,
+      ]),
+    );
+    const perReviewer = new Map<string, number>();
+    for (const r of humanReviews) {
+      const author = authorByPr.get(`${r.repoFullName}#${r.externalNumber}`);
+      if (!r.reviewerLogin || r.reviewerLogin === author) {
+        continue;
+      }
+      perReviewer.set(
+        r.reviewerLogin,
+        (perReviewer.get(r.reviewerLogin) ?? 0) + 1,
+      );
+    }
+    const loads = [...perReviewer.values()].sort((a, b) => b - a);
+    const totalReviews = loads.reduce((a, b) => a + b, 0);
+
+    return {
+      mergedWithReviewPct: pct(reviewed.length, collected.length),
+      mergedTotal: merged.length,
+      excludedNoReviewData: merged.length - collected.length,
+      timeToFirstReview: {
+        sampleSize: ttfr.length,
+        p50Hours: round2(percentile(ttfr, 50)),
+        p85Hours: round2(percentile(ttfr, 85)),
+      },
+      reviewTime: {
+        sampleSize: reviewTime.length,
+        p50Hours: round2(percentile(reviewTime, 50)),
+      },
+      mergeTime: {
+        sampleSize: mergeTime.length,
+        p50Hours: round2(percentile(mergeTime, 50)),
+      },
+      selfMergedPct: pct(selfMerged.length, selfMergeSample.length),
+      selfMergedCount: selfMerged.length,
+      selfMergeSampleSize: selfMergeSample.length,
+      reviewerCount: perReviewer.size,
+      topReviewerSharePct: pct(loads[0] ?? 0, totalReviews),
+      botReviews,
+      botOnlyReviewedPrs,
+      reviewDepth: {
+        sampleSize: depthPerPr.length,
+        p50Comments: round2(percentile(depthPerPr, 50)),
+      },
+      rubberStamp: {
+        sampleSize: rubberStampSample.length,
+        count: rubberStamped.length,
+        pct: pct(rubberStamped.length, rubberStampSample.length),
+        sizeThreshold: RUBBER_STAMP_SIZE_THRESHOLD,
       },
     };
   }
