@@ -12,17 +12,18 @@ Canonical frontend/dashboard spec for SprintIQ at real scale: **~200 repositorie
 2. **Role-based assignment.** Each dashboard carries a role list; `GET /api/dashboards/assignments` returns the dashboards for the current user's roles and drives the nav. Default: all dashboards → all roles; per-tenant admin-configurable assignment is the follow-up (admin UI over the same registry).
 3. **Bi-directional Jira↔GitHub tracking everywhere.** Every dashboard exposes both directions of the correlation graph: work items → their linked PRs (Jira→GitHub) and PRs → their work items (GitHub→Jira), with coverage percentages and orphans surfaced.
 4. **Detailing at every granularity** — the backend read models answer story-wise, sub-task-wise, bug-wise, epic-wise, developer-wise, release-wise, sprint-wise questions (see §3).
-5. Numbers are computed server-side from persisted facts + correlation links; missing data renders as missing (never fabricated), with sample size/freshness shown.
+5. Numbers are computed server-side from persisted facts + correlation links; missing data renders as missing (never fabricated), with sample size/freshness shown. **Freshness is rendered on every board** by the shared Scope Bar (`FreshnessNote` → `GET /api/dashboards/freshness`): with poll-only ingestion on a 4-hour default interval, the page being a second old says nothing about the data in it. It shows the oldest sync across active connections, and calls out never-synced and failing connections separately.
 
 ---
 
 ## 2. Current state (implemented)
 
-- **Data model (planning):** full Jira hierarchy — epics and sub-tasks are typed work-item rows (`type` ∈ story|bug|task|spike|subtask|epic) with `epicKey`/`parentKey`; `Sprint` and `Release` (fixVersion) entities; sprint/release/assignee/priority/resolvedAt on every item. Jira collector parses parent/epic, sprint, fixVersions, assignee, resolutiondate from webhooks.
+- **Data model (planning):** full Jira hierarchy — epics and sub-tasks are typed work-item rows (`type` ∈ story|bug|task|spike|subtask|epic) with `epicKey`/`parentKey`; `Sprint` and `Release` (fixVersion) entities; sprint/release/assignee/priority/resolvedAt on every item. Jira collector parses parent/epic, sprint, fixVersions, assignee, resolutiondate and Jira's own `created` date via the scheduled poller (webhooks are deferred — [api/README.md §12](../api/README.md#12-jira--github-mvp-implementation-status) #2).
 - **Insight read models (BC-8 `InsightsService`):** sprint-health, sprint-risk, velocity (per closed sprint), forecast (avg velocity vs open backlog), productivity (weekly items/points/PRs/LOC), efficiency (PR + story cycle times, bi-directional traceability), work-items detail (any granularity, each row with its linked PRs).
 - **BFF endpoints:** `/api/dashboards/{assignments, work-items, sprint-health, sprint-risk, velocity, forecast, productivity, efficiency, metrics}`, catalogs `/api/catalog/{projects, repos, sprints, epics, releases}`.
 - **Frontend:** URL-synced Scope Bar (projects × repos × time × groupBy, delivery-graph cross-filtering), role-driven nav from `/assignments`, and seven dashboards: Delivery Explorer + the six common boards.
-- **Still missing:** per-tenant assignment admin UI, saved views, team catalog/grouping, lineage drill-through UI, DORA/quality boards (need CI/quality collectors), Jira poller/backfill, sprint scope-change (committed-at-start) history.
+- **Still missing (dashboard-side):** per-tenant assignment admin UI, saved views, team catalog/grouping, lineage drill-through UI, DORA/quality boards (need CI/quality collectors).
+- **Still missing (collection-side):** tracked in [api/README.md §12](../api/README.md#12-jira--github-mvp-implementation-status) — the register of Jira/GitHub gaps and their status. Sprint scope-change (committed-at-start) history is #8 there; it's why "committed" below means *currently attached to the sprint*.
 
 ---
 

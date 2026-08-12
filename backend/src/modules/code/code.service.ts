@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Commit, PullRequest } from '@prisma/client';
+import { Commit, PrReview, PullRequest } from '@prisma/client';
 import {
   CodeCommitPayload,
   CodePullRequestPayload,
@@ -97,12 +97,34 @@ export class CodeService implements OnModuleInit {
       additions: p.additions ?? 0,
       deletions: p.deletions ?? 0,
       changedFiles: p.changedFiles ?? 0,
-      commitMessages: p.commitMessages ?? [],
       openedAt: toDate(p.openedAt),
-      firstReviewAt: toDate(p.firstReviewAt),
-      approvedAt: toDate(p.approvedAt),
       mergedAt: toDate(p.mergedAt),
     };
+
+    // Review-derived fields follow the reviews themselves: an event that
+    // didn't collect reviews leaves them alone rather than nulling a timeline
+    // that cost an API call to build. Same rule as `commitMessages` below.
+    const reviewFields = p.reviews
+      ? {
+          firstReviewAt: toDate(p.firstReviewAt) ?? null,
+          approvedAt: toDate(p.approvedAt) ?? null,
+          // Stamped even for an empty timeline: "we asked and there were none"
+          // is an answer, and it's the only thing separating that from
+          // "we never asked".
+          reviewsFetchedAt: new Date(),
+        }
+      : {};
+    const mergedByField =
+      p.mergedBy === undefined ? {} : { mergedBy: p.mergedBy };
+
+    // Commit subjects cost a dedicated API call to collect, and they are one of
+    // the three Jira-key sources correlation matches on. An event that doesn't
+    // carry them must therefore leave what's already stored alone — writing []
+    // would silently un-correlate the PR and drop linkage coverage, with a
+    // re-fetch the only way back.
+    const commitMessages = p.commitMessages?.length
+      ? p.commitMessages
+      : undefined;
 
     await this.prisma.pullRequest.upsert({
       where: {
@@ -117,14 +139,62 @@ export class CodeService implements OnModuleInit {
         tenantId: event.tenantId,
         repoFullName: p.repoFullName,
         externalNumber: p.externalNumber,
+        commitMessages: commitMessages ?? [],
         ...fields,
+        ...reviewFields,
+        ...mergedByField,
       },
-      update: fields,
+      update: {
+        ...fields,
+        ...reviewFields,
+        ...mergedByField,
+        ...(commitMessages ? { commitMessages } : {}),
+      },
     });
+
+    await this.recordReviews(event, p);
 
     this.logger.debug(
       `upserted PR ${p.repoFullName}#${p.externalNumber} (${p.state})`,
     );
+  }
+
+  /**
+   * Appends the PR's review timeline (`pr_review`).
+   *
+   * `createMany({ skipDuplicates })` on the (tenant, externalId) unique key
+   * makes this safe to replay: a backfill re-walk and a later incremental poll
+   * of the same PR both deliver the same review ids and converge on one row
+   * each. Duplicating them would inflate `reviewer_load` and every count in
+   * METRICS.md §3 — the same failure `issue_status_history` guards against.
+   *
+   * Reviews are immutable once submitted, so there is nothing to update.
+   */
+  private async recordReviews(
+    event: DomainEvent<CodePullRequestPayload>,
+    p: CodePullRequestPayload,
+  ): Promise<void> {
+    if (!p.reviews?.length) {
+      return;
+    }
+    await this.prisma.prReview.createMany({
+      data: p.reviews.map((r) => ({
+        id: newId(),
+        tenantId: event.tenantId,
+        connectionId: event.connectionId ?? '',
+        repoFullName: p.repoFullName,
+        externalNumber: p.externalNumber,
+        externalId: r.externalId,
+        reviewerLogin: r.reviewerLogin ?? null,
+        isBot: r.isBot,
+        state: r.state,
+        hasBody: r.hasBody,
+        commentCount: r.commentCount ?? 0,
+        commentsCounted: r.commentsCounted ?? false,
+        submittedAt: new Date(r.submittedAt),
+      })),
+      skipDuplicates: true,
+    });
   }
 
   /** Merged PRs with both open + merge timestamps — input for PR cycle time. */
@@ -199,6 +269,38 @@ export class CodeService implements OnModuleInit {
     to?: Date,
   ): Promise<PullRequest[]> {
     return this.listPullRequestsForRepos(tenantId, repos, from, to);
+  }
+
+  /**
+   * Reviews on the given PRs ("<repoFullName>#<number>" refs), for the Review
+   * Quality metrics. Windowed by the PRs passed in rather than by review date,
+   * so a review submitted just outside the window still counts toward the PR
+   * it belongs to — otherwise a PR could show as unreviewed purely because its
+   * review landed a day before the range started.
+   */
+  async listReviewsForPullRequests(
+    tenantId: string,
+    prs: { repoFullName: string; externalNumber: string }[],
+  ): Promise<PrReview[]> {
+    if (prs.length === 0) {
+      return [];
+    }
+    const byRepo = new Map<string, string[]>();
+    for (const pr of prs) {
+      byRepo.set(pr.repoFullName, [
+        ...(byRepo.get(pr.repoFullName) ?? []),
+        pr.externalNumber,
+      ]);
+    }
+    return this.prisma.prReview.findMany({
+      where: {
+        tenantId,
+        OR: [...byRepo.entries()].map(([repoFullName, numbers]) => ({
+          repoFullName,
+          externalNumber: { in: numbers },
+        })),
+      },
+    });
   }
 
   /** Pull requests addressed by correlation refs: "<repoFullName>#<number>". */

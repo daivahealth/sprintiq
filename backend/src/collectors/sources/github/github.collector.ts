@@ -18,11 +18,26 @@ import {
   GithubCommit,
   GithubCommitDetail,
   GithubPull,
+  GithubPullCommits,
   GithubPullDetail,
+  GithubPullReviews,
+  GithubReviewComments,
 } from './github.client';
 
+/**
+ * Reads a positive integer from the environment, falling back to the default.
+ * The budgets below govern API spend per tick, and the right value depends on
+ * how many connections a deployment runs — an org sync registers one per repo,
+ * so a 200-repo tenant needs a far smaller per-connection budget than a
+ * two-repo one to stay inside GitHub's hourly limit (api/README.md §12 #14).
+ */
+function envBudget(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isInteger(raw) && raw > 0 ? raw : fallback;
+}
+
 /** Bounds how much work one scheduler tick does — large histories catch up over several ticks. */
-const PAGE_BUDGET_PER_TICK = 3;
+const PAGE_BUDGET_PER_TICK = envBudget('GITHUB_PAGE_BUDGET_PER_TICK', 3);
 /**
  * Bounds the per-commit detail calls (for line-change stats) one tick makes,
  * per repo. Commits beyond this budget are left for a later tick rather than
@@ -32,9 +47,20 @@ const PAGE_BUDGET_PER_TICK = 3;
  * projector), so "ingest now without stats" would be a permanent gap, not a
  * temporary one. See `syncCommits`.
  */
-const COMMIT_ENRICH_BUDGET_PER_TICK = 25;
-/** Same rationale as COMMIT_ENRICH_BUDGET_PER_TICK, for PR line-change stats. */
-const PR_ENRICH_BUDGET_PER_TICK = 25;
+const COMMIT_ENRICH_BUDGET_PER_TICK = envBudget(
+  'GITHUB_COMMIT_ENRICH_BUDGET_PER_TICK',
+  25,
+);
+/**
+ * Same rationale as COMMIT_ENRICH_BUDGET_PER_TICK, for pull requests. NOTE one
+ * unit here is **4 API calls** — detail (stats + merged_by), commits (Jira
+ * keys), reviews, and review comments — none of which are available on the
+ * list endpoint. Budget accordingly.
+ */
+const PR_ENRICH_BUDGET_PER_TICK = envBudget(
+  'GITHUB_PR_ENRICH_BUDGET_PER_TICK',
+  25,
+);
 /** Default historical lookback when a connection doesn't set `config.backfillSince`. */
 const DEFAULT_BACKFILL_DAYS = 90;
 
@@ -57,6 +83,14 @@ interface GithubSyncCursors {
   commitsResumePage?: number;
   /** Index within `commitsResumePage` where the last tick stopped — see `prPageOffset`. */
   commitsPageOffset?: number;
+}
+
+/** The four per-PR calls that make up one unit of the enrich budget. */
+interface EnrichedPull {
+  detail: GithubPullDetail;
+  commits: GithubPullCommits;
+  reviews: GithubPullReviews;
+  comments: GithubReviewComments;
 }
 
 interface SyncResult {
@@ -352,19 +386,25 @@ export class GithubCollector extends BaseSourceCollector {
           this.suspendPrBackfill(cursors, page, i);
           return { envelopes };
         }
-        const detail = await this.client.getPullRequestDetail(
-          repoFullName,
-          token,
-          pr.number,
-        );
+        const enriched = await this.enrichPull(repoFullName, token, pr.number);
         enrichBudget--;
         envelopes.push(
-          this.fromPolledPull(connection, repoFullName, pr, 'backfill', detail),
+          this.fromPolledPull(
+            connection,
+            repoFullName,
+            pr,
+            'backfill',
+            enriched.detail,
+            enriched.commits.messages,
+            enriched.reviews,
+            enriched.comments,
+          ),
         );
-        if (detail.rateLimitedUntil) {
+        const rateLimitedUntil = this.enrichRateLimit(enriched);
+        if (rateLimitedUntil) {
           // This PR is already enriched and emitted — resume after it.
           this.suspendPrBackfill(cursors, page, i + 1);
-          return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
+          return { envelopes, rateLimitedUntil };
         }
       }
       if (!result.hasNextPage) {
@@ -459,17 +499,22 @@ export class GithubCollector extends BaseSourceCollector {
         budgetExhausted = true;
         break;
       }
-      const detail = await this.client.getPullRequestDetail(
-        repoFullName,
-        token,
-        pr.number,
-      );
+      const enriched = await this.enrichPull(repoFullName, token, pr.number);
       enrichBudget--;
       envelopes.push(
-        this.fromPolledPull(connection, repoFullName, pr, 'poll', detail),
+        this.fromPolledPull(
+          connection,
+          repoFullName,
+          pr,
+          'poll',
+          enriched.detail,
+          enriched.commits.messages,
+          enriched.reviews,
+        ),
       );
-      if (detail.rateLimitedUntil) {
-        return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
+      const rateLimitedUntil = this.enrichRateLimit(enriched);
+      if (rateLimitedUntil) {
+        return { envelopes, rateLimitedUntil };
       }
     }
 
@@ -567,10 +612,64 @@ export class GithubCollector extends BaseSourceCollector {
   }
 
   /**
+   * The two per-PR calls that make up one unit of the enrich budget: stats
+   * (never on the list endpoint) and commit subjects (never on the list, the
+   * detail, or the webhook payload — but one of the three documented
+   * Jira-key sources, api/README.md §6).
+   *
+   * Counted as ONE enrichment rather than two so the budget stays a count of
+   * PRs made whole per tick; the API cost per unit is 2 calls, not 1.
+   */
+  private async enrichPull(
+    repoFullName: string,
+    token: string,
+    number: number,
+  ): Promise<EnrichedPull> {
+    const detail = await this.client.getPullRequestDetail(
+      repoFullName,
+      token,
+      number,
+    );
+    // Each subsequent call is skipped once rate-limited — it would just 403
+    // and the caller is about to stop the tick anyway.
+    const commits = detail.rateLimitedUntil
+      ? { messages: [] }
+      : await this.client.listPullRequestCommits(repoFullName, token, number);
+    const reviews =
+      detail.rateLimitedUntil || commits.rateLimitedUntil
+        ? { reviews: [] }
+        : await this.client.listPullRequestReviews(repoFullName, token, number);
+    // Only worth counting comments when there is a review to attribute them
+    // to — a PR with no reviews spends nothing here.
+    const comments =
+      reviews.reviews.length === 0 ||
+      detail.rateLimitedUntil ||
+      commits.rateLimitedUntil ||
+      reviews.rateLimitedUntil
+        ? { countByReviewId: new Map<string, number>(), truncated: false }
+        : await this.client.listPullRequestReviewComments(
+            repoFullName,
+            token,
+            number,
+          );
+    return { detail, commits, reviews, comments };
+  }
+
+  /** The first rate limit any of the four per-PR calls reported, if any. */
+  private enrichRateLimit(e: EnrichedPull): Date | undefined {
+    return (
+      e.detail.rateLimitedUntil ??
+      e.commits.rateLimitedUntil ??
+      e.reviews.rateLimitedUntil ??
+      e.comments.rateLimitedUntil
+    );
+  }
+
+  /**
    * GitHub's PR list endpoint never includes line-change stats — only a
-   * per-PR detail call does (`GithubClient.getPullRequestDetail`, called by
-   * `backfillPullRequests`/`incrementalPullRequests` under a bounded
-   * per-tick budget before this is reached).
+   * per-PR detail call does (`GithubClient.getPullRequestDetail`, called via
+   * `enrichPull` by `backfillPullRequests`/`incrementalPullRequests` under a
+   * bounded per-tick budget before this is reached).
    */
   private fromPolledPull(
     connection: Connection,
@@ -578,6 +677,9 @@ export class GithubCollector extends BaseSourceCollector {
     pr: GithubPull,
     mode: CollectionMode,
     detail?: GithubPullDetail,
+    commitMessages?: string[],
+    reviewResult?: GithubPullReviews,
+    comments?: GithubReviewComments,
   ): CanonicalEnvelope {
     const merged = Boolean(pr.merged_at);
     const eventType = merged
@@ -585,6 +687,24 @@ export class GithubCollector extends BaseSourceCollector {
       : pr.state === 'open'
         ? EventTypes.CODE_PR_OPENED
         : EventTypes.CODE_PR_CLOSED;
+    // A failed reviews request yields undefined, not [] — "this PR has no
+    // reviews" is a reportable finding (review_coverage, self_merge_rate) and
+    // must never be manufactured from a 500. Undefined leaves the stored
+    // timeline untouched; [] would overwrite it.
+    // A comment count is only meaningful when the count actually ran. A failed
+    // comments call leaves `commentsCounted` false, so "0 comments" can never
+    // be read as a rubber stamp on the strength of a failed request.
+    const commentsCounted = Boolean(comments && !comments.failed);
+    const reviews = (
+      reviewResult && !reviewResult.failed ? reviewResult.reviews : undefined
+    )?.map((r) => ({
+      ...r,
+      commentCount: comments?.countByReviewId.get(r.externalId) ?? 0,
+      commentsCounted,
+    }));
+    const sorted = [...(reviews ?? [])].sort((a, b) =>
+      a.submittedAt.localeCompare(b.submittedAt),
+    );
     const payload: CodePullRequestPayload = {
       repoFullName,
       externalNumber: String(pr.number),
@@ -596,8 +716,16 @@ export class GithubCollector extends BaseSourceCollector {
       additions: detail?.additions,
       deletions: detail?.deletions,
       changedFiles: detail?.changedFiles,
+      commitMessages,
       openedAt: pr.created_at,
+      // FIRST review and FIRST approval, not the last: the sub-phases measure
+      // how long the PR waited for attention, and a later re-review after
+      // changes must not erase how long the first one took to arrive.
+      firstReviewAt: sorted[0]?.submittedAt,
+      approvedAt: sorted.find((r) => r.state === 'approved')?.submittedAt,
       mergedAt: pr.merged_at ?? undefined,
+      mergedBy: detail?.mergedBy,
+      reviews,
     };
     return this.prEnvelope(
       connection,

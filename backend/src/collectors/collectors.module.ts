@@ -2,12 +2,15 @@ import { Module } from '@nestjs/common';
 import { ConnectionsModule } from '../modules/connections/connections.module';
 import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
+import { BackfillSchedulerService } from './scheduler/backfill-scheduler.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
 import { GithubCommitReconcilerService } from './sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from './sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from './sources/github/github-pr-reconciler.service';
+import { GithubReviewReconcilerService } from './sources/github/github-review-reconciler.service';
 import { GithubClient } from './sources/github/github.client';
 import { GithubCollector } from './sources/github/github.collector';
+import { JiraStoryDateReconcilerService } from './sources/jira/jira-story-date-reconciler.service';
 import { JiraClient } from './sources/jira/jira.client';
 import { JiraCollector } from './sources/jira/jira.collector';
 import { SignatureVerifierRegistry } from './webhooks/signature-verifier.registry';
@@ -32,15 +35,20 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubOrgSyncService,
     GithubCommitReconcilerService,
     GithubPrReconcilerService,
+    GithubReviewReconcilerService,
     JiraClient,
     JiraCollector,
+    JiraStoryDateReconcilerService,
     CollectorSchedulerService,
+    BackfillSchedulerService,
   ],
   exports: [
     IngestionService,
     GithubOrgSyncService,
     GithubCommitReconcilerService,
     GithubPrReconcilerService,
+    GithubReviewReconcilerService,
+    JiraStoryDateReconcilerService,
   ],
 })
 export class CollectorsModule {}

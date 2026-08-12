@@ -74,6 +74,7 @@ export const BASE_SEARCH_FIELDS = [
   'assignee',
   'priority',
   'resolutiondate',
+  'created',
   'updated',
 ];
 

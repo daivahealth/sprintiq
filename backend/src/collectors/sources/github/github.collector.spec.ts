@@ -61,6 +61,11 @@ describe('GithubCollector.poll', () => {
       getPullRequestDetail: jest
         .fn()
         .mockResolvedValue({ additions: 10, deletions: 5, changedFiles: 2 }),
+      listPullRequestCommits: jest.fn().mockResolvedValue({ messages: [] }),
+      listPullRequestReviews: jest.fn().mockResolvedValue({ reviews: [] }),
+      listPullRequestReviewComments: jest
+        .fn()
+        .mockResolvedValue({ countByReviewId: new Map(), truncated: false }),
     } as unknown as jest.Mocked<GithubClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
@@ -338,6 +343,179 @@ describe('GithubCollector.poll', () => {
 
     expect(envelopes).toHaveLength(1);
     expect(client.getPullRequestDetail).toHaveBeenCalledTimes(1);
+    expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
+      resetAt: resetAt.toISOString(),
+    });
+  });
+
+  it("collects the PR's commit subjects, the third Jira-key source correlation matches on", async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestCommits.mockResolvedValue({
+      messages: ['PAY-2231 guard duplicate capture', 'fix typo'],
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(client.listPullRequestCommits).toHaveBeenCalledWith(
+      'acme/payments',
+      'tok',
+      1,
+    );
+    // Neither the list endpoint, the detail call, nor the webhook payload
+    // carries these — a PR keyed only in its commits is otherwise an orphan.
+    expect(envelopes[0].data).toMatchObject({
+      commitMessages: ['PAY-2231 guard duplicate capture', 'fix typo'],
+    });
+  });
+
+  it('skips the commits call once the detail call reports a rate limit', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    const resetAt = new Date(Date.now() + 60_000);
+    client.getPullRequestDetail.mockResolvedValue({
+      additions: 1,
+      deletions: 1,
+      rateLimitedUntil: resetAt,
+    });
+
+    await collector.poll(baseConnection());
+
+    // It would only 403, and the tick is stopping anyway.
+    expect(client.listPullRequestCommits).not.toHaveBeenCalled();
+    expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
+      resetAt: resetAt.toISOString(),
+    });
+  });
+
+  it('stops the tick when the commits call itself is rate-limited', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 }), pull({ number: 2 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    const resetAt = new Date(Date.now() + 60_000);
+    client.listPullRequestCommits.mockResolvedValueOnce({
+      messages: [],
+      rateLimitedUntil: resetAt,
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    // The first PR is already enriched and emitted; the second waits.
+    expect(envelopes).toHaveLength(1);
+    expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
+      resetAt: resetAt.toISOString(),
+    });
+  });
+
+  it('collects the review timeline and derives the FIRST review and FIRST approval', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestReviews.mockResolvedValue({
+      reviews: [
+        {
+          externalId: '20',
+          reviewerLogin: 'asmith',
+          isBot: false,
+          state: 'approved',
+          submittedAt: '2026-06-03T10:00:00.000Z',
+          hasBody: false,
+        },
+        {
+          externalId: '10',
+          reviewerLogin: 'bjones',
+          isBot: false,
+          state: 'commented',
+          submittedAt: '2026-06-01T09:00:00.000Z',
+          hasBody: true,
+        },
+        // A later re-review must not push firstReviewAt forward: the sub-phase
+        // measures how long the PR waited for its FIRST look.
+        {
+          externalId: '30',
+          reviewerLogin: 'bjones',
+          isBot: false,
+          state: 'approved',
+          submittedAt: '2026-06-05T08:00:00.000Z',
+          hasBody: false,
+        },
+      ],
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes[0].data).toMatchObject({
+      firstReviewAt: '2026-06-01T09:00:00.000Z',
+      approvedAt: '2026-06-03T10:00:00.000Z',
+    });
+    expect((envelopes[0].data as { reviews: unknown[] }).reviews).toHaveLength(
+      3,
+    );
+  });
+
+  it('leaves reviews undefined when the reviews request failed, rather than reporting "unreviewed"', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestReviews.mockResolvedValue({
+      reviews: [],
+      failed: true,
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    // "Merged with no review" is a real finding (review_coverage,
+    // self_merge_rate). Manufacturing it from a failed request would be worse
+    // than reporting nothing — undefined leaves any stored timeline intact.
+    const data = envelopes[0].data as {
+      reviews?: unknown;
+      firstReviewAt?: string;
+    };
+    expect(data.reviews).toBeUndefined();
+    expect(data.firstReviewAt).toBeUndefined();
+  });
+
+  it('reports an empty review list as a real "no reviews" answer', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestReviews.mockResolvedValue({ reviews: [] });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    const data = envelopes[0].data as { reviews?: unknown[] };
+    expect(data.reviews).toEqual([]);
+  });
+
+  it('stops the tick when the reviews call is rate-limited', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1 }), pull({ number: 2 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    const resetAt = new Date(Date.now() + 60_000);
+    client.listPullRequestReviews.mockResolvedValueOnce({
+      reviews: [],
+      rateLimitedUntil: resetAt,
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    expect(envelopes).toHaveLength(1);
     expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
       resetAt: resetAt.toISOString(),
     });

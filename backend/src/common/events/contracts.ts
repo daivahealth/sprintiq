@@ -4,6 +4,33 @@
  * (producers) and domain contexts (consumers) share one definition.
  */
 
+/**
+ * One submitted review on a pull request. Carried on the PR event rather than
+ * as its own event type — the source hands us the reviews attached to the PR,
+ * and keying them on the source's own review id makes re-collecting the same
+ * PR idempotent (the same shape as `PlanningTransitionRef`).
+ */
+export interface CodeReviewRef {
+  /** Source review id — stable per review, used for de-duplication. */
+  externalId: string;
+  reviewerLogin?: string;
+  /** Automation rather than a person — excluded from people metrics (METRICS.md §0). */
+  isBot: boolean;
+  /** approved | changes_requested | commented | dismissed */
+  state: string;
+  submittedAt: string;
+  /** Whether the review carried a written body (a summary note, not a comment count). */
+  hasBody: boolean;
+  /** Inline comments attributed to this review; 0 when none or when not counted. */
+  commentCount?: number;
+  /**
+   * Whether the comment count actually ran. False leaves `commentCount`
+   * meaningless — "not counted" must never be read as "reviewed without
+   * commenting", which is the rubber-stamp finding.
+   */
+  commentsCounted?: boolean;
+}
+
 export interface CodePullRequestPayload {
   repoFullName: string; // e.g. acme/payments
   externalNumber: string;
@@ -17,9 +44,23 @@ export interface CodePullRequestPayload {
   changedFiles?: number;
   commitMessages?: string[];
   openedAt?: string;
+  /**
+   * Derived by the collector from `reviews` below: the earliest review of any
+   * kind, and the earliest `approved`. Both feed the pr_cycle_time sub-phases
+   * (METRICS.md §2). Absent when the PR has no reviews.
+   */
   firstReviewAt?: string;
   approvedAt?: string;
   mergedAt?: string;
+  /** Login of whoever merged it — required for `self_merge_rate`. */
+  mergedBy?: string;
+  /**
+   * The PR's review timeline (`pr_review`, DATA-MODEL.md) — the basis for
+   * every metric in METRICS.md §3 and for the pr_cycle_time sub-phases,
+   * none of which are derivable from the pull_request record alone.
+   * Empty when the source returned no reviews.
+   */
+  reviews?: CodeReviewRef[];
 }
 
 /**
@@ -102,6 +143,15 @@ export interface PlanningStoryPayload {
   assigneeLogin?: string;
   assigneeName?: string;
   priority?: string;
+  /**
+   * When the item was created IN THE SOURCE SYSTEM (Jira's `fields.created`) —
+   * NOT when we first ingested it. `lead_time` (METRICS.md) is
+   * `resolvedAt - sourceCreatedAt`, and the row's own `createdAt` is the
+   * backfill's run date, so using it would report the age of our database
+   * rather than the age of the work. Absent on items collected before this
+   * field was requested, until they are re-walked.
+   */
+  sourceCreatedAt?: string;
   resolvedAt?: string;
   /**
    * Status-transition timeline (`issue_status_history`, DATA-MODEL.md) — the

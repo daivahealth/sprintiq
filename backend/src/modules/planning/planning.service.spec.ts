@@ -135,4 +135,31 @@ describe('PlanningService — status-transition timeline', () => {
     expect(prisma.issueStatusHistory.createMany).not.toHaveBeenCalled();
     expect(prisma.story.upsert).toHaveBeenCalledTimes(1);
   });
+
+  it("persists Jira's creation date, and never overwrites a known one with null", async () => {
+    await handle(storyEvent({ sourceCreatedAt: '2026-01-04T09:30:00.000Z' }));
+
+    const withDate = prisma.story.upsert.mock.calls[0][0] as {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+    expect(withDate.create.sourceCreatedAt).toEqual(
+      new Date('2026-01-04T09:30:00.000Z'),
+    );
+    expect(withDate.update.sourceCreatedAt).toEqual(
+      new Date('2026-01-04T09:30:00.000Z'),
+    );
+
+    // An event from a path that doesn't collect the field must leave an
+    // already-resolved date alone: writing null would silently drop the item
+    // out of lead time, and re-resolving it needs a full Jira re-walk.
+    await handle(storyEvent({}));
+
+    const without = prisma.story.upsert.mock.calls[1][0] as {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+    expect(without.update).not.toHaveProperty('sourceCreatedAt');
+    expect(without.create.sourceCreatedAt).toBeNull();
+  });
 });

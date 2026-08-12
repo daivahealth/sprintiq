@@ -6,6 +6,7 @@ import { AuthUser } from '../../common/tenancy/tenant-context.service';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { CodeService } from '../code/code.service';
+import { ConnectionsService } from '../connections/connections.service';
 import { PlanningService } from '../planning/planning.service';
 import { parseList } from './catalog.controller';
 
@@ -35,7 +36,25 @@ export class DashboardsController {
     private readonly code: CodeService,
     private readonly correlation: CorrelationService,
     private readonly planning: PlanningService,
+    private readonly connections: ConnectionsService,
   ) {}
+
+  /**
+   * How current the data behind every board is (METRICS.md §9).
+   *
+   * Its own endpoint rather than a field on each metric response: freshness is
+   * a property of collection, not of any one metric, so threading it through
+   * ten read models would add ten identical queries and still report the same
+   * tenant-wide answer. The UI fetches it once and shows it beside the scope.
+   *
+   * Note `computedAt` on the metric responses is when the QUERY ran — it is not
+   * a freshness signal and never was; this is.
+   */
+  @Roles(...DASHBOARD_ROLES)
+  @Get('freshness')
+  getFreshness(@CurrentUser() user: AuthUser) {
+    return this.connections.getDataFreshness(user.tenantId);
+  }
 
   /** Single-repo endpoint retained for compatibility; the UI uses `metrics`. */
   @Roles(...DASHBOARD_ROLES)

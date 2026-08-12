@@ -232,13 +232,39 @@ describe('GithubClient', () => {
         4521,
       );
 
-      expect(detail).toEqual({
+      expect(detail).toMatchObject({
         additions: 142,
         deletions: 38,
         changedFiles: 6,
+        mergedBy: undefined,
       });
+      // Surfaced so bulk backfill can stop while quota remains, instead of
+      // draining the token and starving the scheduled sync.
+      expect(detail.rateLimit?.remaining).toBe(500);
       const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
       expect(url).toBe('https://api.github.com/repos/acme/payments/pulls/4521');
+    });
+
+    it('returns merged_by, which only this endpoint carries (self_merge_rate)', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: { 'x-ratelimit-remaining': '500' },
+          body: {
+            additions: 1,
+            deletions: 1,
+            changed_files: 1,
+            merged_by: { login: 'asmith' },
+          },
+        }),
+      ) as unknown as typeof fetch;
+
+      const detail = await client.getPullRequestDetail(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(detail.mergedBy).toBe('asmith');
     });
 
     it('signals rateLimitedUntil on a 403/429 instead of throwing', async () => {
@@ -293,6 +319,224 @@ describe('GithubClient', () => {
       );
 
       expect(detail).toEqual({});
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listPullRequestReviews', () => {
+    it('maps submitted reviews and drops PENDING drafts', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: { 'x-ratelimit-remaining': '500' },
+          body: [
+            {
+              id: 991,
+              user: { login: 'asmith' },
+              state: 'APPROVED',
+              submitted_at: '2026-06-30T09:40:00Z',
+              body: 'looks good',
+            },
+            // Never submitted — visible only to its author, so counting it
+            // would credit a review nobody has received.
+            {
+              id: 992,
+              user: { login: 'bjones' },
+              state: 'PENDING',
+              submitted_at: null,
+              body: '',
+            },
+            {
+              id: 993,
+              user: { login: 'bjones' },
+              state: 'CHANGES_REQUESTED',
+              submitted_at: '2026-06-30T10:00:00Z',
+              body: '   ',
+            },
+          ],
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestReviews(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(result.reviews).toEqual([
+        {
+          externalId: '991',
+          reviewerLogin: 'asmith',
+          isBot: false,
+          state: 'approved',
+          submittedAt: '2026-06-30T09:40:00Z',
+          hasBody: true,
+        },
+        {
+          externalId: '993',
+          reviewerLogin: 'bjones',
+          isBot: false,
+          state: 'changes_requested',
+          submittedAt: '2026-06-30T10:00:00Z',
+          // Whitespace-only body is not a written review.
+          hasBody: false,
+        },
+      ]);
+    });
+
+    it("classifies bots from GitHub's user.type and the [bot] login convention", async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: { 'x-ratelimit-remaining': '500' },
+          body: [
+            // Authoritative signal.
+            {
+              id: 1,
+              user: { login: 'some-app', type: 'Bot' },
+              state: 'APPROVED',
+              submitted_at: '2026-06-30T09:00:00Z',
+            },
+            // `user.type` absent — the login convention is the fallback.
+            {
+              id: 2,
+              user: { login: 'copilot-pull-request-reviewer[bot]' },
+              state: 'COMMENTED',
+              submitted_at: '2026-06-30T09:10:00Z',
+            },
+            {
+              id: 3,
+              user: { login: 'asmith', type: 'User' },
+              state: 'APPROVED',
+              submitted_at: '2026-06-30T09:20:00Z',
+            },
+          ],
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestReviews(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(result.reviews.map((r) => r.isBot)).toEqual([true, true, false]);
+    });
+
+    it('flags a failure instead of returning an empty list', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          fakeResponse({ ok: false, status: 500 }),
+        ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestReviews(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      // "Merged unreviewed" is a reportable finding — a 500 must not become one.
+      expect(result).toEqual({ reviews: [], failed: true });
+    });
+
+    it('signals rateLimitedUntil on a 403/429 instead of throwing', async () => {
+      const resetEpoch = Math.floor(Date.now() / 1000) + 90;
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          ok: false,
+          status: 403,
+          headers: { 'x-ratelimit-reset': String(resetEpoch) },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestReviews(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(result.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
+      expect(result.failed).toBeUndefined();
+    });
+  });
+
+  describe('listPullRequestCommits', () => {
+    it("returns the PR's commit subjects, skipping entries without one", async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          headers: { 'x-ratelimit-remaining': '500' },
+          body: [
+            { commit: { message: 'PAY-2231 guard duplicate capture' } },
+            { commit: {} },
+            { sha: 'abc' },
+            { commit: { message: 'fix typo' } },
+          ],
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(result.messages).toEqual([
+        'PAY-2231 guard duplicate capture',
+        'fix typo',
+      ]);
+      const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      expect(url).toBe(
+        'https://api.github.com/repos/acme/payments/pulls/4521/commits?per_page=100',
+      );
+    });
+
+    it('signals rateLimitedUntil on a 403/429 instead of throwing', async () => {
+      const resetEpoch = Math.floor(Date.now() / 1000) + 90;
+      global.fetch = jest.fn().mockResolvedValue(
+        fakeResponse({
+          ok: false,
+          status: 429,
+          headers: { 'x-ratelimit-reset': String(resetEpoch) },
+        }),
+      ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      expect(result.messages).toEqual([]);
+      expect(result.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
+    });
+
+    it('returns no messages on a non-rate-limit failure rather than throwing', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          fakeResponse({ ok: false, status: 404 }),
+        ) as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'acme/payments',
+        'tok',
+        4521,
+      );
+
+      // Same outcome as a PR whose commits carry no key — no extra match, and
+      // the PR still lands with its title/branch evidence.
+      expect(result).toEqual({ messages: [] });
+    });
+
+    it('returns no messages without calling fetch when no token is configured', async () => {
+      global.fetch = jest.fn() as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'acme/payments',
+        '',
+        4521,
+      );
+
+      expect(result).toEqual({ messages: [] });
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });
