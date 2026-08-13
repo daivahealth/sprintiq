@@ -62,6 +62,16 @@ Top Repos and Team Capacity force their `groupBy` (via `useBatchMetrics`'s expli
 
 All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cross-filtered); sprint boards add a sprint picker (auto-selects the active sprint in scope).
 
+**Each scope axis is rendered only where the board actually consumes it.** `ScopeBar` takes `showRepos` / `showTime` / `showGroupBy`, because a control that silently does nothing is worse than an absent one — it looks like a filter and reads as though the number below it responded to the change.
+
+| Board | Sends | Axes shown |
+|---|---|---|
+| Delivery Explorer, Productivity, Efficiency | full scope | all |
+| Top Repos, Team Capacity | scope, `groupBy` forced | repos + time |
+| **Velocity, Forecasting, Flow** | `projects` **only** | projects only |
+
+The last row is the substantive one: those three are **Jira-only** metrics. Forecasting is `avg velocity of recent closed sprints ÷ remaining backlog` — sprints, points and backlog items, with no repository dimension to filter by at all; narrowing it by repo would require mapping stories through `pr_implements_story` and would silently drop every unlinked story, making the forecast *wrong* rather than narrower. Time range is equally meaningless there: the forecast samples the **last 3 closed sprints**, not a rolling day window, so a `30d` selector implies control over a sampling decision it doesn't have.
+
 ### Honest-math notes
 - Velocity/health treat `Done/Closed/Resolved` as done (tenant-tunable constant); committed = items currently attached to the sprint (scope-change history is a follow-up, so mid-sprint additions inflate "committed").
 - Forecast is deliberately simple (average velocity ÷ remaining estimated points, average closed-sprint length for dating) and **labels unestimated items as excluded** rather than guessing.

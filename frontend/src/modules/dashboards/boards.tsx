@@ -414,7 +414,9 @@ export function VelocityBoard() {
         title="Velocity"
         subtitle="Completed vs committed story points per closed sprint."
       />
-      <ScopeBar />
+      {/* Velocity is Jira-only — it sends projects and nothing else, so the
+          repo/time/group-by axes would be controls that silently do nothing. */}
+      <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {query.data && (
@@ -456,7 +458,9 @@ export function ForecastBoard() {
         title="Forecasting"
         subtitle="Average velocity of recent closed sprints vs remaining backlog."
       />
-      <ScopeBar />
+      {/* Forecasting is Jira-only — it sends projects and nothing else, so the
+          repo/time/group-by axes would be controls that silently do nothing. */}
+      <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {query.data && (
@@ -589,7 +593,9 @@ export function FlowBoard() {
         title="Flow"
         subtitle="Cycle time, work in progress and ageing, from the status-transition timeline."
       />
-      <ScopeBar />
+      {/* Flow is Jira-only — it sends projects and nothing else, so the
+          repo/time/group-by axes would be controls that silently do nothing. */}
+      <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {d && (
