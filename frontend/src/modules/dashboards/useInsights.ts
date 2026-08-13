@@ -195,8 +195,13 @@ export interface ProjectActivityRow {
   activeRepos: number;
   topRepo: string | null;
   contributors: number;
-  /** Commits counted in the totals but attributable to no developer. */
-  unattributedCommits: number;
+  /**
+   * Commits counted in the totals but attributable to no developer.
+   * Optional: the frontend and backend deploy separately, so a build of this
+   * app can be live against an API that predates the field. Absent means
+   * "this API can't tell us", which must render as unknown — never as zero.
+   */
+  unattributedCommits?: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
 }
@@ -224,12 +229,17 @@ export interface DeveloperActivityView {
     locChanged: number;
     filesChanged: number;
     prsAuthored: number;
-    /** Of those, the ones merged — what Delivery Explorer counts. */
-    prsMerged: number;
+    /** Of those, the ones merged — what Delivery Explorer counts. Optional: see `identity`. */
+    prsMerged?: number;
     activeRepos: number;
   };
-  /** The source identities these figures were gathered under. */
-  identity: {
+  /**
+   * The source identities these figures were gathered under. Optional for the
+   * same reason as `ProjectActivityRow.unattributedCommits` — this build can be
+   * serving against an API deployed before identity resolution existed, and
+   * dereferencing it unguarded took the whole board down.
+   */
+  identity?: {
     logins: string[];
     recoveredEmails: string[];
     inferred: boolean;
@@ -429,8 +439,9 @@ export function useProjectActivity(window: ActivityWindow) {
  */
 export interface DeveloperCatalogItem {
   login: string;
-  displayName: string;
-  attributed: boolean;
+  /** Optional: an API predating identity resolution returns `login` only. */
+  displayName?: string;
+  attributed?: boolean;
 }
 
 export function useDeveloperCatalog(search: string) {

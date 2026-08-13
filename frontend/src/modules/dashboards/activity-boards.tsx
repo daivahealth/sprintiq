@@ -125,7 +125,7 @@ export function ProjectActivityBoard() {
                       </td>
                       <td className="py-2.5 tabular-nums">{r.contributors}</td>
                       <td className="py-2.5 tabular-nums">
-                        {r.unattributedCommits > 0 ? (
+                        {r.unattributedCommits ? (
                           <span
                             className="text-warning-fg"
                             title="Commits counted in the totals whose author matched no developer — they cannot be counted under Contributors."
@@ -189,11 +189,12 @@ export function DeveloperActivityBoard() {
 
   const options = developers.map((dev) => ({
     value: dev.login,
-    label: dev.displayName,
+    label: dev.displayName ?? dev.login,
     // Marked in the list rather than hidden: these are the people whose commits
     // GitHub attributed to no account, and silently omitting them is what made
-    // their work look like nobody's in the first place.
-    hint: dev.attributed ? undefined : '· no linked account',
+    // their work look like nobody's in the first place. `attributed` absent
+    // means the API can't distinguish, so nothing is claimed either way.
+    hint: dev.attributed === false ? '· no linked account' : undefined,
   }));
 
   return (
@@ -257,15 +258,23 @@ export function DeveloperActivityBoard() {
                 // Delivery counts merged PRs by merge date; this board counts
                 // every PR opened in the window. Stating both stops the two
                 // boards reading as a contradiction about the same person.
-                hint={`${d.totals.prsMerged} merged`}
+                hint={
+                  d.totals.prsMerged === undefined
+                    ? undefined
+                    : `${d.totals.prsMerged} merged`
+                }
               />
             </div>
 
             {/* Whose identities these figures were gathered under. A person
                 whose git email isn't verified on their GitHub account commits
                 under a login-less identity; until it's matched, this page reads
-                "0 commits" for someone who has been committing all month. */}
-            {d.identity.inferred && (
+                "0 commits" for someone who has been committing all month.
+                Every branch is guarded: this build can be serving against an
+                API that predates identity resolution, and an unguarded
+                dereference here took the entire board down rather than
+                degrading to the older, less informative rendering. */}
+            {d.identity?.inferred && (
               <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
                 Includes commits authored as{' '}
                 <span className="font-medium text-fg">
@@ -275,7 +284,7 @@ export function DeveloperActivityBoard() {
                 those commits to no account.
               </p>
             )}
-            {d.totals.commits === 0 && !d.identity.inferred && (
+            {d.totals.commits === 0 && d.identity && !d.identity.inferred && (
               <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
                 No commits matched{' '}
                 <span className="font-medium text-fg">
