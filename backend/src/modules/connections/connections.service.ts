@@ -139,9 +139,23 @@ export class ConnectionsService {
     return this.prisma.connection.findMany({ where: { tenantId } });
   }
 
+  /**
+   * Active connections for a source, **neediest first**: never-synced before
+   * ever-synced, then oldest sync first.
+   *
+   * The order is load-bearing at scale, not cosmetic. An org sync registers one
+   * connection per repo (195 on a real tenant), a full sweep of that many takes
+   * far longer than the 5-minute tick cadence, and connections still backfilling
+   * are always due regardless of their interval (`isDue`). Returned unordered,
+   * every sweep restarts at the same head of the list and re-polls repos that
+   * synced minutes ago, while the tail is never reached at all — the backlog
+   * starves rather than converges. Ordering by neediness makes each sweep pick
+   * up where collection is actually missing.
+   */
   findActiveBySource(source: SourceSystem): Promise<Connection[]> {
     return this.prisma.connection.findMany({
       where: { sourceSystem: source, status: 'active' },
+      orderBy: { lastSyncAt: { sort: 'asc', nulls: 'first' } },
     });
   }
 
