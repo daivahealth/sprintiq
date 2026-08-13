@@ -202,6 +202,32 @@ export function AdminConfigurationsPage() {
     },
   });
 
+  /**
+   * Register a Connection for every repo in the configured org.
+   *
+   * The saved configuration only ever creates ONE connection —
+   * `${organization}/${defaultRepo}` — but the "Organization" field reads as
+   * though the whole org is being collected, and the connection summary then
+   * says "Collecting". An admin has no way to tell that 1 of N repos is in
+   * scope. This is the action that makes the field mean what it looks like.
+   */
+  const syncOrg = useMutation({
+    mutationFn: () =>
+      api.post<{
+        reposFound: number;
+        created: number;
+        updated: number;
+        skipped: number;
+        rateLimited: boolean;
+      }>('/api/admin/configurations/github/sync-org', {}),
+    onSuccess: () => {
+      // The new connections change what the config screen reports as linked.
+      void queryClient.invalidateQueries({
+        queryKey: ['admin', 'configurations'],
+      });
+    },
+  });
+
   const selected = sections.find((section) => section.namespace === active);
   const loading = catalog.isLoading || configs.isLoading;
 
@@ -515,6 +541,47 @@ export function AdminConfigurationsPage() {
                 );
               })}
             </div>
+
+            {selected.namespace === 'github' ? (
+              <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-3">
+                <p className="text-xs text-fg-subtle">
+                  This configuration collects{' '}
+                  <strong className="text-fg-secondary">one repository</strong>{' '}
+                  — the default repo above. To collect every repository in the
+                  organisation, register a connection for each one:
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => syncOrg.mutate()}
+                    disabled={syncOrg.isPending}
+                  >
+                    {syncOrg.isPending
+                      ? 'Syncing organisation…'
+                      : 'Sync all repositories in this organisation'}
+                  </Button>
+                  {syncOrg.data ? (
+                    <p className="text-xs text-fg-subtle">
+                      Found {syncOrg.data.reposFound} · created{' '}
+                      {syncOrg.data.created} · already registered{' '}
+                      {syncOrg.data.updated} · skipped {syncOrg.data.skipped}{' '}
+                      (archived or disabled)
+                      {syncOrg.data.rateLimited
+                        ? ' — stopped early on the GitHub rate limit; run again to continue.'
+                        : ''}
+                    </p>
+                  ) : null}
+                  {syncOrg.isError ? (
+                    <p className="text-xs text-danger-fg">
+                      {syncOrg.error instanceof ApiError
+                        ? syncOrg.error.message
+                        : 'Organisation sync failed.'}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
               <p className="text-xs text-fg-subtle">
