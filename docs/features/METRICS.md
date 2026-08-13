@@ -13,6 +13,7 @@ Authoritative definitions for every metric SprintIQ computes — exact inputs, f
 - **Percentiles:** distribution metrics report **p50 / p85** (and mean) — not just average. p85 is the headline for cycle/lead/review times (tail is what hurts).
 - **Lineage:** each `metric_value` stores the `event`/`link` refs that produced it; every number drills to evidence.
 - **Metric health:** each value is paired with `linkage_coverage` + `data_freshness` + `confidence` so consumers know how much to trust it. **A metric below its coverage floor is shown as "low confidence," never silently.**
+- **Attribution coverage (developer-scoped metrics):** any metric counting per-person work also reports how much of the window's volume is attributable to a person at all. GitHub resolves a commit's account only when its email is verified there, so commits routinely arrive with a name, an email, and no login; identities are reconciled by BC-5 (DATA-MODEL.md §3) and whatever remains unmatched is **counted and disclosed, never dropped and never treated as zero activity**. On the reference tenant this was 19.2% of commits before resolution. A per-developer figure of zero is only reportable as a finding when attribution coverage says it can be.
 - **Ethics:** individual-scope values are diagnostic/supportive, RBAC-gated, never ranked. Anti-vanity metrics (LOC, commit count) are explicitly labeled *context, not performance*.
 - **Exclusions (global defaults):** bot/automation accounts excluded from people metrics; merge commits excluded from authorship churn; reverts flagged; draft PRs excluded from review-time until marked ready. Exclusions are configurable per tenant and recorded in `metric_definition`.
   - **Bot exclusion is implemented for reviews** (`pr_review.is_bot`, classified at collection time from GitHub's own `user.type == "Bot"`, falling back to the `name[bot]` login convention). Every Review Quality figure and every `pr_cycle_time` sub-phase counts humans only; bot reviews are reported separately (`review.botReviews`), and a merged PR whose **only** review was automated counts as unreviewed (`review.botOnlyReviewedPrs`) — reviewed on paper, not in practice. This is not cosmetic: on a real tenant an AI review bot was the second-busiest reviewer at 15% of all reviews, reporting a 5-minute median time-to-first-review that was the bot's response time, not the team's.
@@ -130,7 +131,7 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 ### commit_frequency / developer_activity
 - **Definition:** commits per period — **context, never a productivity score**.
 - **Formula:** `count(commit by author in period)`. **Window:** rolling 30d. **Scopes:** team, developer* (self/manager view only). **Source:** `commit`.
-- **Notes:** explicitly anti-vanity; UI labels it "activity context." Never ranked.
+- **Notes:** explicitly anti-vanity; UI labels it "activity context." Never ranked. **"Author" means the resolved canonical developer**, not the raw `commit.author.login` — matching on the login alone reported zero for anyone whose git email is unverified on their GitHub account (DATA-MODEL.md §3). Commits still unattributed after resolution are disclosed alongside the count, per the attribution-coverage convention in §0.
 
 ### loc_added_deleted
 - **Definition:** lines added/deleted — **diagnostic only**.

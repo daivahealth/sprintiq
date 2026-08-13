@@ -2,6 +2,7 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
 import { CorrelationService } from '../../correlation/correlation.service';
+import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
 import { CodeService } from '../../modules/code/code.service';
 import { PlanningService } from '../../modules/planning/planning.service';
 
@@ -17,6 +18,7 @@ export class CatalogController {
     private readonly planning: PlanningService,
     private readonly code: CodeService,
     private readonly correlation: CorrelationService,
+    private readonly identities: DeveloperIdentityService,
   ) {}
 
   @Get('projects')
@@ -72,14 +74,41 @@ export class CatalogController {
     };
   }
 
-  /** Distinct commit/PR authors — the developer-activity picker. */
+  /**
+   * Canonical developers — the developer-activity picker.
+   *
+   * Sourced from the resolved identity map rather than raw commit/PR logins, so
+   * that people GitHub never attributed an account to are selectable at all:
+   * the login-only catalog could not list them, which is precisely why their
+   * work looked like nobody's. Falls back to the raw logins before the first
+   * resolution pass has run.
+   */
   @Get('developers')
   async developers(
     @CurrentUser() user: AuthUser,
     @Query('search') search?: string,
   ) {
+    const resolved = await this.identities.listDevelopers(
+      user.tenantId,
+      search,
+    );
+    if (resolved.length > 0) {
+      return {
+        items: resolved.map((d) => ({
+          login: d.canonicalDeveloperId,
+          displayName: d.displayName,
+          attributed: d.attributed,
+        })),
+      };
+    }
     const logins = await this.code.listDeveloperLogins(user.tenantId, search);
-    return { items: logins.map((login) => ({ login })) };
+    return {
+      items: logins.map((login) => ({
+        login,
+        displayName: login,
+        attributed: true,
+      })),
+    };
   }
 
   /** Releases (Jira fixVersions) for release-wise detailing filters. */

@@ -46,7 +46,7 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 
 | Dashboard | Route | Reads | Core content |
 |---|---|---|---|
-| **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table, listed by Changed LOC descending |
+| **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table, listed by Changed LOC descending — **except `groupBy=developer`, which is alphabetical** (see §4.1) |
 | **Sprint Health** | `/sprint-health` | `dashboards/sprint-health/active` + `dashboards/sprint-health` | **multi-project default: one card per concurrent active sprint** (each project runs its own lifecycle), ranked worst-pace-first with **cadence-normalized pace** (completion % vs elapsed % of that sprint's own window → on-track/at-risk/behind); click to drill into committed vs completed, code linkage, by-type progress |
 | **Sprint Risk** | `/sprint-risk` | `dashboards/sprint-risk/active` + `dashboards/sprint-risk` | **multi-project default: one risk card per concurrent active sprint**, ranked most-at-risk-first; project picker; click to drill into open items **without linked code** (at-risk pts), open bugs, unestimated work — each row with its PRs. Long item titles stay within the Item column and truncate rather than obscuring adjacent data. |
 | **Velocity** | `/velocity` | `dashboards/velocity` | completed vs committed points per closed sprint |
@@ -54,11 +54,35 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 | **Productivity** | `/productivity` | `dashboards/productivity` | weekly throughput: items + points (Jira) and merged PRs + LOC (GitHub) — team-level |
 | **Efficiency** | `/efficiency` | `dashboards/efficiency` | PR cycle p50/p85, story cycle p50/p85, **traceability both directions** |
 | **Project Activity** | `/project-activity` | `dashboards/project-activity` | most-active projects by **commits + LOC across all mapped repos** (delivery graph), day/week/month windows; unlinked repos bucketed honestly |
-| **Developer Activity** | `/developer-activity` | `dashboards/developer-activity` | GitHub-style per-developer profile: commit history (sha/±LOC), repos committed to, lines committed, commits-per-day, PRs authored, **active projects** via the graph — activity context, never a ranking |
+| **Developer Activity** | `/developer-activity` | `dashboards/developer-activity` | GitHub-style per-developer profile: commit history (sha/±LOC), repos committed to, lines committed, commits-per-day, PRs authored (**and how many merged**), **active projects** via the graph, plus the **identities the figures were gathered under** — activity context, never a ranking |
 | **Top Repos** | `/top-repos` | `dashboards/metrics` (groupBy=repo, fixed) | Repos ranked by Changed LOC, top 20 by default with a "show all N repos" expansion — repo-level ranking only, never individual |
 | **Team Capacity** | `/team-capacity` | `dashboards/metrics` (groupBy=developer, fixed) + developer catalog | Alphabetical roster diff — developers with **no PR activity in the window** (a staffing/blocker signal); intentionally unsorted by volume, never a leaderboard |
 
 Top Repos and Team Capacity force their `groupBy` (via `useBatchMetrics`'s explicit override) and hide the Scope Bar's Group-by toggle (`ScopeBar`'s `showGroupBy={false}`) — they are dedicated single-purpose screens, not configurable views like Delivery Explorer.
+
+### 4.1 Two boards, one person: stating each board's denominator
+
+Delivery Explorer (`groupBy=developer`) and Developer Activity both answer "what did this person do", and they will not agree — by design. They must therefore each say what they count, because an unexplained gap between them reads as a bug in the data:
+
+| | Delivery Explorer, grouped by developer | Developer Activity |
+|---|---|---|
+| Unit | pull requests | commits |
+| Included | **merged only** | commits landed in the window; PRs in **all states** |
+| Windowed on | `mergedAt` | `committedAt` (commits) / `openedAt` (PRs) |
+| Window edges | rolling UTC (`now − days`) | IST calendar-aligned (`istWindowFloor`) |
+| LOC means | PR diff size | commit diff size |
+
+PR diff size is not the sum of its commits (rebases and merge bases see to that), so the two LOC figures are different measurements, not a reconciliation to chase. Developer Activity reports `prsMerged` beside `prsAuthored` so the PR-count difference is visible on the page rather than inferred by comparing screens.
+
+**Neither board may rank individuals.** Delivery Explorer sorts by Changed LOC descending for every grouping *except* developer, where rows are alphabetical — sorting people by lines changed is precisely the leaderboard CLAUDE.md forbids and that Team Capacity is deliberately built to avoid. LOC is change-volume context, never a productivity score.
+
+### 4.2 Attribution coverage
+
+Any board that counts commits must disclose how many of them can be attributed to a person at all. GitHub resolves a commit's account only when its email is verified there, so a commit routinely arrives with a name, an email, and no login (DATA-MODEL.md §3, api/README.md §12 #22). This matters on screen because **"0 commits" and "commits we cannot attribute" look identical and mean opposite things**:
+
+- **Developer Activity** names the identities behind its figures. When commits were recovered through a non-login identity it says so; when the total is zero and nothing was recovered, it says the likely cause rather than presenting the zero as a finding.
+- **Project Activity** shows `unattributedCommits` per row and a window-level coverage note. Those commits *are* counted in `commits`/`locChanged` but cannot be counted in `contributors` — without the disclosure the row reports more work than people to do it.
+- **The developer picker lists people with no matched GitHub account**, marked "no linked account", rather than omitting them. Omitting them is what made their work look like nobody's.
 
 All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cross-filtered); sprint boards add a sprint picker (auto-selects the active sprint in scope).
 

@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Commit, PrReview, PullRequest } from '@prisma/client';
+import { Commit, PrReview, Prisma, PullRequest } from '@prisma/client';
 import {
   CodeCommitPayload,
   CodePullRequestPayload,
@@ -16,7 +16,20 @@ import { PrismaService } from '../../database/prisma.service';
 /** Filters for commit activity reads (project/developer activity boards). */
 export interface CommitFilters {
   repos?: string[];
-  authorLogin?: string;
+  /**
+   * Every login the developer commits under. A list rather than one login
+   * because a person can appear under several source accounts, and because a
+   * commit GitHub could not attribute carries no login at all — see
+   * `authorEmails`, and `DeveloperIdentityService` for how the set is derived.
+   */
+  authorLogins?: string[];
+  /**
+   * Git author emails belonging to the same developer. Matched only against
+   * commits with NO login: where GitHub resolved an account, that account is
+   * authoritative, and matching on email as well would let a shared address
+   * pull in another person's attributed commits.
+   */
+  authorEmails?: string[];
   from?: Date;
   to?: Date;
 }
@@ -343,17 +356,23 @@ export class CodeService implements OnModuleInit {
     });
   }
 
-  /** PRs authored by one developer within a window (developer activity board). */
+  /**
+   * PRs authored by one developer within a window (developer activity board).
+   * Takes every login the developer authors under — see `CommitFilters`.
+   */
   listPullRequestsByAuthor(
     tenantId: string,
-    authorLogin: string,
+    authorLogins: string[],
     from?: Date,
     to?: Date,
   ): Promise<PullRequest[]> {
+    if (authorLogins.length === 0) {
+      return Promise.resolve([]);
+    }
     return this.prisma.pullRequest.findMany({
       where: {
         tenantId,
-        authorLogin,
+        authorLogin: { in: authorLogins },
         openedAt: {
           ...(from ? { gte: from } : {}),
           ...(to ? { lte: to } : {}),
@@ -372,7 +391,7 @@ export class CodeService implements OnModuleInit {
         ...(filters.repos && filters.repos.length > 0
           ? { repoFullName: { in: filters.repos } }
           : {}),
-        ...(filters.authorLogin ? { authorLogin: filters.authorLogin } : {}),
+        ...authorPredicate(filters),
         // Windows by committer date (when the commit actually landed), not
         // author date — the two diverge on a rebase/cherry-pick/amend.
         committedAt: {
@@ -438,6 +457,37 @@ export class CodeService implements OnModuleInit {
     });
     return rows.map((r) => r.repoFullName);
   }
+}
+
+/**
+ * Author filter for commit reads: match any of the developer's logins, OR —
+ * for commits GitHub could not attribute at all — any of their git emails.
+ *
+ * The email arm is restricted to `authorLogin: null` on purpose. A resolved
+ * login is the source's own answer and outranks our inference; without the
+ * guard, a shared address (a release bot, a pairing account) would drag another
+ * person's properly-attributed commits onto this developer's page.
+ *
+ * With neither list set the predicate is empty, which reads every author — that
+ * is what Project Activity wants, and what Developer Activity must never send.
+ */
+function authorPredicate(filters: CommitFilters): Prisma.CommitWhereInput {
+  const logins = filters.authorLogins ?? [];
+  const emails = filters.authorEmails ?? [];
+  if (logins.length === 0 && emails.length === 0) {
+    return {};
+  }
+  const arms: Prisma.CommitWhereInput[] = [];
+  if (logins.length > 0) {
+    arms.push({ authorLogin: { in: logins } });
+  }
+  if (emails.length > 0) {
+    arms.push({
+      authorLogin: null,
+      authorEmail: { in: emails, mode: 'insensitive' },
+    });
+  }
+  return arms.length === 1 ? arms[0] : { OR: arms };
 }
 
 function toDate(value?: string): Date | null {

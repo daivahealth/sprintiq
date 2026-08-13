@@ -310,8 +310,8 @@ export class InsightsController {
         `Unsupported window: ${window}. Supported: ${Object.keys(ACTIVITY_WINDOWS).join(', ')}.`,
       );
     }
-    const rows = await this.insights.projectActivity(istWindowFloor(days));
-    return { window, rows, computedAt: new Date().toISOString() };
+    const view = await this.insights.projectActivity(istWindowFloor(days));
+    return { window, ...view, computedAt: new Date().toISOString() };
   }
 
   /** GitHub-style per-developer activity (commit history, repos, LOC, projects). */

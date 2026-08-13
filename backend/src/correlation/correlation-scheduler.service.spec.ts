@@ -1,9 +1,11 @@
 import { PrismaService } from '../database/prisma.service';
 import { CorrelationSchedulerService } from './correlation-scheduler.service';
 import { CorrelationService } from './correlation.service';
+import { DeveloperIdentityService } from './developer-identity.service';
 
 describe('CorrelationSchedulerService', () => {
   let correlation: jest.Mocked<CorrelationService>;
+  let identities: jest.Mocked<DeveloperIdentityService>;
   let prisma: { tenant: { findMany: jest.Mock } };
   let service: CorrelationSchedulerService;
 
@@ -13,9 +15,19 @@ describe('CorrelationSchedulerService', () => {
         .fn()
         .mockResolvedValue({ candidates: 0, resolved: 0, stillOrphaned: 0 }),
     } as unknown as jest.Mocked<CorrelationService>;
+    identities = {
+      resolveTenant: jest.fn().mockResolvedValue({
+        observed: 0,
+        resolved: 0,
+        recovered: 0,
+        unresolved: 0,
+        ambiguous: 0,
+      }),
+    } as unknown as jest.Mocked<DeveloperIdentityService>;
     prisma = { tenant: { findMany: jest.fn().mockResolvedValue([]) } };
     service = new CorrelationSchedulerService(
       correlation,
+      identities,
       prisma as unknown as PrismaService,
     );
   });

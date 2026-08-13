@@ -66,12 +66,29 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 | `team` | `id`, `tenant_id`, `org_id`, `name` | Primary aggregation unit for metrics. |
 | `user` | `id`, `tenant_id`, `email` (**globally unique**), `display_name`, `status`, `sso_subject?`, `roles[]` | Platform users (the people who log in). Email is globally unique — a user belongs to exactly one tenant, so login resolves the tenant from the user (ADR-0006). |
 | `role` / `user_role` | RBAC | Roles: developer, team_lead, scrum_master, eng_manager, product_owner, cto, exec, admin. |
-| `developer_identity` | `id`, `tenant_id`, `canonical_developer_id`, `source_system`, `source_login`, `email?`, `confidence`, `linked_user_id?` | **Identity resolution**: maps many source logins (Git author, Jira account, SSO) to one canonical developer. |
-| `developer` | `id`, `tenant_id`, `display_name`, `primary_team_id?` | Canonical person referenced by the graph & metrics. May or may not be a platform `user`. |
+| `developer_identity` | `id`, `tenant_id`, `source_system`, `source_key`, `source_login?`, `email?`, `name?`, `canonical_developer_id`, `confidence`, `method`, `evidence` (JSONB), `linked_user_id?` | **Identity resolution**: maps many source identities (Git author, Jira account, SSO) to one canonical developer. Implemented for GitHub as `correlation_developer_identity`, owned by BC-5 — see the note below. |
+| `developer` | `id`, `tenant_id`, `display_name`, `primary_team_id?` | Canonical person referenced by the graph & metrics. May or may not be a platform `user`. **Not yet implemented** — `developer_identity.canonical_developer_id` is the canonical person today (a login, or the git name/email where no account was matched). |
 | `tenant_configuration` | `id`, `tenant_id`, `namespace` (`github`, `jira`, `llm`, `notifications`, `metrics`, `security`), `key`, `values` (JSONB), `secret_refs` (JSONB), `status` | Tenant-wide admin settings and policy defaults. Secret values are never stored here; only references to vault/KMS/env secret names. |
 | `connection` | `id`, `tenant_id`, `source_system`, `name`, `config`, `secret_ref` (OAuth/app-install/PAT token), `webhook_secret_ref`, `sync_cursors` (JSONB), `rate_limit_state`, `status`, `last_sync_at`, `sync_lag`, `last_error`, `last_error_at` | BC-0 registry; one per Jira instance / GitHub org / etc. Holds collector credentials, webhook secrets, and per-entity poll cursors (all secrets by reference). `last_error` records why the most recent pass failed and is cleared on the next clean one — without it a rejected pass is indistinguishable from an idle healthy one, since both collect zero events and both stamp `last_sync_at`. |
 
 > Identity resolution is a **core risk** (§16 R1). Links carry `confidence` and `method`; ambiguous matches are queued for review, not silently merged.
+
+**Why this entity is load-bearing, and how the GitHub implementation works.**
+
+A git identity and a GitHub account are not the same thing. GitHub populates `commit.author.login` only when the commit's email is a *verified* email on some account; otherwise the commit arrives carrying a name and an email and no login, while the same person's pull requests always carry `user.login`. Without resolution, one human is two records: read models filtered on the raw login return nothing for them, and a dashboard renders "0 commits" as though it were a fact about the person. On the reference tenant this affected **19.2% of all commits across 19 git identities** (api/README.md §12 #22).
+
+`source_key` is the stable identity of what was observed — `login:<login>` when the source resolved an account, `email:<lowercased email>` when it did not. `canonical_developer_id` is what the read models group by. The resolution ladder runs strongest-evidence-first and stops at the first rung that answers, so a weaker rule can never override a stronger one:
+
+| Rung | `method` | `confidence` | Evidence |
+|---|---|---|---|
+| 1 | `github_login` | 1.0 | The source resolved the account itself. |
+| 2 | `email_exact` | 0.95 | This exact email appears on a commit GitHub *did* attribute. Only unambiguous mappings are used — an address seen under several logins identifies no one. |
+| 3 | `name_normalized` | 0.8 | The git author name normalizes to exactly one known login. Normalization drops a trailing `_<shortcode>` (GitHub Enterprise Managed User logins are `<name>_<shortcode>`, a shape no git `user.name` carries) and every non-alphanumeric. |
+| — | `unresolved` | 0 | No evidence. Gets its own canonical id so its work is still counted and still selectable, and is recorded as an `unresolved_identity` orphan. |
+
+Matching is deliberately **not fuzzy** — no edit distance, no token subsets, no initials expansion. Attributing one colleague's commits to another is a worse failure than leaving them unattributed, so a name normalizing to more than one login resolves to nothing and is queued as an `ambiguous_identity` orphan. Machine addresses (`noreply@github.com`, `*@users.noreply.github.com`, `*[bot]*`) are excluded from email matching entirely; treating one as a person's address would merge everyone who ever used it.
+
+Resolution is pure in-database work over already-collected facts — no external API calls, so the collector boundary is untouched — and idempotent, so it re-derives rather than accumulating. It runs on the 30-minute correlation sweep and on demand via `POST /admin/configurations/correlation/resolve-identities`. Re-running matters: a developer is unresolvable until their first PR supplies a login, so the schedule is what turns a new joiner's back-catalogue of commits from nobody's into theirs.
 
 ---
 
@@ -150,7 +167,7 @@ A `graph_node` references an existing entity (no data duplication): `(node_id, t
 | `story_in_sprint` | story → sprint | sprint scope | structural + `committed` |
 | `commit_in_repo` / `pr_in_repo` | → repository | structural | |
 | `deployment_includes_commit` | deployment → commit | CI metadata | for lead-time-to-deploy & release scope |
-| `developer_authored` | developer → commit/pr | identity resolution | `confidence` |
+| `developer_authored` | developer → commit/pr | identity resolution | `confidence` — **not materialized as a `correlation_link` row**; authorship is resolved at read time through `developer_identity` (§3) |
 | `scan_covers_commit` | quality_scan → commit | commit_sha match | |
 
 ### 8.3 Correlation record & coverage

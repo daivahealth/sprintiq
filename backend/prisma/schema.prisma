@@ -436,6 +436,9 @@ model Commit {
   @@unique([tenantId, repoFullName, sha])
   @@index([tenantId, authorLogin, authoredAt])
   @@index([tenantId, repoFullName, authoredAt])
+  // Commit reads resolve a developer to their git emails too (see
+  // DeveloperIdentity), so the email is a query predicate, not just a fact.
+  @@index([tenantId, authorEmail, committedAt])
   @@map("code_commit")
 }
 
@@ -466,12 +469,53 @@ model Orphan {
   tenantId   String
   nodeType   String
   nodeRef    String
-  reason     String // no_key | ambiguous_key | unknown_project
+  reason     String // no_key | ambiguous_key | unknown_project | ambiguous_identity | unresolved_identity
   detectedAt DateTime  @default(now())
   resolvedAt DateTime?
 
   @@index([tenantId, nodeType])
   @@map("correlation_orphan")
+}
+
+/// Identity resolution (DATA-MODEL.md §3): maps the many source identities one
+/// human commits under to a single canonical developer.
+///
+/// This exists because a git identity and a GitHub account are not the same
+/// thing. GitHub only fills `commit.author.login` when the commit's email is a
+/// VERIFIED email on some account; otherwise the commit arrives carrying a name
+/// and email and no login at all, while that same person's pull requests always
+/// carry `user.login`. Querying commits by raw login therefore returns nothing
+/// for them, and the dashboards report "0 commits" as if it were a fact about
+/// the person rather than an artefact of email configuration.
+///
+/// One row per observed SOURCE identity; `canonicalDeveloperId` is what the
+/// read models group by. Links carry `confidence` and `method`, and ambiguous
+/// matches are queued as orphans rather than silently merged (DATA-MODEL.md §3,
+/// CLAUDE.md "correlation is the moat").
+model DeveloperIdentity {
+  id           String   @id
+  tenantId     String
+  sourceSystem String // github | jira | sso
+  /// Stable key for the observed identity: "login:<login>" when the source
+  /// resolved an account, else "email:<lowercased email>".
+  sourceKey    String
+  sourceLogin  String?
+  email        String?
+  name         String?
+  /// The developer all of this person's identities roll up to — the source
+  /// login when one is known, else the `email:` key. Read models group by this.
+  canonicalDeveloperId String
+  confidence   Float
+  method       String // github_login | email_exact | name_normalized | unresolved
+  /// Evidence for the link, so any attribution can be explained and audited.
+  evidence     Json?
+  linkedUserId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, sourceSystem, sourceKey])
+  @@index([tenantId, canonicalDeveloperId])
+  @@map("correlation_developer_identity")
 }
 
 // ---------------------------------------------------------------------------

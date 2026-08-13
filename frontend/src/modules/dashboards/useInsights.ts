@@ -195,8 +195,24 @@ export interface ProjectActivityRow {
   activeRepos: number;
   topRepo: string | null;
   contributors: number;
+  /** Commits counted in the totals but attributable to no developer. */
+  unattributedCommits: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
+}
+
+/**
+ * How much of a window's commit volume can be attributed to a person at all.
+ * GitHub resolves a commit's account only when its email is verified there, so
+ * this is routinely below 100% and the boards must say so rather than let
+ * "0 commits" read as "did nothing".
+ */
+export interface AttributionCoverage {
+  commitsInScope: number;
+  commitsAttributed: number;
+  commitsUnattributed: number;
+  coveragePct: number | null;
+  unattributedIdentities: number;
 }
 
 export interface DeveloperActivityView {
@@ -208,7 +224,15 @@ export interface DeveloperActivityView {
     locChanged: number;
     filesChanged: number;
     prsAuthored: number;
+    /** Of those, the ones merged — what Delivery Explorer counts. */
+    prsMerged: number;
     activeRepos: number;
+  };
+  /** The source identities these figures were gathered under. */
+  identity: {
+    logins: string[];
+    recoveredEmails: string[];
+    inferred: boolean;
   };
   activeProjects: string[];
   byRepo: {
@@ -389,17 +413,31 @@ export function useProjectActivity(window: ActivityWindow) {
   return useQuery({
     queryKey: ['project-activity', window],
     queryFn: () =>
-      api.get<{ window: string; rows: ProjectActivityRow[]; computedAt: string }>(
-        `/api/dashboards/project-activity?window=${window}`,
-      ),
+      api.get<{
+        window: string;
+        rows: ProjectActivityRow[];
+        attribution: AttributionCoverage;
+        computedAt: string;
+      }>(`/api/dashboards/project-activity?window=${window}`),
   });
+}
+
+/**
+ * Canonical developers. `login` is the identity to query by; `displayName` is
+ * what to show — they differ for people no GitHub account was matched to, who
+ * the old login-only catalog could not list at all.
+ */
+export interface DeveloperCatalogItem {
+  login: string;
+  displayName: string;
+  attributed: boolean;
 }
 
 export function useDeveloperCatalog(search: string) {
   return useQuery({
     queryKey: ['catalog', 'developers', search],
     queryFn: () =>
-      api.get<{ items: { login: string }[] }>(
+      api.get<{ items: DeveloperCatalogItem[] }>(
         `/api/catalog/developers${search ? `?search=${encodeURIComponent(search)}` : ''}`,
       ),
     staleTime: 60_000,
