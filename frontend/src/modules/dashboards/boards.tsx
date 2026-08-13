@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FreshnessNote } from './FreshnessNote';
 import { MultiSelect } from '../../components/multi-select';
 import { Badge, Card, FilterBar, ProvenanceNote } from '../../components/ui';
 import { useScope } from '../../lib/scope';
@@ -107,6 +108,10 @@ export function SprintHealthBoard() {
           selected={sprint}
           onChange={setSprint}
         />
+        {/* These boards build their own FilterBar instead of the shared
+            ScopeBar, so freshness has to be mounted explicitly — otherwise
+            they render numbers with no staleness signal at all. */}
+        <FreshnessNote />
       </FilterBar>
 
       {active.isLoading && <LoadingCard />}
@@ -163,6 +168,9 @@ export function SprintHealthBoard() {
               ))}
             </div>
           )}
+          <ProvenanceNote>
+            Computed {timeAgo(active.data.computedAt)}.
+          </ProvenanceNote>
         </div>
       )}
 
@@ -289,6 +297,10 @@ export function SprintRiskBoard() {
           emptyText="No projects found"
         />
         <SprintPicker sprints={sprints} selected={sprint} onChange={setSprint} />
+        {/* These boards build their own FilterBar instead of the shared
+            ScopeBar, so freshness has to be mounted explicitly — otherwise
+            they render numbers with no staleness signal at all. */}
+        <FreshnessNote />
       </FilterBar>
 
       {active.isLoading && <LoadingCard />}
@@ -355,6 +367,9 @@ export function SprintRiskBoard() {
               ))}
             </div>
           )}
+          <ProvenanceNote>
+            Computed {timeAgo(active.data.computedAt)}.
+          </ProvenanceNote>
         </div>
       )}
 
@@ -493,6 +508,9 @@ export function ForecastBoard() {
               </p>
             </Card>
           )}
+          <ProvenanceNote>
+            Computed {timeAgo(query.data.computedAt)}.
+          </ProvenanceNote>
         </div>
       )}
     </div>

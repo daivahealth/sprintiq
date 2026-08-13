@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FreshnessNote } from './FreshnessNote';
 import {
   Badge,
   Card,
@@ -70,6 +71,10 @@ export function ProjectActivityBoard() {
 
       <FilterBar>
         <WindowToggle value={window} onChange={setWindow} />
+        {/* These boards build their own FilterBar instead of the shared
+            ScopeBar, so freshness has to be mounted explicitly — otherwise
+            they render numbers with no staleness signal at all. */}
+        <FreshnessNote />
       </FilterBar>
 
       {query.isLoading && <LoadingCard />}
@@ -174,6 +179,10 @@ export function DeveloperActivityBoard() {
           placeholder="Search developers…"
         />
         <WindowToggle value={window} onChange={setWindow} />
+        {/* These boards build their own FilterBar instead of the shared
+            ScopeBar, so freshness has to be mounted explicitly — otherwise
+            they render numbers with no staleness signal at all. */}
+        <FreshnessNote />
       </FilterBar>
 
       {query.isLoading && developer && <LoadingCard />}
@@ -262,6 +271,10 @@ export function DeveloperActivityBoard() {
                 </li>
               )}
             </ul>
+            <ProvenanceNote>
+              Activity context, never a ranking. Computed{' '}
+              {timeAgo(d.computedAt)}.
+            </ProvenanceNote>
           </Card>
         </>
       )}
