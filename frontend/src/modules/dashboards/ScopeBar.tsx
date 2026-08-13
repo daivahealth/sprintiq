@@ -8,8 +8,22 @@ import { useProjects, useRepos } from "./useCatalog";
 /**
  * The global Scope Bar (DASHBOARDS.md §3): projects × repos × time, URL-synced.
  * Selecting projects cross-filters the repo picker via the delivery graph.
+ *
+ * Each axis is opt-out because not every board consumes the whole scope, and a
+ * control that silently does nothing is worse than an absent one — it looks
+ * like a filter and reads as though the number below it responded. The
+ * Jira-only boards (Velocity, Forecasting, Flow) send `projects` and nothing
+ * else, so they turn the rest off rather than offering dead controls.
  */
-export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
+export function ScopeBar({
+  showRepos = true,
+  showTime = true,
+  showGroupBy = true,
+}: {
+  showRepos?: boolean;
+  showTime?: boolean;
+  showGroupBy?: boolean;
+}) {
   const { scope, setScope } = useScope();
   const [projectSearch, setProjectSearch] = useState("");
   const [repoSearch, setRepoSearch] = useState("");
@@ -33,26 +47,33 @@ export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
         emptyText="No projects found"
       />
 
-      <MultiSelect
-        label="Repositories"
-        options={(repos.data?.items ?? []).map((r) => r.name)}
-        selected={scope.repos}
-        onChange={(next) => setScope({ repos: next })}
-        onSearch={setRepoSearch}
-        loading={repos.isLoading}
-        emptyText={
-          scope.projects.length > 0
-            ? "No repos linked to the selected projects"
-            : "No repos found"
-        }
-      />
+      {showRepos && (
+        <MultiSelect
+          label="Repositories"
+          options={(repos.data?.items ?? []).map((r) => r.name)}
+          selected={scope.repos}
+          onChange={(next) => setScope({ repos: next })}
+          onSearch={setRepoSearch}
+          loading={repos.isLoading}
+          emptyText={
+            scope.projects.length > 0
+              ? "No repos linked to the selected projects"
+              : "No repos found"
+          }
+        />
+      )}
 
-      <SegmentedControl
-        label="Time range"
-        value={scope.days}
-        onChange={(days) => setScope({ days })}
-        options={TIME_PRESETS.map((days) => ({ value: days, label: `${days}d` }))}
-      />
+      {showTime && (
+        <SegmentedControl
+          label="Time range"
+          value={scope.days}
+          onChange={(days) => setScope({ days })}
+          options={TIME_PRESETS.map((days) => ({
+            value: days,
+            label: `${days}d`,
+          }))}
+        />
+      )}
 
       {showGroupBy && (
         <SegmentedControl
@@ -67,7 +88,7 @@ export function ScopeBar({ showGroupBy = true }: { showGroupBy?: boolean }) {
         />
       )}
 
-      {repos.data?.crossFiltered && (
+      {showRepos && repos.data?.crossFiltered && (
         <p className="pb-2 text-xs text-fg-faint">
           Repos narrowed to those linked to the selected projects (delivery
           graph)

@@ -321,10 +321,13 @@ export class InsightsController {
     @Query('window') window = 'month',
   ) {
     const days = ACTIVITY_WINDOWS[window] ?? 30;
-    return this.insights.developerActivity(
+    const view = await this.insights.developerActivity(
       requireParam(developer, 'developer'),
       istWindowFloor(days),
     );
+    // Every other insight endpoint stamps this; this one didn't, which is why
+    // the board had no way to show when its numbers were computed.
+    return { ...view, computedAt: new Date().toISOString() };
   }
 
   private async resolveRepos(

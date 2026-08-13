@@ -36,7 +36,11 @@ describe('CollectorSchedulerService', () => {
   let tenantContext: TenantContextService;
   let collector: jest.Mocked<SourceCollector>;
   let prisma: {
-    schedulerTick: { upsert: jest.Mock; update: jest.Mock };
+    schedulerTick: {
+      upsert: jest.Mock;
+      update: jest.Mock;
+      findUnique: jest.Mock;
+    };
     connectionSyncRun: { create: jest.Mock; update: jest.Mock };
   };
   let service: CollectorSchedulerService;
@@ -64,6 +68,8 @@ describe('CollectorSchedulerService', () => {
       schedulerTick: {
         upsert: jest.fn().mockResolvedValue(undefined),
         update: jest.fn().mockResolvedValue(undefined),
+        // No sweep in flight by default.
+        findUnique: jest.fn().mockResolvedValue(null),
       },
       connectionSyncRun: {
         create: jest.fn().mockResolvedValue({ id: 'run_1' }),
@@ -78,6 +84,61 @@ describe('CollectorSchedulerService', () => {
       tenantContext,
       prisma as unknown as PrismaService,
     );
+  });
+
+  it('skips the tick when a sweep for that source is still running', async () => {
+    // The cron fires on a fixed cadence regardless of how long the previous
+    // sweep took. Two overlapping sweeps both start at the head of the list,
+    // spending the rate limit re-polling the same connections while the tail
+    // is never reached.
+    prisma.schedulerTick.findUnique.mockResolvedValue({
+      sourceSystem: 'github',
+      startedAt: new Date(Date.now() - 60_000),
+      finishedAt: null,
+    });
+
+    await service.tickGithub();
+
+    expect(connections.findActiveBySource).not.toHaveBeenCalled();
+    expect(prisma.schedulerTick.upsert).not.toHaveBeenCalled();
+  });
+
+  it('runs when the previous sweep finished', async () => {
+    prisma.schedulerTick.findUnique.mockResolvedValue({
+      sourceSystem: 'github',
+      startedAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(Date.now() - 30_000),
+    });
+
+    await service.tickGithub();
+
+    expect(connections.findActiveBySource).toHaveBeenCalledWith('github');
+  });
+
+  it('runs anyway when an unfinished sweep is older than the staleness bound', async () => {
+    // A process killed mid-sweep leaves the row open forever. Blocking on it
+    // indefinitely would strand the source — worse than a duplicate pass.
+    prisma.schedulerTick.findUnique.mockResolvedValue({
+      sourceSystem: 'github',
+      startedAt: new Date(Date.now() - 90 * 60_000),
+      finishedAt: null,
+    });
+
+    await service.tickGithub();
+
+    expect(connections.findActiveBySource).toHaveBeenCalledWith('github');
+  });
+
+  it('closes the sweep out even when the loop throws, so the guard cannot strand the source', async () => {
+    connections.findActiveBySource.mockResolvedValue([connection()]);
+    prisma.connectionSyncRun.create.mockRejectedValue(new Error('db blip'));
+
+    await expect(service.tickGithub()).rejects.toThrow('db blip');
+
+    expect(prisma.schedulerTick.update).toHaveBeenCalledWith({
+      where: { sourceSystem: 'github' },
+      data: { finishedAt: expect.any(Date) },
+    });
   });
 
   it('ingests every envelope a collector returns, under that connection tenant context', async () => {
@@ -298,5 +359,30 @@ describe('CollectorSchedulerService', () => {
         eventsIngested: 0,
       }),
     });
+  });
+});
+
+/**
+ * Fairness + overlap. Both only bite at org scale — an org sync registers one
+ * connection per repo (195 on a real tenant), a full sweep takes far longer
+ * than the 5-minute cadence, and connections still backfilling are always due
+ * regardless of their interval.
+ */
+describe('CollectorSchedulerService — org-scale sweep behaviour', () => {
+  it('asks for connections neediest-first so the backlog converges instead of starving', async () => {
+    const prisma = {
+      connection: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as PrismaService;
+    const svc = new ConnectionsService(prisma);
+
+    await svc.findActiveBySource('github');
+
+    // Unordered, every sweep restarts at the same head of the list and the
+    // tail is never reached at all.
+    expect(prisma.connection.findMany as jest.Mock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: { lastSyncAt: { sort: 'asc', nulls: 'first' } },
+      }),
+    );
   });
 });

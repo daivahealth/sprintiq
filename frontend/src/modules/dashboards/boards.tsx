@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FreshnessNote } from './FreshnessNote';
 import { MultiSelect } from '../../components/multi-select';
 import { Badge, Card, FilterBar, ProvenanceNote } from '../../components/ui';
 import { useScope } from '../../lib/scope';
@@ -107,6 +108,10 @@ export function SprintHealthBoard() {
           selected={sprint}
           onChange={setSprint}
         />
+        {/* These boards build their own FilterBar instead of the shared
+            ScopeBar, so freshness has to be mounted explicitly — otherwise
+            they render numbers with no staleness signal at all. */}
+        <FreshnessNote />
       </FilterBar>
 
       {active.isLoading && <LoadingCard />}
@@ -163,6 +168,9 @@ export function SprintHealthBoard() {
               ))}
             </div>
           )}
+          <ProvenanceNote>
+            Computed {timeAgo(active.data.computedAt)}.
+          </ProvenanceNote>
         </div>
       )}
 
@@ -289,6 +297,10 @@ export function SprintRiskBoard() {
           emptyText="No projects found"
         />
         <SprintPicker sprints={sprints} selected={sprint} onChange={setSprint} />
+        {/* These boards build their own FilterBar instead of the shared
+            ScopeBar, so freshness has to be mounted explicitly — otherwise
+            they render numbers with no staleness signal at all. */}
+        <FreshnessNote />
       </FilterBar>
 
       {active.isLoading && <LoadingCard />}
@@ -355,6 +367,9 @@ export function SprintRiskBoard() {
               ))}
             </div>
           )}
+          <ProvenanceNote>
+            Computed {timeAgo(active.data.computedAt)}.
+          </ProvenanceNote>
         </div>
       )}
 
@@ -399,7 +414,9 @@ export function VelocityBoard() {
         title="Velocity"
         subtitle="Completed vs committed story points per closed sprint."
       />
-      <ScopeBar />
+      {/* Velocity is Jira-only — it sends projects and nothing else, so the
+          repo/time/group-by axes would be controls that silently do nothing. */}
+      <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {query.data && (
@@ -441,7 +458,9 @@ export function ForecastBoard() {
         title="Forecasting"
         subtitle="Average velocity of recent closed sprints vs remaining backlog."
       />
-      <ScopeBar />
+      {/* Forecasting is Jira-only — it sends projects and nothing else, so the
+          repo/time/group-by axes would be controls that silently do nothing. */}
+      <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {query.data && (
@@ -493,6 +512,9 @@ export function ForecastBoard() {
               </p>
             </Card>
           )}
+          <ProvenanceNote>
+            Computed {timeAgo(query.data.computedAt)}.
+          </ProvenanceNote>
         </div>
       )}
     </div>
@@ -571,7 +593,9 @@ export function FlowBoard() {
         title="Flow"
         subtitle="Cycle time, work in progress and ageing, from the status-transition timeline."
       />
-      <ScopeBar />
+      {/* Flow is Jira-only — it sends projects and nothing else, so the
+          repo/time/group-by axes would be controls that silently do nothing. */}
+      <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {d && (

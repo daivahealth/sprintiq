@@ -30,6 +30,14 @@ import { IngestionService } from '../ingestion/ingestion.service';
  * connection actually synced this tick (skipped/not-due connections get no
  * row) — this is the "previous sync + what was synced" history.
  */
+/**
+ * How long an unfinished sweep blocks the next one. Long enough that a genuine
+ * org-scale pass (hundreds of connections, rate-limit pauses) is never cut off
+ * by a second sweep; short enough that a process killed mid-sweep resumes
+ * within the hour rather than stranding the source permanently.
+ */
+const SWEEP_STALE_AFTER_MS = 45 * 60_000;
+
 @Injectable()
 export class CollectorSchedulerService {
   private readonly logger = new Logger(CollectorSchedulerService.name);
@@ -53,6 +61,20 @@ export class CollectorSchedulerService {
   }
 
   private async tick(sourceSystem: SourceSystem): Promise<void> {
+    // A sweep already running is not a reason to start another. The cron fires
+    // on a fixed cadence regardless of how long the previous run took, and a
+    // sweep over an org-scale connection list (one per repo) takes far longer
+    // than the cadence. Overlapping sweeps both start at the head of the list,
+    // so they spend the rate limit re-polling the same connections while the
+    // tail is never reached — the failure the ordering in
+    // `findActiveBySource` is the other half of.
+    if (await this.isSweepRunning(sourceSystem)) {
+      this.logger.log(
+        `${sourceSystem} sweep still running — skipping this tick rather than starting a second pass over the same connections.`,
+      );
+      return;
+    }
+
     const all = await this.connections.findActiveBySource(sourceSystem);
     const now = Date.now();
     const due = all.filter((c) => this.isDue(c, now));
@@ -74,18 +96,42 @@ export class CollectorSchedulerService {
       },
     });
 
-    for (const connection of due) {
-      await this.syncOne(connection);
+    try {
+      for (const connection of due) {
+        await this.syncOne(connection);
+        await this.prisma.schedulerTick.update({
+          where: { sourceSystem },
+          data: { connectionsProcessed: { increment: 1 } },
+        });
+      }
+    } finally {
+      // Always close the sweep out. `syncOne` swallows collector errors, but
+      // anything escaping it (a DB blip mid-loop) would otherwise leave the
+      // row open and — now that an open row blocks the next tick — stall the
+      // source until the staleness bound expires.
       await this.prisma.schedulerTick.update({
         where: { sourceSystem },
-        data: { connectionsProcessed: { increment: 1 } },
+        data: { finishedAt: new Date() },
       });
     }
+  }
 
-    await this.prisma.schedulerTick.update({
+  /**
+   * Is a sweep for this source already in flight?
+   *
+   * `startedAt` set with no `finishedAt` means a run began and hasn't closed
+   * out. The staleness bound matters: a process killed mid-sweep leaves that
+   * row open forever, and without an expiry the source would never sync again
+   * — a far worse failure than the duplicate pass this guards against.
+   */
+  private async isSweepRunning(sourceSystem: SourceSystem): Promise<boolean> {
+    const tick = await this.prisma.schedulerTick.findUnique({
       where: { sourceSystem },
-      data: { finishedAt: new Date() },
     });
+    if (!tick?.startedAt || tick.finishedAt) {
+      return false;
+    }
+    return Date.now() - tick.startedAt.getTime() < SWEEP_STALE_AFTER_MS;
   }
 
   /**

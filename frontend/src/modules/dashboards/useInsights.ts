@@ -413,7 +413,7 @@ export function useDeveloperActivity(
   return useQuery({
     queryKey: ['developer-activity', developer, window],
     queryFn: () =>
-      api.get<DeveloperActivityView>(
+      api.get<DeveloperActivityView & { computedAt: string }>(
         `/api/dashboards/developer-activity?developer=${encodeURIComponent(developer!)}&window=${window}`,
       ),
     enabled: Boolean(developer),

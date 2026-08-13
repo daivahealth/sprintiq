@@ -12,7 +12,7 @@ Canonical frontend/dashboard spec for SprintIQ at real scale: **~200 repositorie
 2. **Role-based assignment.** Each dashboard carries a role list; `GET /api/dashboards/assignments` returns the dashboards for the current user's roles and drives the nav. Default: all dashboards → all roles; per-tenant admin-configurable assignment is the follow-up (admin UI over the same registry).
 3. **Bi-directional Jira↔GitHub tracking everywhere.** Every dashboard exposes both directions of the correlation graph: work items → their linked PRs (Jira→GitHub) and PRs → their work items (GitHub→Jira), with coverage percentages and orphans surfaced.
 4. **Detailing at every granularity** — the backend read models answer story-wise, sub-task-wise, bug-wise, epic-wise, developer-wise, release-wise, sprint-wise questions (see §3).
-5. Numbers are computed server-side from persisted facts + correlation links; missing data renders as missing (never fabricated), with sample size/freshness shown. **Freshness is rendered on every board** by the shared Scope Bar (`FreshnessNote` → `GET /api/dashboards/freshness`): with poll-only ingestion on a 4-hour default interval, the page being a second old says nothing about the data in it. It shows the oldest sync across active connections, and calls out never-synced and failing connections separately.
+5. Numbers are computed server-side from persisted facts + correlation links; missing data renders as missing (never fabricated), with sample size/freshness shown. **Freshness is rendered on every board** (`FreshnessNote` → `GET /api/dashboards/freshness`): with poll-only ingestion on a 4-hour default interval, the page being a second old says nothing about the data in it. It shows the oldest sync across active connections, and calls out never-synced and failing connections separately. It rides in the shared Scope Bar; boards with their own `FilterBar` mount it directly (§8).
 
 ---
 
@@ -62,6 +62,16 @@ Top Repos and Team Capacity force their `groupBy` (via `useBatchMetrics`'s expli
 
 All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cross-filtered); sprint boards add a sprint picker (auto-selects the active sprint in scope).
 
+**Each scope axis is rendered only where the board actually consumes it.** `ScopeBar` takes `showRepos` / `showTime` / `showGroupBy`, because a control that silently does nothing is worse than an absent one — it looks like a filter and reads as though the number below it responded to the change.
+
+| Board | Sends | Axes shown |
+|---|---|---|
+| Delivery Explorer, Productivity, Efficiency | full scope | all |
+| Top Repos, Team Capacity | scope, `groupBy` forced | repos + time |
+| **Velocity, Forecasting, Flow** | `projects` **only** | projects only |
+
+The last row is the substantive one: those three are **Jira-only** metrics. Forecasting is `avg velocity of recent closed sprints ÷ remaining backlog` — sprints, points and backlog items, with no repository dimension to filter by at all; narrowing it by repo would require mapping stories through `pr_implements_story` and would silently drop every unlinked story, making the forecast *wrong* rather than narrower. Time range is equally meaningless there: the forecast samples the **last 3 closed sprints**, not a rolling day window, so a `30d` selector implies control over a sampling decision it doesn't have.
+
 ### Honest-math notes
 - Velocity/health treat `Done/Closed/Resolved` as done (tenant-tunable constant); committed = items currently attached to the sprint (scope-change history is a follow-up, so mid-sprint additions inflate "committed").
 - Forecast is deliberately simple (average velocity ÷ remaining estimated points, average closed-sprint length for dating) and **labels unestimated items as excluded** rather than guessing.
@@ -84,7 +94,16 @@ Developer-wise views are labeled activity context; no leaderboards; person-level
 
 Tenant admins also see separate **Users & Roles**, **Configuration**, and **Sync Status** navigation items. They are not metric dashboards and are guarded by the same `admin` role as the admin API; all user-role, tenant-configuration, and sync-status reads/writes remain tenant-scoped. Sync Status (`/admin/sync-status`, [docs/api/README.md §7.1](../api/README.md)) shows collector backfill/ingestion progress and live scheduler tick state, broken out **per source** (GitHub and Jira sync and are configured independently — each has its own `syncIntervalMinutes` on the Configuration screen, default every 4 hours) with a recent run-history table per source — operational observability, not a delivery metric.
 
-**Data-trust chrome is first-class, not muted.** Every board surfaces how trustworthy its numbers are: a `computed {timeAgo}` freshness stamp, a per-row Confidence badge (`MetricRowsTable`: `sampleSize === 0` → No data, `< 5` → Low confidence, else → Healthy), and linkage-coverage callouts (e.g. Configuration's "Collecting" / "Not collecting yet" connection status, Sprint boards' code-linkage %, "(unlinked repos)" bucketing on Project Activity). Visual treatment — token, contrast, and typography — is defined in [DESIGN-SYSTEM.md](../development/DESIGN-SYSTEM.md); `DeveloperActivityBoard`, `SprintHealthBoard`, `SprintRiskBoard`, and `ForecastBoard` currently omit the freshness stamp despite their endpoints returning `computedAt` — a known gap, not an intentional omission.
+**Data-trust chrome is first-class, not muted.** Every board surfaces how trustworthy its numbers are: a `computed {timeAgo}` freshness stamp, a per-row Confidence badge (`MetricRowsTable`: `sampleSize === 0` → No data, `< 5` → Low confidence, else → Healthy), and linkage-coverage callouts (e.g. Configuration's "Collecting" / "Not collecting yet" connection status, Sprint boards' code-linkage %, "(unlinked repos)" bucketing on Project Activity). Visual treatment — token, contrast, and typography — is defined in [DESIGN-SYSTEM.md](../development/DESIGN-SYSTEM.md).
+
+There are **two distinct freshness signals and every board carries both**, which is worth stating plainly because they answer different questions and were previously confused for one another:
+
+| Signal | Question it answers | Source |
+|---|---|---|
+| `Computed {timeAgo}` | When did this *query* run? | the view's own `computedAt` |
+| `Data as of {timeAgo}` | How old is the *collected data* underneath it? | `GET /api/dashboards/freshness` (api/README.md §9) |
+
+The second is the one that matters with poll-only ingestion on a 4-hour default: a page rendered a second ago can be sitting on hours-old facts. It is mounted in the shared `ScopeBar`, so the four boards that build their own `FilterBar` instead — Sprint Health, Sprint Risk, Project Activity, Developer Activity — mount `FreshnessNote` explicitly. Sprint Health, Sprint Risk and Developer Activity previously showed **neither** signal.
 
 ## 9. Next increments (ordered)
 
