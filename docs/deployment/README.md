@@ -70,13 +70,40 @@ cd backend && npm install && npm run start:dev    # or rely on the api container
 cd frontend && npm install && npm run dev
 ```
 
-Compose stack: `sprintiq-api` (runs all roles), `postgres` (pgvector image), `redis`. No external automation tool is part of the stack (collectors are native).
+Compose stack: `sprintiq-api` (runs all roles), `postgres` (pgvector image), `redis`. No external automation tool is part of the stack (collectors are native). The `api` service deliberately sets no `command:` — the image's own `CMD` already migrates before starting (§3.1), and a compose-level override would mean the boot sequence is defined in a place that doesn't travel with a deploy to anything but compose.
 
 **Testing webhooks locally:** expose the collector port via a tunnel (e.g., a dev HTTPS tunnel) and register that URL as the webhook target in a Jira/GitHub sandbox, **or** drive the poller against a sandbox connection for pull-only testing. Per-provider signature secrets are set as dev env vars; never use production secrets locally.
 
 ---
 
+## 3.1 Schema migrations: applied on boot, by the image itself
+
+**The backend applies pending migrations when it starts.** `backend/Dockerfile`'s `CMD` is `npm run start:prod`, which is `prisma migrate deploy && node dist/main.js`.
+
+This is deliberate, and it is the property that makes a deploy self-sufficient. The frontend, the API, and the database schema are three separate artifacts on three separate release paths — a merge to `main` moves code, and code alone never migrates a database. Any scheme that relies on someone remembering to run `prisma migrate deploy` by hand fails the first time nobody does, and the failure mode is the API 500ing on a table that does not exist.
+
+Consequences worth knowing:
+
+- **Ordering is automatic.** Migrations land before the process serves traffic, so the new code never queries a table that isn't there yet.
+- **A failed migration stops the boot** (`&&`), so the container never comes up on a schema it can't use — the orchestrator keeps the previous version instead of serving a broken one.
+- **Concurrent replicas are safe.** `migrate deploy` takes a Postgres advisory lock; whichever pod arrives first migrates, the rest wait and then find nothing to do. This holds across `APP_ROLE` values too — all three roles run the same image.
+- **Migrations must stay fast and additive.** A long-running one now delays startup and can trip readiness probes. Anything expensive (a backfill, a large index build) belongs in a reconciler or a one-off job, not a migration.
+- **Rollback is not automatic.** `migrate deploy` only rolls forward. Keep migrations backward-compatible with the previous release — add columns/tables, don't drop or rename in the same deploy that stops using them — so an old pod and a new pod can both run against the migrated schema during a rollout.
+
+Two things the image needs for this to work at all, both easy to lose in a refactor:
+
+- **`prisma/` is copied into the runtime stage,** not just the build stage. It carries `schema.prisma` *and* `migrations/`. Without it the image can only run against a database someone migrated by hand.
+- **`openssl` is installed via `apk`.** Prisma's schema and query engines are native binaries that link against libssl, which `node:*-alpine` does not ship. Missing, the engine fails to load and reports it as a JSON parse error (`Could not parse schema engine response`) that names nothing relevant — and it breaks every query the app makes, not only migrations.
+
+`prisma` (the CLI) is therefore a **runtime dependency**, not a dev one — `npm ci --omit=dev` must still install it.
+
+If your platform runs the image's `CMD`, you get all of this for free. If it overrides the start command (a Procfile, a PaaS "start command" field, a systemd unit), that command must be `npm run start:prod` — not `node dist/main.js`, which skips the migration step.
+
+---
+
 ## 4. Production (Kubernetes)
+
+> **Status:** aspirational. `deploy/` currently contains only `pgadmin/servers.json` — there are no Helm/Kustomize manifests in the repo yet, and CI (`.github/workflows/ci.yml`) lints, builds and tests but does not deploy. Treat this section as the target shape, not a description of what runs today.
 
 Manifests live under `deploy/` (Helm/Kustomize). Recommended shape:
 
