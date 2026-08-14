@@ -19,16 +19,24 @@ export function DeliveryDashboard() {
     scope,
     from,
   );
-  const rows = useMemo(
-    () =>
-      [...(query.data?.rows ?? [])].sort((a, b) => {
-        const changedLoc =
-          (b.metrics.loc_added_deleted?.value ?? 0) -
-          (a.metrics.loc_added_deleted?.value ?? 0);
-        return changedLoc || a.key.localeCompare(b.key);
-      }),
-    [query.data?.rows],
-  );
+  // Sorted by changed LOC — EXCEPT when the rows are people. Ranking
+  // individuals by lines changed is exactly the leaderboard CLAUDE.md forbids
+  // and that Team Capacity is careful to avoid; grouping by developer here made
+  // this board one by default. Alphabetical for people, volume for everything
+  // else (DASHBOARDS.md §3).
+  const groupBy = query.data?.groupBy;
+  const rows = useMemo(() => {
+    const all = [...(query.data?.rows ?? [])];
+    if (groupBy === "developer") {
+      return all.sort((a, b) => a.key.localeCompare(b.key));
+    }
+    return all.sort((a, b) => {
+      const changedLoc =
+        (b.metrics.loc_added_deleted?.value ?? 0) -
+        (a.metrics.loc_added_deleted?.value ?? 0);
+      return changedLoc || a.key.localeCompare(b.key);
+    });
+  }, [query.data?.rows, groupBy]);
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -56,7 +64,10 @@ export function DeliveryDashboard() {
               </h3>
               <p className="text-sm text-fg-subtle">
                 delivery, change-volume, and bug context · last {scope.days}d ·
-                grouped by {query.data.groupBy} · sorted by changed LOC
+                grouped by {query.data.groupBy} ·{" "}
+                {groupBy === "developer"
+                  ? "merged PRs only · unsorted (activity context, not a ranking)"
+                  : "sorted by changed LOC"}
               </p>
             </div>
             <span className="text-xs text-fg-faint">

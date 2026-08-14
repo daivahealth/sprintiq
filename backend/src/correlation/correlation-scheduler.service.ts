@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../database/prisma.service';
 import { CorrelationService } from './correlation.service';
+import { DeveloperIdentityService } from './developer-identity.service';
 
 /**
  * Scheduled orphan re-matching (BC-5).
@@ -30,6 +31,7 @@ export class CorrelationSchedulerService {
 
   constructor(
     private readonly correlation: CorrelationService,
+    private readonly identities: DeveloperIdentityService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -56,6 +58,26 @@ export class CorrelationSchedulerService {
         // One tenant's failure must not abort the sweep for the rest.
         this.logger.error(
           `Orphan sweep failed for tenant ${tenant.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+
+      // Same shape, different edge: identity resolution also runs once per
+      // sweep because it too depends on facts that keep arriving. A person is
+      // unresolvable until they open their first PR (that is where the login
+      // comes from), so re-deriving on a schedule is what turns a newly-hired
+      // developer's back-catalogue of commits from nobody's into theirs.
+      try {
+        const result = await this.identities.resolveTenant(tenant.id);
+        if (result.recovered > 0 || result.ambiguous > 0) {
+          this.logger.log(
+            `Identity sweep (tenant ${tenant.id}): recovered ${result.recovered}, ${result.unresolved} unresolved, ${result.ambiguous} ambiguous of ${result.observed}.`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Identity sweep failed for tenant ${tenant.id}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );

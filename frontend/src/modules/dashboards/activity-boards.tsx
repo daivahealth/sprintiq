@@ -56,6 +56,7 @@ export function ProjectActivityBoard() {
   const [window, setWindow] = useState<ActivityWindow>('week');
   const query = useProjectActivity(window);
   const rows = query.data?.rows ?? [];
+  const attribution = query.data?.attribution;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -99,6 +100,7 @@ export function ProjectActivityBoard() {
                     <th className="py-2 pr-4 font-medium">Active repos</th>
                     <th className="py-2 pr-4 font-medium">Top repo</th>
                     <th className="py-2 font-medium">Contributors</th>
+                    <th className="py-2 font-medium">Unattributed</th>
                   </TableHeadRow>
                 </thead>
                 <tbody>
@@ -122,10 +124,39 @@ export function ProjectActivityBoard() {
                         {r.topRepo ?? '—'}
                       </td>
                       <td className="py-2.5 tabular-nums">{r.contributors}</td>
+                      <td className="py-2.5 tabular-nums">
+                        {r.unattributedCommits ? (
+                          <span
+                            className="text-warning-fg"
+                            title="Commits counted in the totals whose author matched no developer — they cannot be counted under Contributors."
+                          >
+                            {r.unattributedCommits}
+                          </span>
+                        ) : (
+                          <span className="text-fg-faint">—</span>
+                        )}
+                      </td>
                     </TableBodyRow>
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {attribution && attribution.commitsUnattributed > 0 && (
+            <div className="rounded-md border border-border bg-subtle p-3 text-sm text-fg-muted">
+              <span className="font-medium text-fg">
+                {attribution.commitsUnattributed}
+              </span>{' '}
+              of {attribution.commitsInScope} commits in this window
+              ({attribution.coveragePct}% attributed) come from{' '}
+              {attribution.unattributedIdentities} git{' '}
+              {attribution.unattributedIdentities === 1
+                ? 'identity'
+                : 'identities'}{' '}
+              that match no known developer — usually a git email not verified
+              on the author’s GitHub account. Their commits and LOC are counted
+              above; they cannot be counted under Contributors.
             </div>
           )}
 
@@ -156,6 +187,16 @@ export function DeveloperActivityBoard() {
     }
   }, [developer, developers]);
 
+  const options = developers.map((dev) => ({
+    value: dev.login,
+    label: dev.displayName ?? dev.login,
+    // Marked in the list rather than hidden: these are the people whose commits
+    // GitHub attributed to no account, and silently omitting them is what made
+    // their work look like nobody's in the first place. `attributed` absent
+    // means the API can't distinguish, so nothing is claimed either way.
+    hint: dev.attributed === false ? '· no linked account' : undefined,
+  }));
+
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div>
@@ -172,7 +213,7 @@ export function DeveloperActivityBoard() {
         <SearchSelect
           label="Developer"
           value={developer}
-          options={developers.map((dev) => dev.login)}
+          options={options}
           onSearch={setAppliedSearch}
           onSelect={setDeveloper}
           loading={catalog.isFetching}
@@ -211,8 +252,49 @@ export function DeveloperActivityBoard() {
                 hint={`+${d.totals.additions} / −${d.totals.deletions}`}
               />
               <Stat label="Repos" value={d.totals.activeRepos} />
-              <Stat label="PRs authored" value={d.totals.prsAuthored} />
+              <Stat
+                label="PRs authored"
+                value={d.totals.prsAuthored}
+                // Delivery counts merged PRs by merge date; this board counts
+                // every PR opened in the window. Stating both stops the two
+                // boards reading as a contradiction about the same person.
+                hint={
+                  d.totals.prsMerged === undefined
+                    ? undefined
+                    : `${d.totals.prsMerged} merged`
+                }
+              />
             </div>
+
+            {/* Whose identities these figures were gathered under. A person
+                whose git email isn't verified on their GitHub account commits
+                under a login-less identity; until it's matched, this page reads
+                "0 commits" for someone who has been committing all month.
+                Every branch is guarded: this build can be serving against an
+                API that predates identity resolution, and an unguarded
+                dereference here took the entire board down rather than
+                degrading to the older, less informative rendering. */}
+            {d.identity?.inferred && (
+              <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
+                Includes commits authored as{' '}
+                <span className="font-medium text-fg">
+                  {d.identity.recoveredEmails.join(', ')}
+                </span>
+                , matched to this developer by name because GitHub attributed
+                those commits to no account.
+              </p>
+            )}
+            {d.totals.commits === 0 && d.identity && !d.identity.inferred && (
+              <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
+                No commits matched{' '}
+                <span className="font-medium text-fg">
+                  {d.identity.logins.join(', ')}
+                </span>{' '}
+                in this window. If this developer has been committing, their git
+                email is likely not verified on their GitHub account — check
+                Project Activity’s unattributed count.
+              </p>
+            )}
             <div>
               <h4 className="mb-2 text-sm font-medium text-fg-muted">
                 Commits per day

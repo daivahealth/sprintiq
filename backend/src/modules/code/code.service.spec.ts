@@ -14,12 +14,16 @@ describe('CodeService.listCommits', () => {
 
     const from = new Date('2026-06-01T00:00:00.000Z');
     const to = new Date('2026-06-30T00:00:00.000Z');
-    await service.listCommits('tenant-a', { from, to, authorLogin: 'jdoe' });
+    await service.listCommits('tenant-a', {
+      from,
+      to,
+      authorLogins: ['jdoe'],
+    });
 
     expect(findMany).toHaveBeenCalledWith({
       where: {
         tenantId: 'tenant-a',
-        authorLogin: 'jdoe',
+        authorLogin: { in: ['jdoe'] },
         committedAt: { gte: from, lte: to },
       },
       orderBy: { committedAt: 'desc' },

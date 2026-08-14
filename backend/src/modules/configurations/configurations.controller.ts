@@ -25,6 +25,7 @@ import { Roles } from '../../common/auth/roles.decorator';
 import { SecretsService } from '../../common/secrets/secrets.service';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
 import { CorrelationService } from '../../correlation/correlation.service';
+import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
 import {
   CONFIGURATION_CATALOG,
   CONFIGURATION_NAMESPACES,
@@ -91,6 +92,7 @@ export class ConfigurationsController {
     private readonly reviewReconciler: GithubReviewReconcilerService,
     private readonly storyDateReconciler: JiraStoryDateReconcilerService,
     private readonly correlation: CorrelationService,
+    private readonly identities: DeveloperIdentityService,
   ) {}
 
   @Roles(Role.ADMIN)
@@ -256,6 +258,23 @@ export class ConfigurationsController {
   @Post('correlation/reconcile-orphans')
   async reconcileOrphans(@CurrentUser() user: AuthUser) {
     return this.correlation.reconcileOrphans(user.tenantId);
+  }
+
+  /**
+   * Rebuilds the developer identity map (BC-5): links the git identities a
+   * person commits under to the GitHub account their pull requests carry.
+   *
+   * Needed because GitHub attributes a commit only when its email is verified
+   * on an account — otherwise the commit lands with a name and email and no
+   * login, and Developer Activity reports "0 commits" for someone who has been
+   * committing all month. Runs on the correlation sweep too; this is the
+   * button for applying it immediately. Pure in-database matching, no external
+   * API calls, safe to re-run.
+   */
+  @Roles(Role.ADMIN)
+  @Post('correlation/resolve-identities')
+  async resolveIdentities(@CurrentUser() user: AuthUser) {
+    return this.identities.resolveTenant(user.tenantId);
   }
 
   private toView(config: TenantConfigurationView) {

@@ -223,6 +223,7 @@ SprintIQ is decomposed using Domain-Driven Design. Contexts are classified as **
 ### BC-5 — Correlation & Delivery Graph *(Core — the moat)* ★
 - **Purpose:** Weave all sources into one time-aware graph linking work to code to delivery.
 - **Responsibilities:** Extract Jira keys from branch/PR/commit (regex + heuristics + ML fallback); link Repo→PR→Commit→Story→Epic→Project→Sprint; resolve developer identities across tools; compute confidence scores for links; flag orphan commits/PRs and unlinked stories.
+- **Implementation status:** Jira-key extraction (regex), `pr_implements_story` edges, orphan flagging and re-matching, and **GitHub developer identity resolution** (`developer_identity`, DATA-MODEL.md §3) are implemented. Cross-tool identity beyond GitHub (Jira account, SSO) and the ML-fallback key extraction are not. `commit_implements_story` is still open (api/README.md §12 #7).
 - **Inputs:** Facts from BC-3, BC-4, BC-6, BC-7; identity hints from BC-2.
 - **Outputs:** The unified delivery graph; linkage coverage metrics; orphan/ambiguity reports.
 - **Interactions:** Consumed by BC-8/9/10/11/13; this is the substrate everything intelligent reads from.

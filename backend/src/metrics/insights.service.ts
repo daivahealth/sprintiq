@@ -3,6 +3,10 @@ import { PullRequest, Sprint, Story } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import { istDateKey } from '../common/time';
 import { CorrelationService } from '../correlation/correlation.service';
+import {
+  AttributionCoverage,
+  DeveloperIdentityService,
+} from '../correlation/developer-identity.service';
 import { CodeService } from '../modules/code/code.service';
 import {
   DONE_STATUSES,
@@ -252,8 +256,37 @@ export interface ProjectActivityRow {
   activeRepos: number;
   topRepo: string | null;
   contributors: number;
+  /**
+   * Commits in this row whose author matched no developer. They ARE counted in
+   * `commits` and `locChanged` but cannot be counted in `contributors`, so
+   * without this the row silently reports more work than people to do it.
+   */
+  unattributedCommits: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
+}
+
+export interface ProjectActivityView {
+  rows: ProjectActivityRow[];
+  /** How much of the window's commit volume is attributable at all. */
+  attribution: AttributionCoverage;
+}
+
+/**
+ * Which source identities this developer's numbers were gathered under.
+ *
+ * Shown on the board because the figures are only as trustworthy as the
+ * identity behind them: a person whose git email is not verified on their
+ * GitHub account commits under a login-less identity, and until it is resolved
+ * their page reads "0 commits" (CLAUDE.md — always surface linkage coverage).
+ */
+export interface DeveloperIdentityNote {
+  /** Logins whose commits/PRs are counted here. */
+  logins: string[];
+  /** Git emails counted here because GitHub attributed no account to them. */
+  recoveredEmails: string[];
+  /** True when any figure below rests on an inferred identity, not a source-resolved one. */
+  inferred: boolean;
 }
 
 export interface DeveloperActivityView {
@@ -265,8 +298,11 @@ export interface DeveloperActivityView {
     locChanged: number;
     filesChanged: number;
     prsAuthored: number;
+    /** PRs authored in the window that were merged — the Delivery Explorer denominator. */
+    prsMerged: number;
     activeRepos: number;
   };
+  identity: DeveloperIdentityNote;
   activeProjects: string[]; // via repo→project graph mapping
   byRepo: {
     repo: string;
@@ -303,6 +339,7 @@ export class InsightsService {
     private readonly planning: PlanningService,
     private readonly code: CodeService,
     private readonly correlation: CorrelationService,
+    private readonly identities: DeveloperIdentityService,
   ) {}
 
   /** Work-item detail rows (any granularity) with linked PRs per item. */
@@ -984,13 +1021,16 @@ export class InsightsService {
    * every repo mapped to the project via the delivery graph. Repos linked to no
    * project are reported honestly in an "(unlinked repos)" bucket.
    */
-  async projectActivity(from: Date, to?: Date): Promise<ProjectActivityRow[]> {
+  async projectActivity(from: Date, to?: Date): Promise<ProjectActivityView> {
     const tenantId = this.tenantContext.requireTenantId();
+    const end = to ?? new Date();
     const repoToProjects = await this.repoToProjects(tenantId);
-    const commits = await this.code.listCommits(tenantId, {
+    const commits = await this.code.listCommits(tenantId, { from, to: end });
+    const attribution = await this.identities.attributionCoverage(
+      tenantId,
       from,
-      to: to ?? new Date(),
-    });
+      end,
+    );
 
     interface Acc {
       commits: number;
@@ -998,6 +1038,7 @@ export class InsightsService {
       deletions: number;
       repoCommits: Map<string, number>;
       contributors: Set<string>;
+      unattributed: number;
       byDay: Map<string, { commits: number; locChanged: number }>;
     }
     const acc = new Map<string, Acc>();
@@ -1010,6 +1051,7 @@ export class InsightsService {
           deletions: 0,
           repoCommits: new Map(),
           contributors: new Set(),
+          unattributed: 0,
           byDay: new Map(),
         } as Acc);
       acc.set(key, cur);
@@ -1032,6 +1074,8 @@ export class InsightsService {
         );
         if (c.authorLogin) {
           a.contributors.add(c.authorLogin);
+        } else {
+          a.unattributed += 1;
         }
         const d = a.byDay.get(day) ?? { commits: 0, locChanged: 0 };
         d.commits += 1;
@@ -1040,7 +1084,7 @@ export class InsightsService {
       }
     }
 
-    return [...acc.entries()]
+    const rows = [...acc.entries()]
       .map(([projectKey, a]) => ({
         projectKey,
         commits: a.commits,
@@ -1052,6 +1096,7 @@ export class InsightsService {
           [...a.repoCommits.entries()].sort((x, y) => y[1] - x[1])[0]?.[0] ??
           null,
         contributors: a.contributors.size,
+        unattributedCommits: a.unattributed,
         dailySeries: [...a.byDay.entries()]
           .map(([date, d]) => ({
             date,
@@ -1061,6 +1106,8 @@ export class InsightsService {
           .sort((x, y) => x.date.localeCompare(y.date)),
       }))
       .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
+
+    return { rows, attribution };
   }
 
   /** GitHub-style activity profile for one developer (activity context, not ranking). */
@@ -1071,14 +1118,20 @@ export class InsightsService {
   ): Promise<DeveloperActivityView> {
     const tenantId = this.tenantContext.requireTenantId();
     const end = to ?? new Date();
+    // Resolve the person BEFORE querying: GitHub only attributes a commit when
+    // its email is verified on an account, so filtering on the login alone
+    // returns nothing for anyone whose git config uses an unverified address —
+    // and the board then reports "0 commits" as a fact about them.
+    const aliases = await this.identities.aliasesFor(tenantId, developer);
     const commits = await this.code.listCommits(tenantId, {
-      authorLogin: developer,
+      authorLogins: aliases.logins,
+      authorEmails: aliases.emails,
       from,
       to: end,
     });
     const prs = await this.code.listPullRequestsByAuthor(
       tenantId,
-      developer,
+      aliases.logins,
       from,
       end,
     );
@@ -1130,7 +1183,18 @@ export class InsightsService {
         locChanged: additions + deletions,
         filesChanged,
         prsAuthored: prs.length,
+        // Reported alongside `prsAuthored` because the two boards count
+        // different things: this figure is what Delivery Explorer groups by
+        // (merged only), while `prsAuthored` counts every PR opened in the
+        // window whatever became of it. Showing both stops the gap between
+        // them reading as a contradiction (DASHBOARDS.md §3).
+        prsMerged: prs.filter((pr) => pr.mergedAt).length,
         activeRepos: byRepo.size,
+      },
+      identity: {
+        logins: aliases.logins,
+        recoveredEmails: aliases.emails,
+        inferred: aliases.emails.length > 0,
       },
       activeProjects: [...activeProjects].sort(),
       byRepo: [...byRepo.entries()]

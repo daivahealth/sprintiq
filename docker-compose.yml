@@ -71,7 +71,10 @@ services:
         condition: service_healthy
     ports:
       - '3000:3000'
-    command: sh -c "npx prisma migrate deploy && node dist/main.js"
+    # No `command:` override — the image's own CMD (`npm run start:prod`)
+    # already migrates before starting. Overriding it here would mean two
+    # places define the boot sequence and only one of them travels with a
+    # deploy to anything that isn't compose.
 
 volumes:
   sprintiq_pg:

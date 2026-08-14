@@ -3,16 +3,34 @@ import { useEffect, useRef, useState } from 'react';
 import { cn } from '../lib/utils';
 import { Spinner } from './ui';
 
+/**
+ * An option may be a bare string (value doubles as label) or carry its own
+ * label and hint — needed where the stored value isn't what a human should
+ * read, e.g. a developer identified only by a git email because no GitHub
+ * account could be matched to them.
+ */
+export type SearchSelectOption =
+  | string
+  | { value: string; label: string; hint?: string };
+
 interface SearchSelectProps {
   label: string;
   value: string | null;
   /** Options for the CURRENT search — server-filtered. */
-  options: string[];
+  options: SearchSelectOption[];
   onSearch: (search: string) => void;
   onSelect: (value: string) => void;
   loading?: boolean;
   placeholder?: string;
   emptyText?: string;
+}
+
+function optionValue(option: SearchSelectOption): string {
+  return typeof option === 'string' ? option : option.value;
+}
+
+function optionLabel(option: SearchSelectOption): string {
+  return typeof option === 'string' ? option : option.label;
 }
 
 /**
@@ -31,16 +49,20 @@ export function SearchSelect({
   emptyText = 'No matches',
 }: SearchSelectProps) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(value ?? '');
+  const selectedLabel =
+    options.map(optionLabel).find((_, i) => optionValue(options[i]) === value) ??
+    value ??
+    '';
+  const [query, setQuery] = useState(selectedLabel);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Reflect the selected value in the input once the user isn't actively
   // editing it (e.g. programmatic auto-select, or closing without picking).
   useEffect(() => {
     if (!open) {
-      setQuery(value ?? '');
+      setQuery(selectedLabel);
     }
-  }, [value, open]);
+  }, [selectedLabel, open]);
 
   useEffect(() => {
     if (!open) {
@@ -62,9 +84,9 @@ export function SearchSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
-  const handleSelect = (v: string) => {
-    onSelect(v);
-    setQuery(v);
+  const handleSelect = (option: SearchSelectOption) => {
+    onSelect(optionValue(option));
+    setQuery(optionLabel(option));
     setOpen(false);
   };
 
@@ -101,20 +123,29 @@ export function SearchSelect({
             transition={{ duration: 0.12, ease: [0.16, 1, 0.3, 1] }}
             className="absolute z-20 mt-1 max-h-64 w-64 overflow-auto rounded-lg border border-border bg-popover py-1 text-sm shadow-lg"
           >
-            {options.map((option) => (
-              <li key={option}>
-                <button
-                  type="button"
-                  onClick={() => handleSelect(option)}
-                  className={cn(
-                    'block w-full truncate px-3 py-1.5 text-left hover:bg-subtle',
-                    option === value && 'bg-brand-fg font-medium text-brand',
-                  )}
-                >
-                  {option}
-                </button>
-              </li>
-            ))}
+            {options.map((option) => {
+              const v = optionValue(option);
+              const hint = typeof option === 'string' ? undefined : option.hint;
+              return (
+                <li key={v}>
+                  <button
+                    type="button"
+                    onClick={() => handleSelect(option)}
+                    className={cn(
+                      'block w-full truncate px-3 py-1.5 text-left hover:bg-subtle',
+                      v === value && 'bg-brand-fg font-medium text-brand',
+                    )}
+                  >
+                    {optionLabel(option)}
+                    {hint && (
+                      <span className="ml-1.5 text-xs text-fg-faint">
+                        {hint}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
             {options.length === 0 && !loading && (
               <li className="px-3 py-2 text-fg-faint">{emptyText}</li>
             )}

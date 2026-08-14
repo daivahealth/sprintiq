@@ -1,4 +1,5 @@
 import { CorrelationService } from '../correlation/correlation.service';
+import { DeveloperIdentityService } from '../correlation/developer-identity.service';
 import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
@@ -17,6 +18,29 @@ function commit(overrides: Record<string, unknown> = {}) {
     committedAt: new Date('2026-06-02T00:00:00.000Z'),
     ...overrides,
   };
+}
+
+/**
+ * Identity resolution stubbed to the pre-resolution behaviour — the developer
+ * IS their login and has no recovered emails — so these suites keep asserting
+ * what they were written to assert. `developer-identity.service.spec` covers
+ * the resolution itself.
+ */
+function identityStub(): jest.Mocked<DeveloperIdentityService> {
+  return {
+    aliasesFor: jest.fn(async (_tenantId: string, developer: string) => ({
+      canonicalDeveloperId: developer,
+      logins: [developer],
+      emails: [],
+    })),
+    attributionCoverage: jest.fn().mockResolvedValue({
+      commitsInScope: 0,
+      commitsAttributed: 0,
+      commitsUnattributed: 0,
+      coveragePct: null,
+      unattributedIdentities: 0,
+    }),
+  } as unknown as jest.Mocked<DeveloperIdentityService>;
 }
 
 describe('InsightsService committer-date windowing', () => {
@@ -40,7 +64,13 @@ describe('InsightsService committer-date windowing', () => {
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('tenant-a'),
     } as unknown as jest.Mocked<TenantContextService>;
-    service = new InsightsService(tenantContext, planning, code, correlation);
+    service = new InsightsService(
+      tenantContext,
+      planning,
+      code,
+      correlation,
+      identityStub(),
+    );
   });
 
   it('developerActivity groups dailySeries/lastCommitAt by committedAt, and exposes both dates on recentCommits', async () => {
@@ -81,11 +111,11 @@ describe('InsightsService committer-date windowing', () => {
   it('projectActivity groups dailySeries by committedAt', async () => {
     code.listCommits.mockResolvedValue([commit()] as never);
 
-    const rows = await service.projectActivity(
+    const view = await service.projectActivity(
       new Date('2026-06-01T00:00:00.000Z'),
     );
 
-    expect(rows[0].dailySeries).toEqual([
+    expect(view.rows[0].dailySeries).toEqual([
       { date: '2026-06-02', commits: 1, locChanged: 4 },
     ]);
   });
@@ -114,6 +144,7 @@ describe('InsightsService.flowMetrics', () => {
       planning,
       {} as unknown as CodeService,
       {} as unknown as CorrelationService,
+      identityStub(),
     );
   });
 
@@ -258,7 +289,13 @@ describe('InsightsService aggregate scope', () => {
     const tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('tenant-a'),
     } as unknown as jest.Mocked<TenantContextService>;
-    service = new InsightsService(tenantContext, planning, code, correlation);
+    service = new InsightsService(
+      tenantContext,
+      planning,
+      code,
+      correlation,
+      identityStub(),
+    );
   });
 
   // listWorkItems caps at 500 for table display. Using it for an aggregate
@@ -397,7 +434,13 @@ describe('InsightsService review metrics', () => {
     const tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('tenant-a'),
     } as unknown as jest.Mocked<TenantContextService>;
-    service = new InsightsService(tenantContext, planning, code, correlation);
+    service = new InsightsService(
+      tenantContext,
+      planning,
+      code,
+      correlation,
+      identityStub(),
+    );
   });
 
   const run = () =>
@@ -550,7 +593,13 @@ describe('InsightsService review metrics — bots and depth', () => {
     const tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('tenant-a'),
     } as unknown as jest.Mocked<TenantContextService>;
-    service = new InsightsService(tenantContext, planning, code, correlation);
+    service = new InsightsService(
+      tenantContext,
+      planning,
+      code,
+      correlation,
+      identityStub(),
+    );
   });
 
   const run = () =>
