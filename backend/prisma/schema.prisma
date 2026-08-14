@@ -279,6 +279,38 @@ model IssueStatusHistory {
   @@map("planning_issue_status_history")
 }
 
+// Append-only sprint-membership timeline (`sprint_scope`, DATA-MODEL.md §4) —
+// one row per sprint id added to / removed from a work item, from the source's
+// own change log. The basis for sprint_commitment_reliability and scope_creep:
+// "committed at start" vs "added mid-sprint" is unanswerable from
+// Story.sprintExternalId, which only knows CURRENT membership.
+//
+// A story created directly into a sprint produces no changelog entry, so its
+// membership start is inferred at read time: current membership (or a later
+// `removed` row) with no matching `added` row means "member since
+// Story.sourceCreatedAt".
+model SprintScopeChange {
+  id               String   @id
+  tenantId         String
+  connectionId     String
+  externalKey      String // work item key, e.g. PAY-2231
+  sprintExternalId String // Sprint.externalId this change touches
+  action           String // added | removed
+  // Jira changelog history id — stable per change, so replays de-dupe. One
+  // entry can touch several sprints (a move is one entry: removed A, added B),
+  // hence the compound key rather than changelogId alone.
+  changelogId      String
+  changedAt        DateTime
+  authorLogin      String?
+  authorName       String?
+  createdAt        DateTime @default(now())
+
+  @@unique([tenantId, connectionId, changelogId, sprintExternalId])
+  @@index([tenantId, sprintExternalId, changedAt])
+  @@index([tenantId, externalKey])
+  @@map("planning_sprint_scope_change")
+}
+
 model Sprint {
   id           String    @id
   tenantId     String

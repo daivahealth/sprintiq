@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Release, Sprint, Story } from '@prisma/client';
 import {
+  PlanningSprintChangeRef,
   PlanningSprintRef,
   PlanningStoryPayload,
   PlanningTransitionRef,
@@ -79,6 +80,12 @@ export class PlanningService implements OnModuleInit {
       connectionId,
       p.externalKey,
       p.transitions ?? [],
+    );
+    await this.recordSprintChanges(
+      event.tenantId,
+      connectionId,
+      p.externalKey,
+      p.sprintChanges ?? [],
     );
 
     const fields = {
@@ -164,6 +171,53 @@ export class PlanningService implements OnModuleInit {
         authorLogin: t.authorLogin ?? null,
         authorName: t.authorName ?? null,
       })),
+      skipDuplicates: true,
+    });
+  }
+
+  /**
+   * Appends the work item's sprint-membership timeline
+   * (`sprint_scope_change`) — one row per sprint touched per changelog entry,
+   * so a move (one entry: removed A, added B) lands as two rows sharing the
+   * changelog id. Same replay contract as `recordTransitions`:
+   * `createMany({ skipDuplicates })` on the
+   * (tenant, connection, changelogId, sprintExternalId) unique key makes a
+   * backfill re-walk, a boundary re-poll and a webhook converge on one row —
+   * a duplicated `added` would double-count scope_creep.
+   */
+  private async recordSprintChanges(
+    tenantId: string,
+    connectionId: string,
+    externalKey: string,
+    changes: PlanningSprintChangeRef[],
+  ): Promise<void> {
+    const rows = changes.flatMap((c) =>
+      [
+        ...c.addedSprintIds.map((sprintExternalId) => ({
+          sprintExternalId,
+          action: 'added',
+        })),
+        ...c.removedSprintIds.map((sprintExternalId) => ({
+          sprintExternalId,
+          action: 'removed',
+        })),
+      ].map((row) => ({
+        id: newId(),
+        tenantId,
+        connectionId,
+        externalKey,
+        changelogId: c.changelogId,
+        changedAt: new Date(c.at),
+        authorLogin: c.authorLogin ?? null,
+        authorName: c.authorName ?? null,
+        ...row,
+      })),
+    );
+    if (rows.length === 0) {
+      return;
+    }
+    await this.prisma.sprintScopeChange.createMany({
+      data: rows,
       skipDuplicates: true,
     });
   }

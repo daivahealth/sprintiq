@@ -57,7 +57,7 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Implemented** (`GET /api/dashboards/efficiency`, Efficiency board, reported as "story cycle"). Note this counts backlog waiting as part of the total — for time spent actually being worked, use `cycle_time` off the transition timeline.
 - **Measured from the source's creation date, never the row's.** `story.source_created_at` is Jira's `fields.created`; `story.created_at` is when the row was inserted, which for a backfilled tenant is the day the backfill ran. Computing lead time from the latter made every pre-existing item look days old instead of months, and the negative results were dropped by a `>= 0` guard — so the metric reported a plausible p50 over whichever few items happened to be created *after* ingestion began, with no indication anything was wrong.
 - **Items with no source creation date are excluded and disclosed** (`storyCycle.excludedNoCreatedAt`), never estimated from the ingestion date. This covers items collected before `created` was requested from Jira.
-- **Repairing already-collected items needs `POST /admin/configurations/jira/reconcile-story-dates`, not a re-walk.** The Jira idempotency key is `jira:{issueKey}:{eventType}:{updated}`, so re-collecting an unchanged issue produces the identical key and is dropped as a duplicate before it reaches the projector — a cursor reset repairs only the issues that happened to change on their own, which were never the problem. The reconciler batches 100 issues per request (`key in (...)`, `fields=['created']`) and writes the rows directly, the same documented exception as GitHub's stat reconcilers.
+- **Repairing already-collected items: `POST /admin/configurations/jira/reconcile-story-dates` (targeted), or any re-backfill since the `jira:v2` key bump.** The original Jira idempotency key was `jira:{issueKey}:{eventType}:{updated}`, so re-collecting an unchanged issue produced the identical key and was dropped as a duplicate before it reached the projector — a cursor reset repaired only the issues that happened to change on their own, which were never the problem. The key now carries a payload-schema generation (`jira:v2:…`, api/README.md §3), so a re-walk re-projects previously-stored issues once; the reconciler remains the cheap path (100 issues per request, `fields=['created']`, no full re-walk).
 
 ### lead_time_for_changes *(DORA)*
 - **Definition:** time from code committed to running in production.
@@ -69,13 +69,13 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Definition:** how much of the committed scope was delivered.
 - **Formula:** `completed_committed_points / committed_points_at_sprint_start`.
 - **Window:** sprint. **Scopes:** team, sprint.
-- **Source:** `sprint_scope` (`committed=true`, `added_at ≤ start`), `story`.
-- **Notes:** excludes mid-sprint additions from the denominator; those feed scope_creep.
+- **Source:** `sprint_scope_change` + `story` (DATA-MODEL.md §4) — "committed at start" is membership *as of* `sprint.start_at`, replayed from the add/remove timeline; a story with no `added` row is a member since `source_created_at` (created directly into the sprint).
+- **Notes:** excludes mid-sprint additions from the denominator; those feed scope_creep. **Data collected since 2026-08-14** (api/README.md §3, §12 #8) — computing this from *current* membership trends it to 100% by construction, so the metric must not fall back to `story.sprint_external_id` where the timeline is absent; disclose instead.
 
 ### scope_creep
 - **Definition:** scope added/removed after sprint start.
 - **Formula:** `(points_added_after_start − points_removed_after_start) / committed_points`.
-- **Window:** sprint. **Scopes:** team, sprint. **Source:** `sprint_scope`.
+- **Window:** sprint. **Scopes:** team, sprint. **Source:** `sprint_scope_change` (same replay + disclosure rules as sprint_commitment_reliability — current membership makes this structurally 0).
 
 ### wip
 - **Definition:** concurrent in-progress items; and **wip_age** (how long they've been open).

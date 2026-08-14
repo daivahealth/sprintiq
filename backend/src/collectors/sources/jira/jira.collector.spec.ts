@@ -571,6 +571,142 @@ describe('JiraCollector.poll', () => {
     ]);
   });
 
+  it('extracts sprint scope changes from the change log, diffed into added/removed ids', async () => {
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        {
+          key: 'PAY-1',
+          fields: {
+            summary: 't',
+            project: { key: 'PAY' },
+            updated: '2026-06-05T00:00:00.000Z',
+            status: { name: 'To Do' },
+          },
+          changelog: {
+            total: 4,
+            histories: [
+              {
+                id: '760',
+                created: '2026-06-04T00:00:00.000Z',
+                items: [
+                  // Jira's Sprint field accretes history — dropping an id is
+                  // the only signal a story LEFT a sprint.
+                  {
+                    field: 'Sprint',
+                    from: '5, 7',
+                    to: '7',
+                    fromString: 'Sprint 5, Sprint 7',
+                    toString: 'Sprint 7',
+                  },
+                ],
+              },
+              {
+                id: '700',
+                created: '2026-06-01T00:00:00.000Z',
+                author: { accountId: 'acc_1', displayName: 'Jane Doe' },
+                items: [
+                  {
+                    field: 'Sprint',
+                    fieldId: 'customfield_10020',
+                    from: '',
+                    to: '5',
+                    fromString: '',
+                    toString: 'Sprint 5',
+                  },
+                ],
+              },
+              {
+                id: '750',
+                created: '2026-06-02T00:00:00.000Z',
+                items: [
+                  {
+                    field: 'Sprint',
+                    from: '5',
+                    to: '5, 7',
+                    fromString: 'Sprint 5',
+                    toString: 'Sprint 5, Sprint 7',
+                  },
+                ],
+              },
+              // no sprint item — must not become a scope change
+              {
+                id: '850',
+                created: '2026-06-03T00:00:00.000Z',
+                items: [{ field: 'priority', toString: 'High' }],
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    const data = envelopes[0].data as unknown as {
+      sprintChanges?: {
+        changelogId: string;
+        addedSprintIds: string[];
+        removedSprintIds: string[];
+        at: string;
+        authorLogin?: string;
+        authorName?: string;
+      }[];
+    };
+    // oldest-first, non-sprint entries dropped
+    expect(data.sprintChanges).toEqual([
+      {
+        changelogId: '700',
+        addedSprintIds: ['5'],
+        removedSprintIds: [],
+        at: '2026-06-01T00:00:00.000Z',
+        authorLogin: 'acc_1',
+        authorName: 'Jane Doe',
+      },
+      {
+        changelogId: '750',
+        addedSprintIds: ['7'],
+        removedSprintIds: [],
+        at: '2026-06-02T00:00:00.000Z',
+        authorLogin: undefined,
+        authorName: undefined,
+      },
+      {
+        changelogId: '760',
+        addedSprintIds: [],
+        removedSprintIds: ['5'],
+        at: '2026-06-04T00:00:00.000Z',
+        authorLogin: undefined,
+        authorName: undefined,
+      },
+    ]);
+  });
+
+  it('keys envelopes with the v2 idempotency scheme, so a re-walk re-projects issues collected under v1', async () => {
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        {
+          key: 'PAY-1',
+          fields: {
+            summary: 't',
+            project: { key: 'PAY' },
+            updated: '2026-06-05T00:00:00.000Z',
+            status: { name: 'To Do' },
+          },
+        },
+      ],
+    });
+
+    const envelopes = await collector.poll(baseConnection());
+
+    // v1 keys (`jira:{key}:{type}:{updated}`) drop a re-collected-but-unchanged
+    // issue before the projector — which made sprint scope history unreachable
+    // for every already-stored story. Webhook and poll still converge: both
+    // build the same v2 key.
+    expect(envelopes[0].idempotencyKey).toBe(
+      'jira:v2:PAY-1:planning.issue.updated:2026-06-05T00:00:00.000Z',
+    );
+  });
+
   it('requests the change log inline rather than per issue', async () => {
     client.searchIssues.mockResolvedValue({ issues: [] });
 

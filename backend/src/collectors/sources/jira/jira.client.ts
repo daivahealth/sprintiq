@@ -8,6 +8,13 @@ export interface JiraChangelogEntry {
   items?: {
     field?: string;
     fieldId?: string;
+    /**
+     * Raw ids, alongside the display names below. For the Sprint field these
+     * are comma-separated sprint-id lists — the reliable side to diff, since
+     * sprint NAMES may themselves contain commas.
+     */
+    from?: string | null;
+    to?: string | null;
     fromString?: string | null;
     toString?: string | null;
   }[];
