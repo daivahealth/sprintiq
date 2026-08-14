@@ -76,6 +76,20 @@ PR diff size is not the sum of its commits (rebases and merge bases see to that)
 
 **Neither board may rank individuals.** Delivery Explorer sorts by Changed LOC descending for every grouping *except* developer, where rows are alphabetical — sorting people by lines changed is precisely the leaderboard CLAUDE.md forbids and that Team Capacity is deliberately built to avoid. LOC is change-volume context, never a productivity score.
 
+### 4.1.1 One definition of "when"
+
+Every window and every bucket in the app is **IST calendar-aligned**, via `istWindowFloor` / `istDateKey` / `istWeekKey` (backend `common/time.ts`, mirrored in `frontend/src/lib/utils.ts`).
+
+This was three conventions until they were unified: the Scope Bar sent a rolling `now − days×86400000`, the activity boards bucketed by IST day, and Productivity bucketed weeks on the **UTC** Sunday. "Last 7 days" therefore denoted three different ranges depending on the board, differing by up to a full day at each edge, and a PR merged after 18:30 IST was filed under tomorrow on one screen and today on another. Adding a new window or bucket means reusing these helpers, not writing another date expression.
+
+### 4.1.2 Sprints Jira still calls active
+
+Jira never closes a sprint by itself — `state` is whatever someone last set. A team that stops using a board leaves its final sprint `active` indefinitely; on the reference tenant one had been "active" for over four years and rendered as a live card at 100% elapsed, 0 days remaining, pace "behind", permanently, beside the sprint actually running.
+
+An active sprint whose `endAt` passed more than **`STALE_ACTIVE_SPRINT_GRACE_DAYS` (14)** ago is therefore treated as stale: excluded from the ranked active cards on Sprint Health and Sprint Risk, and reported separately with how far past its end it is. Excluded because it is 100% elapsed by definition, so pace-ranking always floats it above the sprint that can still be acted on; **reported rather than hidden** because the sprint is real and someone needs to close it — hiding it would trade a misleading card for a silent omission. A short overrun is ordinary and stays in the normal cards, which is what the grace period is for.
+
+Unstarted (`future`) sprints are likewise kept out of the sprint picker, which requests `state=active,closed`: they have no dates, no transitions and nothing delivered, so every figure these boards compute is empty for one. Note also that sprint ordering must specify `nulls: 'last'` — Postgres sorts `NULL` **first** on a descending sort, so a dateless future sprint otherwise outranked every real one and arrived at the top of the picker.
+
 ### 4.2 Attribution coverage
 
 Any board that counts commits must disclose how many of them can be attributed to a person at all. GitHub resolves a commit's account only when its email is verified there, so a commit routinely arrives with a name, an email, and no login (DATA-MODEL.md §3, api/README.md §12 #22). This matters on screen because **"0 commits" and "commits we cannot attribute" look identical and mean opposite things**:

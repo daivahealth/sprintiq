@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PullRequest, Sprint, Story } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
-import { istDateKey } from '../common/time';
+import { istDateKey, istWeekKey } from '../common/time';
 import { CorrelationService } from '../correlation/correlation.service';
 import {
   AttributionCoverage,
@@ -61,6 +61,27 @@ export interface SprintHealthView {
   codeLinkagePct: number | null;
   daysRemaining: number | null;
   byType: { type: string; total: number; done: number }[];
+}
+
+/**
+ * A sprint Jira still calls active whose end date is long past — surfaced so
+ * someone closes it, rather than silently dropped or silently counted.
+ */
+export interface StaleSprint {
+  sprint: SprintSummary;
+  daysPastEnd: number;
+}
+
+export interface ActiveSprintsHealthView {
+  rows: SprintHealthView[];
+  stale: StaleSprint[];
+  staleGraceDays: number;
+}
+
+export interface ActiveSprintsRiskView {
+  rows: SprintRiskView[];
+  stale: StaleSprint[];
+  staleGraceDays: number;
 }
 
 export interface SprintRiskView {
@@ -270,6 +291,12 @@ export interface ProjectActivityView {
   rows: ProjectActivityRow[];
   /** How much of the window's commit volume is attributable at all. */
   attribution: AttributionCoverage;
+  /**
+   * True when the underlying commit read hit its ceiling, so these totals cover
+   * only the most recent slice of the window. Reported rather than silently
+   * changing every number on the board.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -326,6 +353,32 @@ export interface DeveloperActivityView {
 const DEFAULT_SPRINT_DAYS = 14;
 
 /**
+ * How far past its own end date a sprint can still be called "active" before we
+ * stop believing the label.
+ *
+ * Jira's `state` is whatever someone last set; nothing closes a sprint
+ * automatically. A team that stops using a board leaves its final sprint
+ * `active` forever — on this tenant one had been "active" for over four years,
+ * and it rendered as a live card at 100% elapsed, 0 days remaining, pace
+ * "behind", permanently, next to the sprint actually running.
+ *
+ * The grace period exists because running a few days past the planned end is
+ * ordinary; four years is not. Stale sprints are reported separately rather
+ * than dropped — the sprint is real and someone should close it in Jira, so
+ * hiding it would trade a misleading card for a silent omission.
+ */
+const STALE_ACTIVE_SPRINT_GRACE_DAYS = 14;
+
+/** True when Jira still calls this sprint active but its end date is long past. */
+function isStaleActive(sprint: Sprint, now = Date.now()): boolean {
+  if (sprint.state !== 'active' || !sprint.endAt) {
+    return false;
+  }
+  const daysPast = (now - sprint.endAt.getTime()) / 86_400_000;
+  return daysPast > STALE_ACTIVE_SPRINT_GRACE_DAYS;
+}
+
+/**
  * BC-8 insight read models behind the common dashboards (Sprint Health, Sprint
  * Risk, Velocity, Forecast, Productivity, Efficiency) plus work-item detailing
  * at every granularity (story/bug/subtask/epic/developer/release/sprint) with
@@ -367,15 +420,22 @@ export class InsightsService {
    */
   async activeSprintsHealth(
     projectKeys: string[],
-  ): Promise<SprintHealthView[]> {
+  ): Promise<ActiveSprintsHealthView> {
     const tenantId = this.tenantContext.requireTenantId();
     const sprints = await this.planning.listSprints(
       tenantId,
       projectKeys,
       'active',
     );
+    // Split before computing: a sprint that ended years ago is not a live
+    // lifecycle, and ranking it against real ones by "pace" is meaningless —
+    // it is 100% elapsed by definition, so it always sorts to the top of a
+    // worst-first list and pushes the sprint that needs attention down.
+    const live = sprints.filter((s) => !isStaleActive(s));
+    const stale = sprints.filter((s) => isStaleActive(s));
+
     const views = await Promise.all(
-      sprints.map((s) => this.buildSprintHealth(tenantId, s)),
+      live.map((s) => this.buildSprintHealth(tenantId, s)),
     );
     const paceRank: Record<SprintPace, number> = {
       behind: 0,
@@ -383,11 +443,15 @@ export class InsightsService {
       unknown: 2,
       'on-track': 3,
     };
-    return views.sort(
-      (a, b) =>
-        paceRank[a.pace] - paceRank[b.pace] ||
-        (a.completionPct ?? 0) - (b.completionPct ?? 0),
-    );
+    return {
+      rows: views.sort(
+        (a, b) =>
+          paceRank[a.pace] - paceRank[b.pace] ||
+          (a.completionPct ?? 0) - (b.completionPct ?? 0),
+      ),
+      stale: stale.map(toStaleSprint),
+      staleGraceDays: STALE_ACTIVE_SPRINT_GRACE_DAYS,
+    };
   }
 
   private async buildSprintHealth(
@@ -451,22 +515,34 @@ export class InsightsService {
    * Risk for EVERY active sprint in scope (multi-project lifecycles), ranked
    * most-at-risk-first — the default view mirrors activeSprintsHealth.
    */
-  async activeSprintsRisk(projectKeys: string[]): Promise<SprintRiskView[]> {
+  async activeSprintsRisk(
+    projectKeys: string[],
+  ): Promise<ActiveSprintsRiskView> {
     const tenantId = this.tenantContext.requireTenantId();
     const sprints = await this.planning.listSprints(
       tenantId,
       projectKeys,
       'active',
     );
+    // Same split as activeSprintsHealth — an abandoned sprint's open items are
+    // not "at risk", they are simply never going to be done, and ranking them
+    // first buries the sprint someone can still act on.
+    const live = sprints.filter((s) => !isStaleActive(s));
+    const stale = sprints.filter((s) => isStaleActive(s));
+
     const views = await Promise.all(
-      sprints.map((s) => this.buildSprintRisk(tenantId, s)),
+      live.map((s) => this.buildSprintRisk(tenantId, s)),
     );
-    return views.sort(
-      (a, b) =>
-        b.atRiskPoints - a.atRiskPoints ||
-        b.openWithoutCode.length - a.openWithoutCode.length ||
-        b.openBugs - a.openBugs,
-    );
+    return {
+      rows: views.sort(
+        (a, b) =>
+          b.atRiskPoints - a.atRiskPoints ||
+          b.openWithoutCode.length - a.openWithoutCode.length ||
+          b.openBugs - a.openBugs,
+      ),
+      stale: stale.map(toStaleSprint),
+      staleGraceDays: STALE_ACTIVE_SPRINT_GRACE_DAYS,
+    };
   }
 
   private async buildSprintRisk(
@@ -582,12 +658,11 @@ export class InsightsService {
     ).filter((pr) => pr.mergedAt);
 
     const weeks = new Map<string, ProductivityWeek>();
-    const bucket = (d: Date) => {
-      const day = new Date(d);
-      day.setUTCHours(0, 0, 0, 0);
-      day.setUTCDate(day.getUTCDate() - day.getUTCDay()); // week starts Sunday
-      return day.toISOString().slice(0, 10);
-    };
+    // Weeks start on the IST Sunday, not the UTC one. Bucketing on UTC put
+    // work done on a Sunday morning IST into the previous week, and made this
+    // the third date convention in the app alongside the IST activity boards
+    // and the (now also IST) scope window.
+    const bucket = (d: Date) => istWeekKey(d);
     const ensure = (w: string) => {
       const cur = weeks.get(w) ?? {
         weekStart: w,
@@ -1025,7 +1100,10 @@ export class InsightsService {
     const tenantId = this.tenantContext.requireTenantId();
     const end = to ?? new Date();
     const repoToProjects = await this.repoToProjects(tenantId);
-    const commits = await this.code.listCommits(tenantId, { from, to: end });
+    const { commits, truncated } = await this.code.listCommitsPage(tenantId, {
+      from,
+      to: end,
+    });
     const attribution = await this.identities.attributionCoverage(
       tenantId,
       from,
@@ -1107,7 +1185,7 @@ export class InsightsService {
       }))
       .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
 
-    return { rows, attribution };
+    return { rows, attribution, truncated };
   }
 
   /** GitHub-style activity profile for one developer (activity context, not ranking). */
@@ -1313,6 +1391,15 @@ function sumPoints(views: WorkItemView[]): number {
 
 function sumStoryPoints(items: Story[]): number {
   return items.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
+}
+
+function toStaleSprint(sprint: Sprint): StaleSprint {
+  return {
+    sprint: toSprintSummary(sprint),
+    daysPastEnd: sprint.endAt
+      ? Math.floor((Date.now() - sprint.endAt.getTime()) / 86_400_000)
+      : 0,
+  };
 }
 
 function toSprintSummary(sprint: Sprint): SprintSummary {

@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
+import { istWindowFloor } from "./utils";
 
 /**
  * The scope system (DASHBOARDS.md §3): one composable, URL-synced scope that
@@ -65,9 +66,17 @@ export function useScope() {
     [setParams],
   );
 
-  /** ISO window derived from the rolling-days preset (sent to the API). */
+  /**
+   * ISO window start (sent to the API), aligned to IST calendar days.
+   *
+   * Calendar-aligned, not a rolling `now - days*86400000`: the activity boards
+   * have always bucketed by IST day, so a rolling window meant the same "last
+   * 30 days" covered a different range here than there, and two boards could
+   * disagree about the same question by a day's work at each edge. One
+   * definition now, shared with the backend's `istWindowFloor`.
+   */
   const from = useMemo(
-    () => new Date(Date.now() - scope.days * 86_400_000).toISOString(),
+    () => istWindowFloor(scope.days).toISOString(),
     [scope.days],
   );
 

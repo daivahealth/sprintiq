@@ -143,6 +143,14 @@ export function ProjectActivityBoard() {
             </div>
           )}
 
+          {query.data.truncated && (
+            <div className="rounded-md border border-warning-border bg-warning-bg p-3 text-sm text-warning-fg">
+              This window contains more commits than a single read returns, so
+              the totals above cover only its most recent portion. Narrow the
+              window for accurate figures.
+            </div>
+          )}
+
           {attribution && attribution.commitsUnattributed > 0 && (
             <div className="rounded-md border border-border bg-subtle p-3 text-sm text-fg-muted">
               <span className="font-medium text-fg">
@@ -180,11 +188,22 @@ export function DeveloperActivityBoard() {
   const query = useDeveloperActivity(developer, window);
   const d = query.data;
 
-  // Auto-select the first developer once the catalog arrives.
+  // Open on whoever committed most recently, not whoever sorts first.
+  //
+  // The list itself stays alphabetical — that is what you want when searching
+  // for a name — but landing on the alphabetically-first developer meant
+  // opening on someone with no recent work far more often than not (on a real
+  // tenant, only 36 of 83 developers committed in the last week). An empty
+  // board on arrival reads as the board being broken rather than as that
+  // person having been busy elsewhere.
   useEffect(() => {
-    if (!developer && developers.length > 0) {
-      setDeveloper(developers[0].login);
+    if (developer || developers.length === 0) {
+      return;
     }
+    const mostRecent = developers.reduce((best, d) =>
+      (d.lastActiveAt ?? '') > (best.lastActiveAt ?? '') ? d : best,
+    );
+    setDeveloper(mostRecent.login);
   }, [developer, developers]);
 
   const options = developers.map((dev) => ({

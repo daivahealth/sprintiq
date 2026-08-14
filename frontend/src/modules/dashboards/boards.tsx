@@ -8,6 +8,7 @@ import { ScopeBar } from './ScopeBar';
 import { useProjects } from './useCatalog';
 import {
   type SprintPace,
+  type StaleSprint,
   useActiveSprintsHealth,
   useActiveSprintsRisk,
   useEfficiency,
@@ -58,6 +59,44 @@ function useSprintSelection() {
   }, [sprint, sprints]);
 
   return { sprints, sprint, setSprint, loading: catalog.isLoading };
+}
+
+/**
+ * Sprints Jira still calls active whose end date is long past.
+ *
+ * Shown rather than dropped: the sprint is real and someone needs to close it
+ * in Jira, so hiding it would trade a misleading card for a silent omission.
+ * Kept out of the ranked cards above because it is 100% elapsed by definition
+ * and would always sort above the sprint that can still be acted on.
+ */
+function StaleSprintsNote({
+  stale,
+  graceDays,
+}: {
+  stale?: StaleSprint[];
+  graceDays?: number;
+}) {
+  if (!stale || stale.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-3 rounded-md border border-border bg-subtle p-3 text-sm text-fg-muted">
+      <span className="font-medium text-fg">{stale.length}</span> sprint
+      {stale.length === 1 ? ' is' : 's are'} still marked active in Jira but
+      ended more than {graceDays ?? 14} days ago — excluded from the cards above
+      because a finished sprint has no pace to report.{' '}
+      {stale.map((s, i) => (
+        <span key={s.sprint.externalId}>
+          {i > 0 && ', '}
+          <span className="text-fg-secondary">
+            {s.sprint.projectKey} · {s.sprint.name}
+          </span>{' '}
+          ({s.daysPastEnd}d past end)
+        </span>
+      ))}
+      . Closing {stale.length === 1 ? 'it' : 'them'} in Jira clears this.
+    </div>
+  );
 }
 
 const PACE_TONE: Record<SprintPace, 'good' | 'warn' | 'bad' | 'neutral'> = {
@@ -168,6 +207,10 @@ export function SprintHealthBoard() {
               ))}
             </div>
           )}
+          <StaleSprintsNote
+            stale={active.data.stale}
+            graceDays={active.data.staleGraceDays}
+          />
           <ProvenanceNote>
             Computed {timeAgo(active.data.computedAt)}.
           </ProvenanceNote>
@@ -367,6 +410,10 @@ export function SprintRiskBoard() {
               ))}
             </div>
           )}
+          <StaleSprintsNote
+            stale={active.data.stale}
+            graceDays={active.data.staleGraceDays}
+          />
           <ProvenanceNote>
             Computed {timeAgo(active.data.computedAt)}.
           </ProvenanceNote>

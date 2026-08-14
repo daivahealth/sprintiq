@@ -310,15 +310,34 @@ export function useAssignments() {
   });
 }
 
-export function useSprintCatalog(projects: string[]) {
+/**
+ * Sprints for the picker.
+ *
+ * `states` defaults to active + closed. An unstarted sprint has no dates, no
+ * transitions and nothing delivered, so every figure the sprint boards compute
+ * is empty for it — listing it alongside real sprints only invites picking one
+ * and seeing a blank board.
+ */
+export function useSprintCatalog(projects: string[], states = 'active,closed') {
   const params = new URLSearchParams();
   if (projects.length > 0) params.set('projects', projects.join(','));
+  if (states) params.set('state', states);
   return useQuery({
-    queryKey: ['catalog', 'sprints', projects.join(',')],
+    queryKey: ['catalog', 'sprints', projects.join(','), states],
     queryFn: () =>
       api.get<{ items: SprintCatalogItem[] }>(`/api/catalog/sprints?${params}`),
     staleTime: 60_000,
   });
+}
+
+/**
+ * A sprint Jira still labels active whose end date is long past. Reported
+ * separately from the live ones: it is 100% elapsed by definition, so ranking
+ * it by pace always floats it above the sprint that actually needs attention.
+ */
+export interface StaleSprint {
+  sprint: SprintSummary;
+  daysPastEnd: number;
 }
 
 /** All concurrent active sprints in scope (one per project lifecycle). */
@@ -328,9 +347,12 @@ export function useActiveSprintsHealth(projects: string[]) {
   return useQuery({
     queryKey: ['sprint-health-active', projects.join(',')],
     queryFn: () =>
-      api.get<{ rows: SprintHealthView[]; computedAt: string }>(
-        `/api/dashboards/sprint-health/active?${params}`,
-      ),
+      api.get<{
+        rows: SprintHealthView[];
+        stale?: StaleSprint[];
+        staleGraceDays?: number;
+        computedAt: string;
+      }>(`/api/dashboards/sprint-health/active?${params}`),
   });
 }
 
@@ -350,9 +372,12 @@ export function useActiveSprintsRisk(projects: string[]) {
   return useQuery({
     queryKey: ['sprint-risk-active', projects.join(',')],
     queryFn: () =>
-      api.get<{ rows: SprintRiskView[]; computedAt: string }>(
-        `/api/dashboards/sprint-risk/active?${params}`,
-      ),
+      api.get<{
+        rows: SprintRiskView[];
+        stale?: StaleSprint[];
+        staleGraceDays?: number;
+        computedAt: string;
+      }>(`/api/dashboards/sprint-risk/active?${params}`),
   });
 }
 
@@ -427,6 +452,8 @@ export function useProjectActivity(window: ActivityWindow) {
         window: string;
         rows: ProjectActivityRow[];
         attribution: AttributionCoverage;
+        /** The commit read hit its ceiling — totals cover only part of the window. */
+        truncated?: boolean;
         computedAt: string;
       }>(`/api/dashboards/project-activity?window=${window}`),
   });
@@ -442,6 +469,8 @@ export interface DeveloperCatalogItem {
   /** Optional: an API predating identity resolution returns `login` only. */
   displayName?: string;
   attributed?: boolean;
+  /** Newest commit across all of this person's identities — drives auto-select. */
+  lastActiveAt?: string | null;
 }
 
 export function useDeveloperCatalog(search: string) {

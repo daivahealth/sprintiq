@@ -162,7 +162,8 @@ export class DashboardsController {
     if (projects.length > 0) {
       return this.correlation.reposLinkedToProjects(tenantId, projects);
     }
-    return this.code.listRepos(tenantId, undefined, 1, 50);
+    // Every repo, not the picker's first page — see CodeService.listAllRepos.
+    return this.code.listAllRepos(tenantId);
   }
 
   private async resolveProjects(

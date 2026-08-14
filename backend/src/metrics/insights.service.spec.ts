@@ -53,6 +53,13 @@ describe('InsightsService committer-date windowing', () => {
   beforeEach(() => {
     code = {
       listCommits: jest.fn(),
+      // projectActivity uses the paged variant so it can report a truncated
+      // read instead of silently under-counting; both are stubbed from the
+      // same rows so a test only has to set `listCommits`.
+      listCommitsPage: jest.fn(async (_t: string, f: unknown) => ({
+        commits: await (code.listCommits as jest.Mock)(_t, f),
+        truncated: false,
+      })),
       listPullRequestsByAuthor: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<CodeService>;
     planning = {

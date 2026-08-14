@@ -320,17 +320,23 @@ export class PlanningService implements OnModuleInit {
   listSprints(
     tenantId: string,
     projectKeys?: string[],
-    state?: string,
+    /** One state, or a set of them — the picker asks for several at once. */
+    state?: string | string[],
   ): Promise<Sprint[]> {
+    const states = typeof state === 'string' ? [state] : (state ?? []);
     return this.prisma.sprint.findMany({
       where: {
         tenantId,
         ...(projectKeys && projectKeys.length > 0
           ? { projectKey: { in: projectKeys } }
           : {}),
-        ...(state ? { state } : {}),
+        ...(states.length > 0 ? { state: { in: states } } : {}),
       },
-      orderBy: [{ endAt: 'desc' }, { name: 'desc' }],
+      // `nulls: 'last'` is load-bearing, not tidiness. Postgres sorts NULLs
+      // FIRST on a descending sort, so an unstarted sprint — which has no
+      // dates at all — outranked every real one and arrived at the top of the
+      // sprint picker, presented ahead of the sprint actually running.
+      orderBy: [{ endAt: { sort: 'desc', nulls: 'last' } }, { name: 'desc' }],
       take: 100,
     });
   }

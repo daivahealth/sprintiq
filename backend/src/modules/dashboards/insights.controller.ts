@@ -182,8 +182,8 @@ export class InsightsController {
    */
   @Get('sprint-health/active')
   async activeSprintsHealth(@Query('projects') projects?: string) {
-    const rows = await this.insights.activeSprintsHealth(parseList(projects));
-    return { rows, computedAt: new Date().toISOString() };
+    const view = await this.insights.activeSprintsHealth(parseList(projects));
+    return { ...view, computedAt: new Date().toISOString() };
   }
 
   @Get('sprint-health')
@@ -200,8 +200,8 @@ export class InsightsController {
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */
   @Get('sprint-risk/active')
   async activeSprintsRisk(@Query('projects') projects?: string) {
-    const rows = await this.insights.activeSprintsRisk(parseList(projects));
-    return { rows, computedAt: new Date().toISOString() };
+    const view = await this.insights.activeSprintsRisk(parseList(projects));
+    return { ...view, computedAt: new Date().toISOString() };
   }
 
   @Get('sprint-risk')
@@ -341,7 +341,8 @@ export class InsightsController {
     if (projects.length > 0) {
       return this.correlation.reposLinkedToProjects(tenantId, projects);
     }
-    return this.code.listRepos(tenantId, undefined, 1, 50);
+    // Every repo, not the picker's first page — see CodeService.listAllRepos.
+    return this.code.listAllRepos(tenantId);
   }
 }
 

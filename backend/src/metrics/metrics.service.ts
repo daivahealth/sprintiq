@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PullRequest } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
+import { istDateKey } from '../common/time';
 import { CorrelationService } from '../correlation/correlation.service';
 import { newId } from '../common/id';
 import { PrismaService } from '../database/prisma.service';
@@ -227,7 +228,10 @@ export class MetricsService {
       if (!pr.mergedAt) {
         continue;
       }
-      const day = pr.mergedAt.toISOString().slice(0, 10);
+      // IST calendar day, matching every other day-bucket in the app. On UTC,
+      // a PR merged after 18:30 IST was filed under the following day here but
+      // the current one on the activity boards.
+      const day = istDateKey(pr.mergedAt);
       byDay.set(day, [...(byDay.get(day) ?? []), pr]);
     }
     const bugCountsByDay = metricKeys.includes('bug_count')

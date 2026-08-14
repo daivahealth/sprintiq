@@ -30,3 +30,18 @@ export function istMidnightUtc(now: Date = new Date()): Date {
 export function istWindowFloor(days: number, now: Date = new Date()): Date {
   return new Date(istMidnightUtc(now).getTime() - (days - 1) * 86_400_000);
 }
+
+/**
+ * The IST calendar date (YYYY-MM-DD) of the Sunday starting the week a moment
+ * falls in — the weekly bucket key for throughput metrics.
+ *
+ * IST rather than UTC so a Sunday-morning commit in India lands in the week it
+ * was actually made, and so weekly buckets line up with the daily ones the
+ * activity boards draw.
+ */
+export function istWeekKey(date: Date): string {
+  const shifted = new Date(date.getTime() + IST_OFFSET_MS);
+  shifted.setUTCHours(0, 0, 0, 0);
+  shifted.setUTCDate(shifted.getUTCDate() - shifted.getUTCDay());
+  return shifted.toISOString().slice(0, 10);
+}
