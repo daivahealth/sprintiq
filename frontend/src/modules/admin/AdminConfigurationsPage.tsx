@@ -228,6 +228,33 @@ export function AdminConfigurationsPage() {
     },
   });
 
+  /**
+   * Re-open collection history for EVERY connection of a source — the only
+   * action that reaches the org-synced per-repo connections, which the saved
+   * configuration (one connection) and the org sync ("never reset progress")
+   * both deliberately leave alone. Additive: the backend only ever widens the
+   * floor and deletes nothing; already-collected records upsert in place.
+   */
+  const [rebackfillMonths, setRebackfillMonths] = useState<
+    Record<string, string>
+  >({});
+  const rebackfill = useMutation({
+    mutationFn: ({ source, months }: { source: string; months: number }) =>
+      api.post<{
+        source: string;
+        since: string;
+        months: number;
+        connectionsReopened: number;
+        connectionsAlreadyDeeper: number;
+        note: string;
+      }>(`/api/admin/configurations/${source}/rebackfill`, { months }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ['admin', 'configurations'],
+      });
+    },
+  });
+
   const selected = sections.find((section) => section.namespace === active);
   const loading = catalog.isLoading || configs.isLoading;
 
@@ -577,6 +604,107 @@ export function AdminConfigurationsPage() {
                       {syncOrg.error instanceof ApiError
                         ? syncOrg.error.message
                         : 'Organisation sync failed.'}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            {selected.namespace === 'jira' ? (
+              <div className="rounded-md border border-border bg-surface-sunken p-3">
+                <p className="text-xs text-fg-subtle">
+                  Jira collection is{' '}
+                  <strong className="text-fg-secondary">
+                    site-wide by default
+                  </strong>{' '}
+                  — every project on the site is collected unless the Project
+                  key field above narrows it. There is no per-project
+                  registration step like GitHub&apos;s organisation sync.
+                </p>
+              </div>
+            ) : null}
+
+            {selected.namespace === 'github' || selected.namespace === 'jira' ? (
+              <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-3">
+                <p className="text-xs text-fg-subtle">
+                  <strong className="text-fg-secondary">
+                    Re-backfill history
+                  </strong>{' '}
+                  — re-opens collection for{' '}
+                  <strong className="text-fg-secondary">
+                    every {selected.namespace === 'github' ? 'GitHub' : 'Jira'}{' '}
+                    connection
+                  </strong>
+                  {selected.namespace === 'github'
+                    ? ' (including repositories registered by the organisation sync, which the fields above cannot reach)'
+                    : ''}{' '}
+                  and walks it back the given number of months. Additive: it
+                  only ever widens the window and deletes nothing. The cost is
+                  API calls and time — progress shows on the Sync Status
+                  screen.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs text-fg-subtle">
+                    Months
+                    <Input
+                      type="number"
+                      min={1}
+                      max={60}
+                      className="w-20"
+                      value={rebackfillMonths[selected.namespace] ?? '12'}
+                      onChange={(event) =>
+                        setRebackfillMonths((current) => ({
+                          ...current,
+                          [selected.namespace]: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() =>
+                      rebackfill.mutate({
+                        source: selected.namespace,
+                        months: Number(
+                          rebackfillMonths[selected.namespace] ?? '12',
+                        ),
+                      })
+                    }
+                    disabled={
+                      rebackfill.isPending ||
+                      !(
+                        Number(rebackfillMonths[selected.namespace] ?? '12') >=
+                          1 &&
+                        Number(rebackfillMonths[selected.namespace] ?? '12') <=
+                          60
+                      )
+                    }
+                  >
+                    {rebackfill.isPending &&
+                    rebackfill.variables?.source === selected.namespace
+                      ? 'Re-opening…'
+                      : 'Re-backfill history'}
+                  </Button>
+                  {rebackfill.data &&
+                  rebackfill.data.source === selected.namespace ? (
+                    <p className="text-xs text-fg-subtle">
+                      Re-opened {rebackfill.data.connectionsReopened} connection
+                      {rebackfill.data.connectionsReopened === 1 ? '' : 's'}
+                      {rebackfill.data.connectionsAlreadyDeeper > 0
+                        ? ` (${rebackfill.data.connectionsAlreadyDeeper} already deeper)`
+                        : ''}{' '}
+                      · walking back to{' '}
+                      {new Date(rebackfill.data.since).toLocaleDateString()}. No
+                      data was deleted.
+                    </p>
+                  ) : null}
+                  {rebackfill.isError &&
+                  rebackfill.variables?.source === selected.namespace ? (
+                    <p className="text-xs text-danger-fg">
+                      {rebackfill.error instanceof ApiError
+                        ? rebackfill.error.message
+                        : 'Re-backfill failed.'}
                     </p>
                   ) : null}
                 </div>
