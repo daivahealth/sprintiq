@@ -127,12 +127,19 @@ export interface GithubPullReviews {
 export interface GithubPullCommits {
   /**
    * Commit subjects on the PR, for Jira-key extraction (api/README.md §6).
-   * Empty when the request failed — an empty list is indistinguishable from a
-   * PR whose commits carry no key, and both correctly yield no extra match.
+   * Empty when the request failed — for correlation both correctly yield no
+   * extra match, but see `failed` for the caller that must tell them apart.
    */
   messages: string[];
   /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
   rateLimitedUntil?: Date;
+  rateLimit?: GithubRateLimit;
+  /**
+   * The request failed (or was never made, for a blank token). The reconciler
+   * must not stamp an unanswered PR as "asked, and it genuinely has no
+   * messages" — that would silently retire it as a candidate.
+   */
+  failed?: boolean;
 }
 
 export interface GithubPage<T> {
@@ -320,7 +327,7 @@ export class GithubClient {
     number: number | string,
   ): Promise<GithubPullCommits> {
     if (!token) {
-      return { messages: [] };
+      return { messages: [], failed: true };
     }
     const url = `${this.baseUrl}/repos/${repoFullName}/pulls/${number}/commits?per_page=100`;
     const res = await fetch(url, {
@@ -340,11 +347,12 @@ export class GithubClient {
     }
     if (!res.ok) {
       this.logger.warn(`GitHub PR commits failed (${res.status}): ${url}`);
-      return { messages: [] };
+      return { messages: [], failed: true };
     }
 
     const body = (await res.json()) as { commit?: { message?: string } }[];
     const result: GithubPullCommits = {
+      rateLimit: this.readRateLimit(res),
       messages: (Array.isArray(body) ? body : [])
         .map((c) => c.commit?.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0),

@@ -356,6 +356,12 @@ model PullRequest {
   // Harmless for a hand-run endpoint; on a schedule it re-fetches those rows
   // every tick, burning the rate limit for eternity.
   detailFetchedAt  DateTime?
+  // When this PR's commit subjects were fetched (`GET /pulls/{n}/commits`).
+  // Same discriminator as its two siblings: an empty `commitMessages` on a PR
+  // collected before 2026-08-12 means "never asked", not "carries no key" —
+  // and commit messages are one of the three documented Jira-key sources, so
+  // conflating the two silently understates linkage coverage.
+  commitsFetchedAt DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -363,6 +369,7 @@ model PullRequest {
   @@index([tenantId, repoFullName])
   @@index([tenantId, reviewsFetchedAt])
   @@index([tenantId, detailFetchedAt])
+  @@index([tenantId, commitsFetchedAt])
   @@map("code_pull_request")
 }
 

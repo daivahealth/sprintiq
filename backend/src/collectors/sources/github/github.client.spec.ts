@@ -483,6 +483,13 @@ describe('GithubClient', () => {
         'PAY-2231 guard duplicate capture',
         'fix typo',
       ]);
+      // The reserve stop (github-rate-budget) needs the remaining quota — the
+      // bulk reconciler would otherwise only halt at a hard 403.
+      expect(result.rateLimit).toEqual({
+        remaining: 500,
+        resetAt: expect.any(Date),
+      });
+      expect(result.failed).toBeUndefined();
       const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
       expect(url).toBe(
         'https://api.github.com/repos/acme/payments/pulls/4521/commits?per_page=100',
@@ -509,7 +516,7 @@ describe('GithubClient', () => {
       expect(result.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
     });
 
-    it('returns no messages on a non-rate-limit failure rather than throwing', async () => {
+    it('marks a non-rate-limit failure as failed rather than throwing', async () => {
       global.fetch = jest
         .fn()
         .mockResolvedValue(
@@ -522,9 +529,12 @@ describe('GithubClient', () => {
         4521,
       );
 
-      // Same outcome as a PR whose commits carry no key — no extra match, and
-      // the PR still lands with its title/branch evidence.
-      expect(result).toEqual({ messages: [] });
+      // For correlation the outcome matches a PR whose commits carry no key —
+      // no extra match — but `failed` keeps the two apart for the reconciler:
+      // an unanswered request must stay a candidate, not be stamped as
+      // "asked and this PR genuinely has no messages".
+      expect(result.messages).toEqual([]);
+      expect(result.failed).toBe(true);
     });
 
     it('returns no messages without calling fetch when no token is configured', async () => {
@@ -536,7 +546,9 @@ describe('GithubClient', () => {
         4521,
       );
 
-      expect(result).toEqual({ messages: [] });
+      // Never asked, so not answered — same `failed` contract as a 404.
+      expect(result.messages).toEqual([]);
+      expect(result.failed).toBe(true);
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });

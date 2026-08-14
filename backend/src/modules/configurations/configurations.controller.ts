@@ -19,6 +19,7 @@ import {
 } from 'class-validator';
 import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { ConnectionsService } from '../connections/connections.service';
+import { GithubCommitMessageReconcilerService } from '../../collectors/sources/github/github-commit-message-reconciler.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
@@ -100,6 +101,7 @@ export class ConfigurationsController {
     private readonly secrets: SecretsService,
     private readonly githubOrgSync: GithubOrgSyncService,
     private readonly commitReconciler: GithubCommitReconcilerService,
+    private readonly commitMessageReconciler: GithubCommitMessageReconcilerService,
     private readonly prReconciler: GithubPrReconcilerService,
     private readonly reviewReconciler: GithubReviewReconcilerService,
     private readonly storyDateReconciler: JiraStoryDateReconcilerService,
@@ -244,6 +246,22 @@ export class ConfigurationsController {
   @Post('github/reconcile-reviews')
   async reconcileReviews(@CurrentUser() user: AuthUser) {
     return this.reviewReconciler.reconcile(user.tenantId);
+  }
+
+  /**
+   * One-off maintenance: fetches commit subjects for PRs ingested before
+   * commit-message collection existed — the same watermark trap as reviews
+   * (see `GithubCommitMessageReconcilerService`). Commit messages are one of
+   * the three Jira-key sources correlation matches on (§6); once they land,
+   * the 30-minute orphan sweep re-attempts linkage automatically.
+   *
+   * Bounded per invocation (one API call per PR) and resumable — re-run until
+   * `remaining` is 0.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/reconcile-commit-messages')
+  async reconcileCommitMessages(@CurrentUser() user: AuthUser) {
+    return this.commitMessageReconciler.reconcile(user.tenantId);
   }
 
   /**

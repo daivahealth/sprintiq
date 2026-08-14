@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../database/prisma.service';
+import { GithubCommitMessageReconcilerService } from '../sources/github/github-commit-message-reconciler.service';
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
@@ -44,6 +45,7 @@ export class BackfillSchedulerService {
     private readonly prisma: PrismaService,
     private readonly reviews: GithubReviewReconcilerService,
     private readonly prStats: GithubPrReconcilerService,
+    private readonly commitMessages: GithubCommitMessageReconcilerService,
     private readonly storyDates: JiraStoryDateReconcilerService,
   ) {}
 
@@ -102,6 +104,17 @@ export class BackfillSchedulerService {
     }
     if (stats.resumeAt) {
       this.cooldowns.set(tenantId, stats.resumeAt);
+      return;
+    }
+
+    const messages = await this.commitMessages.reconcile(tenantId);
+    if (messages.updated > 0 || messages.remaining > 0) {
+      this.logger.log(
+        `Backfill (tenant ${tenantId}): commit messages — ${messages.updated} PRs, ${messages.remaining} remaining.`,
+      );
+    }
+    if (messages.resumeAt) {
+      this.cooldowns.set(tenantId, messages.resumeAt);
     }
   }
 }

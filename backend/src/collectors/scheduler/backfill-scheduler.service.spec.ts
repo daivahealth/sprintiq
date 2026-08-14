@@ -1,4 +1,5 @@
 import { PrismaService } from '../../database/prisma.service';
+import { GithubCommitMessageReconcilerService } from '../sources/github/github-commit-message-reconciler.service';
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
@@ -10,6 +11,7 @@ describe('BackfillSchedulerService', () => {
   let prisma: { tenant: { findMany: jest.Mock } };
   let reviews: jest.Mocked<GithubReviewReconcilerService>;
   let prStats: jest.Mocked<GithubPrReconcilerService>;
+  let commitMessages: jest.Mocked<GithubCommitMessageReconcilerService>;
   let storyDates: jest.Mocked<JiraStoryDateReconcilerService>;
   let service: BackfillSchedulerService;
 
@@ -25,6 +27,9 @@ describe('BackfillSchedulerService', () => {
     prStats = {
       reconcile: jest.fn().mockResolvedValue({ ...idle, remaining: 0 }),
     } as unknown as jest.Mocked<GithubPrReconcilerService>;
+    commitMessages = {
+      reconcile: jest.fn().mockResolvedValue({ ...idle, remaining: 0 }),
+    } as unknown as jest.Mocked<GithubCommitMessageReconcilerService>;
     storyDates = {
       reconcile: jest.fn().mockResolvedValue(idle),
     } as unknown as jest.Mocked<JiraStoryDateReconcilerService>;
@@ -32,6 +37,7 @@ describe('BackfillSchedulerService', () => {
       prisma as unknown as PrismaService,
       reviews,
       prStats,
+      commitMessages,
       storyDates,
     );
   });
@@ -44,7 +50,7 @@ describe('BackfillSchedulerService', () => {
 
     await service.tick();
 
-    for (const svc of [storyDates, reviews, prStats]) {
+    for (const svc of [storyDates, reviews, prStats, commitMessages]) {
       expect(svc.reconcile).toHaveBeenCalledWith('tenant-a');
       expect(svc.reconcile).toHaveBeenCalledWith('tenant-b');
     }
@@ -64,6 +70,20 @@ describe('BackfillSchedulerService', () => {
     // No point calling the next reconciler with an empty quota — it would
     // spend a request only to be told the same thing.
     expect(prStats.reconcile).not.toHaveBeenCalled();
+    expect(commitMessages.reconcile).not.toHaveBeenCalled();
+  });
+
+  it('skips commit messages when PR stats exhausted the quota', async () => {
+    prStats.reconcile.mockResolvedValue({
+      ...idle,
+      remaining: 500,
+      rateLimited: true,
+      resumeAt: new Date(Date.now() + 600_000),
+    });
+
+    await service.tick();
+
+    expect(commitMessages.reconcile).not.toHaveBeenCalled();
   });
 
   it('honours the cooldown on the next tick instead of re-probing', async () => {
