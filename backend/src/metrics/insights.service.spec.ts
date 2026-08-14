@@ -3,6 +3,7 @@ import { DeveloperIdentityService } from '../correlation/developer-identity.serv
 import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
+import { ConnectionsService } from '../modules/connections/connections.service';
 import { InsightsService } from './insights.service';
 
 function commit(overrides: Record<string, unknown> = {}) {
@@ -43,6 +44,16 @@ function identityStub(): jest.Mocked<DeveloperIdentityService> {
   } as unknown as jest.Mocked<DeveloperIdentityService>;
 }
 
+/**
+ * No collection horizon — these suites assert on sprints regardless of age.
+ * `velocity.spec` covers the horizon behaviour itself.
+ */
+function horizonStub(): ConnectionsService {
+  return {
+    getDataHorizon: jest.fn().mockResolvedValue({}),
+  } as unknown as ConnectionsService;
+}
+
 describe('InsightsService committer-date windowing', () => {
   let code: jest.Mocked<CodeService>;
   let planning: jest.Mocked<PlanningService>;
@@ -77,6 +88,7 @@ describe('InsightsService committer-date windowing', () => {
       code,
       correlation,
       identityStub(),
+      horizonStub(),
     );
   });
 
@@ -152,6 +164,7 @@ describe('InsightsService.flowMetrics', () => {
       {} as unknown as CodeService,
       {} as unknown as CorrelationService,
       identityStub(),
+      horizonStub(),
     );
   });
 
@@ -302,6 +315,7 @@ describe('InsightsService aggregate scope', () => {
       code,
       correlation,
       identityStub(),
+      horizonStub(),
     );
   });
 
@@ -447,6 +461,7 @@ describe('InsightsService review metrics', () => {
       code,
       correlation,
       identityStub(),
+      horizonStub(),
     );
   });
 
@@ -606,6 +621,7 @@ describe('InsightsService review metrics — bots and depth', () => {
       code,
       correlation,
       identityStub(),
+      horizonStub(),
     );
   });
 

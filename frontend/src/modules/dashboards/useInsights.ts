@@ -80,6 +80,8 @@ export interface VelocityRow {
   /** Still running: partial by definition, never averaged in. */
   inProgress: boolean;
   elapsedPct: number | null;
+  /** Closed before the collection floor — only partly collected, never averaged. */
+  beyondHorizon?: boolean;
 }
 
 /** Velocity for one project — the only scope at which it's comparable. */
@@ -90,6 +92,8 @@ export interface ProjectVelocity {
   avgCompletedPoints: number | null;
   avgCompletedItems: number | null;
   closedSprintsSampled: number;
+  /** Sprints shown but excluded from averages — they predate the collected data. */
+  sprintsBeyondHorizon?: number;
   estimateCoveragePct: number | null;
   /** False when too little is estimated for points to describe the sprint. */
   pointsReliable: boolean;

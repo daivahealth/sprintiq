@@ -199,6 +199,44 @@ export class ConnectionsService {
    * current, so including it would report permanent staleness for a source the
    * tenant deliberately turned off.
    */
+  /**
+   * How far BACK the data goes, per source — the counterpart to freshness.
+   *
+   * Collection is windowed: nothing before a connection's `backfillSince` was
+   * ever fetched, so a board reaching past it isn't showing less activity, it
+   * is showing the edge of the dataset. Reported as the NEWEST floor across a
+   * source's connections, because that is the point before which coverage stops
+   * being uniform — one repo backfilled deeper than its siblings doesn't make
+   * the source's history complete to that depth.
+   */
+  async getDataHorizon(tenantId: string): Promise<Record<string, string>> {
+    const connections = await this.prisma.connection.findMany({
+      where: { tenantId, status: 'active' },
+      select: { sourceSystem: true, config: true },
+    });
+
+    const horizon: Record<string, Date> = {};
+    for (const c of connections) {
+      const raw = (c.config as { backfillSince?: string } | null)
+        ?.backfillSince;
+      if (!raw) {
+        continue;
+      }
+      const floor = new Date(raw);
+      if (Number.isNaN(floor.getTime())) {
+        continue;
+      }
+      const current = horizon[c.sourceSystem];
+      if (!current || floor > current) {
+        horizon[c.sourceSystem] = floor;
+      }
+    }
+
+    return Object.fromEntries(
+      Object.entries(horizon).map(([source, at]) => [source, at.toISOString()]),
+    );
+  }
+
   async getDataFreshness(tenantId: string): Promise<DataFreshness> {
     const connections = await this.prisma.connection.findMany({
       where: { tenantId, status: 'active' },
@@ -434,6 +472,63 @@ export class ConnectionsService {
     await this.prisma.connection.update({
       where: { id },
       data: { syncCursors: cursors as Prisma.InputJsonValue },
+    });
+  }
+
+  /**
+   * Re-opens a connection's history: moves its backfill floor back and clears
+   * the cursors so the next poll walks from the new floor instead of resuming
+   * where it left off.
+   *
+   * Both halves are required. `backfillSince` alone changes nothing, because
+   * every collector checks its cursor first — GitHub goes straight to
+   * incremental mode once `prBackfillDone` is set, and Jira's `updatedCursor`
+   * overrides the floor entirely. Clearing cursors alone would re-walk only as
+   * far as the existing floor.
+   *
+   * Safe to run against a populated database: no row is deleted. Every write
+   * path downstream is keyed on a natural identity — stories on
+   * `(tenant, externalKey)`, commits on `(tenant, repo, sha)`, PRs on
+   * `(tenant, repo, number)`, all upserts — and the append-only tables dedupe
+   * on the source's own stable ids (`changelogId` for transitions, the review
+   * id for reviews). Re-collected records update in place; already-seen events
+   * are dropped by the ingestion idempotency key.
+   */
+  async reopenBackfill(id: string, since: Date): Promise<void> {
+    const connection = await this.prisma.connection.findUnique({
+      where: { id },
+      select: { config: true },
+    });
+    if (!connection) {
+      return;
+    }
+    await this.prisma.connection.update({
+      where: { id },
+      data: {
+        config: {
+          ...((connection.config as Record<string, unknown> | null) ?? {}),
+          backfillSince: since.toISOString(),
+        } as Prisma.InputJsonValue,
+        syncCursors: {} as Prisma.InputJsonValue,
+        // The connection is walking history again, so it is no longer "fully
+        // backfilled" — leaving this set would tell the sweep scheduler this
+        // connection needs no priority, exactly when it needs the most.
+        backfillCompletedAt: null,
+      },
+    });
+  }
+
+  /** Every connection for a tenant, optionally narrowed to one source system. */
+  async listForTenant(
+    tenantId: string,
+    sourceSystem?: string,
+  ): Promise<Connection[]> {
+    return this.prisma.connection.findMany({
+      where: {
+        tenantId,
+        ...(sourceSystem ? { sourceSystem } : {}),
+      },
+      orderBy: { name: 'asc' },
     });
   }
 

@@ -8,6 +8,7 @@ import {
   DeveloperIdentityService,
 } from '../correlation/developer-identity.service';
 import { CodeService } from '../modules/code/code.service';
+import { ConnectionsService } from '../modules/connections/connections.service';
 import {
   DONE_STATUSES,
   PlanningService,
@@ -114,6 +115,15 @@ export interface VelocityRow {
   inProgress: boolean;
   /** How far through its own window, for reading a partial sprint fairly. */
   elapsedPct: number | null;
+  /**
+   * The sprint ended before the Jira collection floor, so only the few of its
+   * items touched since then were ever fetched — its counts are a fraction of
+   * what the sprint actually held. Shown, but never averaged: on a real project
+   * this dragged the reported velocity from 475 items per sprint to 241, and
+   * made Velocity and Forecasting disagree by 2x purely because one sampled six
+   * sprints across the floor and the other sampled three inside it.
+   */
+  beyondHorizon: boolean;
 }
 
 /**
@@ -129,7 +139,14 @@ export interface ProjectVelocity {
   avgCompletedPoints: number | null;
   /** Mean items completed over closed sprints — see `pointsReliable`. */
   avgCompletedItems: number | null;
+  /** Closed sprints the averages are actually built from (horizon-excluded ones aren't). */
   closedSprintsSampled: number;
+  /**
+   * Sprints shown but excluded from the averages because they closed before the
+   * collection floor. Non-zero means this project's history predates the data,
+   * and deepening the backfill window is what fixes it.
+   */
+  sprintsBeyondHorizon: number;
   /** Estimate coverage across the sampled closed sprints. */
   estimateCoveragePct: number | null;
   /**
@@ -469,6 +486,7 @@ export class InsightsService {
     private readonly code: CodeService,
     private readonly correlation: CorrelationService,
     private readonly identities: DeveloperIdentityService,
+    private readonly connections: ConnectionsService,
   ) {}
 
   /** Work-item detail rows (any granularity) with linked PRs per item. */
@@ -654,6 +672,9 @@ export class InsightsService {
   async velocity(projectKeys: string[], limit = 6): Promise<ProjectVelocity[]> {
     const tenantId = this.tenantContext.requireTenantId();
     const sprints = await this.planning.listSprints(tenantId, projectKeys);
+    // Nothing before this was ever collected, so a sprint that closed earlier
+    // holds only whatever has been touched since — see `beyondHorizon`.
+    const horizon = await this.jiraHorizon(tenantId);
 
     const byProject = new Map<string, Sprint[]>();
     for (const sprint of sprints) {
@@ -686,7 +707,7 @@ export class InsightsService {
 
       const rows: VelocityRow[] = [];
       for (const sprint of [...active, ...closed]) {
-        rows.push(await this.buildVelocityRow(tenantId, sprint));
+        rows.push(await this.buildVelocityRow(tenantId, sprint, horizon));
       }
       out.push(summarizeVelocity(projectKey, rows));
     }
@@ -701,9 +722,16 @@ export class InsightsService {
     );
   }
 
+  /** Newest Jira backfill floor — the point before which coverage stops. */
+  private async jiraHorizon(tenantId: string): Promise<Date | null> {
+    const horizon = await this.connections.getDataHorizon(tenantId);
+    return horizon.jira ? new Date(horizon.jira) : null;
+  }
+
   private async buildVelocityRow(
     tenantId: string,
     sprint: Sprint,
+    horizon: Date | null,
   ): Promise<VelocityRow> {
     const items = (
       await this.planning.listItemsForSprint(tenantId, sprint.externalId)
@@ -721,6 +749,7 @@ export class InsightsService {
       estimateCoveragePct: pct(estimated.length, items.length),
       inProgress: sprint.state === 'active',
       elapsedPct: sprintElapsedPct(sprint),
+      beyondHorizon: Boolean(horizon && sprint.endAt && sprint.endAt < horizon),
     };
   }
 
@@ -1568,7 +1597,10 @@ function summarizeVelocity(
   projectKey: string,
   rows: VelocityRow[],
 ): ProjectVelocity {
-  const closed = rows.filter((r) => !r.inProgress);
+  // Two exclusions, both about not averaging a number that isn't one:
+  // an in-progress sprint is partial by definition, and a sprint that closed
+  // before the collection floor holds only the few items touched since.
+  const closed = rows.filter((r) => !r.inProgress && !r.beyondHorizon);
   // A sprint where nothing was estimated has no velocity — not a velocity of
   // zero. Averaging those in would report a team as slowing down when all that
   // changed is that they stopped estimating. Same predicate as `forecast`, so
@@ -1592,6 +1624,7 @@ function summarizeVelocity(
     avgCompletedPoints: mean(measurable.map((r) => r.completedPoints)),
     avgCompletedItems: mean(closed.map((r) => r.itemsDone)),
     closedSprintsSampled: closed.length,
+    sprintsBeyondHorizon: rows.filter((r) => r.beyondHorizon).length,
     estimateCoveragePct: coverage,
     pointsReliable: coverage !== null && coverage >= MIN_ESTIMATE_COVERAGE_PCT,
   };

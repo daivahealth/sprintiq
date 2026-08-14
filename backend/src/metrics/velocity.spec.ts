@@ -4,6 +4,7 @@ import { CorrelationService } from '../correlation/correlation.service';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
 import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
+import { ConnectionsService } from '../modules/connections/connections.service';
 import { InsightsService } from './insights.service';
 
 const NOW = new Date('2026-08-14T00:00:00.000Z');
@@ -22,6 +23,13 @@ function sprint(over: Partial<Sprint>): Sprint {
 
 function item(storyPoints: number | null, status = 'Done'): Story {
   return { type: 'story', status, storyPoints } as Story;
+}
+
+/** Horizon stub — pass a date to simulate a collection floor. */
+function horizonStub(jira?: string): ConnectionsService {
+  return {
+    getDataHorizon: jest.fn().mockResolvedValue(jira ? { jira } : {}),
+  } as unknown as ConnectionsService;
 }
 
 describe('InsightsService.velocity', () => {
@@ -46,6 +54,7 @@ describe('InsightsService.velocity', () => {
       {} as unknown as CodeService,
       {} as unknown as CorrelationService,
       {} as unknown as DeveloperIdentityService,
+      horizonStub(),
     );
   });
 
@@ -174,6 +183,48 @@ describe('InsightsService.velocity', () => {
     expect(group.avgCompletedPoints).toBe(10);
   });
 
+  it('shows sprints older than the collection floor but never averages them', async () => {
+    // The production failure this guards: Jira collects `updated >= floor`, so
+    // a sprint that closed earlier holds only the few items touched since.
+    // Averaging those hollow sprints dragged ACT's reported velocity from 475
+    // items per sprint to 241, and made Velocity and Forecasting disagree by 2x
+    // purely because one sampled across the floor and the other didn't.
+    planning.listSprints.mockResolvedValue([
+      sprint({
+        externalId: 'recent',
+        endAt: new Date('2026-07-31T00:00:00.000Z'),
+      }),
+      sprint({
+        externalId: 'hollow',
+        endAt: new Date('2025-08-30T00:00:00.000Z'),
+      }),
+    ]);
+    itemsBySprint = {
+      recent: [item(10), item(10), item(10)], // 3 items, all done
+      hollow: [item(10)], // looks like a 1-item sprint; it wasn't
+    };
+    service = new InsightsService(
+      { requireTenantId: () => 'tenant-a' } as unknown as TenantContextService,
+      planning,
+      {} as unknown as CodeService,
+      {} as unknown as CorrelationService,
+      {} as unknown as DeveloperIdentityService,
+      horizonStub('2026-05-13T00:00:00.000Z'),
+    );
+
+    const [group] = await service.velocity([]);
+
+    // Both are visible — the old sprint is real and hiding it would be its own
+    // kind of lie — but only the one inside the window feeds the average.
+    expect(group.rows).toHaveLength(2);
+    expect(
+      group.rows.find((r) => r.sprint.externalId === 'hollow')!.beyondHorizon,
+    ).toBe(true);
+    expect(group.closedSprintsSampled).toBe(1);
+    expect(group.sprintsBeyondHorizon).toBe(1);
+    expect(group.avgCompletedItems).toBe(3); // not (3+1)/2 = 2
+  });
+
   it('leaves out future and long-abandoned sprints', async () => {
     planning.listSprints.mockResolvedValue([
       sprint({ externalId: 'real' }),
@@ -227,6 +278,7 @@ describe('InsightsService.forecast', () => {
       {} as unknown as CodeService,
       {} as unknown as CorrelationService,
       {} as unknown as DeveloperIdentityService,
+      horizonStub(),
     );
   });
 

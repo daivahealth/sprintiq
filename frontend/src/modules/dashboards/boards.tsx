@@ -535,6 +535,13 @@ function VelocitySprintRow({
       <span className="w-24 shrink-0 text-right">
         {row.inProgress ? (
           <Badge tone="good">running</Badge>
+        ) : row.beyondHorizon ? (
+          <span
+            className="text-xs text-warning-fg"
+            title="This sprint closed before the collection window opened, so only the few of its items touched since were ever fetched. Its counts are partial and it is excluded from the average."
+          >
+            partial
+          </span>
         ) : row.unestimatedItems > 0 && !byItems ? (
           <span
             className="text-xs text-warning-fg"
@@ -621,6 +628,17 @@ export function VelocityBoard() {
                 </span>
               </span>
             </div>
+
+            {(g.sprintsBeyondHorizon ?? 0) > 0 && (
+              <p className="rounded-md border border-warning-border bg-warning-bg p-2.5 text-xs text-warning-fg">
+                <strong>{g.sprintsBeyondHorizon}</strong> of this project’s
+                sprints closed before the collection window opened. Only the few
+                of their items touched since were ever fetched, so their counts
+                are a fraction of what those sprints held — they are shown but
+                excluded from the average. Deepening the backfill window is what
+                fills them in.
+              </p>
+            )}
 
             {byItems && (
               <p className="rounded-md border border-warning-border bg-warning-bg p-2.5 text-xs text-warning-fg">

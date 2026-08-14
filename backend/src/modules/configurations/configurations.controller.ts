@@ -3,6 +3,9 @@ import {
   Body,
   Controller,
   Get,
+  Inject,
+  Optional,
+  Param,
   Post,
   Put,
 } from '@nestjs/common';
@@ -14,6 +17,8 @@ import {
   IsOptional,
   IsString,
 } from 'class-validator';
+import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
+import { ConnectionsService } from '../connections/connections.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
@@ -81,6 +86,13 @@ class SyncGithubOrgDto {
   backfillDays?: number;
 }
 
+/**
+ * Upper bound on a re-backfill request. Not a technical limit — a guard against
+ * a typo turning into an unbounded API walk across every repository, which on a
+ * 200-repo org is measured in days of rate-limited catch-up.
+ */
+const MAX_REBACKFILL_MONTHS = 60;
+
 @Controller('admin/configurations')
 export class ConfigurationsController {
   constructor(
@@ -93,6 +105,8 @@ export class ConfigurationsController {
     private readonly storyDateReconciler: JiraStoryDateReconcilerService,
     private readonly correlation: CorrelationService,
     private readonly identities: DeveloperIdentityService,
+    private readonly connections: ConnectionsService,
+    @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
   @Roles(Role.ADMIN)
@@ -275,6 +289,89 @@ export class ConfigurationsController {
   @Post('correlation/resolve-identities')
   async resolveIdentities(@CurrentUser() user: AuthUser) {
     return this.identities.resolveTenant(user.tenantId);
+  }
+
+  /**
+   * Re-opens collection history for every connection of a source system.
+   *
+   * The only way to deepen the data horizon. Raising `backfillDays` in the
+   * configuration above reaches only the one connection that configuration
+   * manages — connections created by an org sync (one per repository) are not
+   * config-managed, so before this endpoint there was no supported way to widen
+   * their window at all.
+   *
+   * Additive, never destructive: no rows are deleted. Re-collected records
+   * upsert in place on their natural keys and already-seen events are dropped
+   * by the ingestion idempotency key, so the cost is API calls and time, not
+   * data loss. See `ConnectionsService.reopenBackfill`.
+   */
+  @Roles(Role.ADMIN)
+  @Post(':source/rebackfill')
+  async rebackfill(
+    @CurrentUser() user: AuthUser,
+    @Param('source') source: string,
+    @Body() body: { months?: number },
+  ) {
+    if (source !== 'github' && source !== 'jira') {
+      throw new BadRequestException(
+        `Unsupported source "${source}". Supported: github, jira.`,
+      );
+    }
+    const months = Number(body?.months);
+    if (
+      !Number.isFinite(months) ||
+      months <= 0 ||
+      months > MAX_REBACKFILL_MONTHS
+    ) {
+      throw new BadRequestException(
+        `"months" must be between 1 and ${MAX_REBACKFILL_MONTHS}.`,
+      );
+    }
+
+    const since = new Date();
+    since.setUTCMonth(since.getUTCMonth() - months);
+
+    const connections = await this.connections.listForTenant(
+      user.tenantId,
+      source,
+    );
+    // Only widen. Re-pointing a connection at a NEWER floor would strand the
+    // history already collected behind it — the rows stay, but nothing would
+    // ever re-walk the gap, so the data would silently have a hole in it.
+    const widened = connections.filter((c) => {
+      const current = (c.config as { backfillSince?: string } | null)
+        ?.backfillSince;
+      return !current || new Date(current) > since;
+    });
+
+    for (const connection of widened) {
+      await this.connections.reopenBackfill(connection.id, since);
+    }
+
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'connection.rebackfill',
+      targetType: 'connection',
+      targetId: source,
+      metadata: {
+        source,
+        months,
+        since: since.toISOString(),
+        connectionsReopened: widened.length,
+        connectionsAlreadyDeeper: connections.length - widened.length,
+      },
+    });
+
+    return {
+      source,
+      since: since.toISOString(),
+      months,
+      connectionsReopened: widened.length,
+      connectionsAlreadyDeeper: connections.length - widened.length,
+      note: 'Cursors cleared. The scheduled sweep walks the new window from the next tick; no data was deleted.',
+    };
   }
 
   private toView(config: TenantConfigurationView) {

@@ -4,6 +4,7 @@ import { CorrelationService } from '../correlation/correlation.service';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
 import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
+import { ConnectionsService } from '../modules/connections/connections.service';
 import { InsightsService } from './insights.service';
 
 const NOW = new Date('2026-08-14T00:00:00.000Z');
@@ -18,6 +19,13 @@ function sprint(overrides: Partial<Sprint>): Sprint {
     endAt: new Date('2026-08-30T00:00:00.000Z'),
     ...overrides,
   } as Sprint;
+}
+
+/** No collection horizon — this suite is about sprint state, not data depth. */
+function horizonStub(): ConnectionsService {
+  return {
+    getDataHorizon: jest.fn().mockResolvedValue({}),
+  } as unknown as ConnectionsService;
 }
 
 describe('InsightsService — sprints Jira still calls active', () => {
@@ -42,6 +50,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
         prRefsByStoryId: jest.fn().mockResolvedValue(new Map()),
       } as unknown as CorrelationService,
       {} as unknown as DeveloperIdentityService,
+      horizonStub(),
     );
   });
 

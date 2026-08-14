@@ -96,6 +96,10 @@ Unstarted (`future`) sprints are likewise kept out of the sprint picker, which r
 
 **The running sprint is shown but never averaged.** It has completed a fraction of its work because it is a fraction of the way through; averaging it in would make velocity depend on which day the page is opened. It renders at half opacity with a marker for elapsed %, and is excluded from `avgCompletedPoints` / `avgCompletedItems` and from the forecast sample.
 
+**The collection horizon gates the whole row.** Collection is windowed — nothing before a connection's `backfillSince` was ever fetched — so a sprint that closed earlier holds only the handful of its items touched since. Those sprints are marked `beyondHorizon`, rendered as `partial`, and **excluded from every average**. Shown rather than hidden, because the sprint is real and the gap is the point: it tells you the history predates the data, which a deeper backfill fixes (`POST /admin/configurations/{source}/rebackfill`, api/README §9).
+
+This is not hypothetical. Before the guard, ACT's Velocity averaged its last 6 closed sprints — three of which sat past the floor holding 1, 3 and 21 items instead of hundreds — and reported **241** items per sprint, while Forecasting sampled 3 and reported **475**. Same project, same database, 2× apart. With the guard both read 475.
+
 **Estimate coverage gates the points figures.** `committedPoints` and `completedPoints` can only see items that carry a story-point estimate. Where most items don't, those figures describe a minority of the sprint while presenting themselves as the whole of it. On the reference tenant this was severe and not obvious:
 
 | Sprint | items done | completed points | estimate coverage |
