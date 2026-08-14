@@ -90,6 +90,12 @@ An active sprint whose `endAt` passed more than **`STALE_ACTIVE_SPRINT_GRACE_DAY
 
 Unstarted (`future`) sprints are likewise kept out of the sprint picker, which requests `state=active,closed`: they have no dates, no transitions and nothing delivered, so every figure these boards compute is empty for one. Note also that sprint ordering must specify `nulls: 'last'` — Postgres sorts `NULL` **first** on a descending sort, so a dateless future sprint otherwise outranked every real one and arrived at the top of the picker.
 
+### 4.1.3 Daily activity section (who committed, day by day)
+
+Developer Activity opens with a team-level daily commit log (`GET /api/dashboards/developer-activity/daily?window=`): one row per IST day, newest first, with the day's **total commit count** and **every developer who committed** that day, each with their count. Attribution runs through the identity map in bulk (`DeveloperIdentityService.attributionIndex`) so unverified-email commits count under the right person; commits matching no identity appear as **"+N unattributed"** per day — disclosed, never dropped or guessed. A truncated read says so on screen instead of under-reporting silently.
+
+**Ordering within a day is alphabetical by default**, per the no-ranking rule above (§4.1). The section also carries an explicit **"Most commits" sort toggle** — a recorded, owner-requested deviation from the "never ordered by volume" default (2026-08-14): the volume ordering exists only as the reader's deliberate act in the UI, is never the default, never persisted, and the API always returns alphabetical order. It remains commit *count* context for "who was active", not a productivity score — LOC is deliberately absent from this section.
+
 ### 4.3 Velocity: why it is grouped, and when points stop meaning anything
 
 **Grouped by project.** Velocity does not survive being pooled. Each team estimates on its own scale, so a single series mixing projects invites comparing bars that measure different things — the board previously showed six sprints spanning five projects as one sequence. Each project now gets its own section, ordered **current → past** with the running sprint leading, and each row clicks through to that sprint on Sprint Health (which is why sprint selection lives in the URL, §3).

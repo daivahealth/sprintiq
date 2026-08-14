@@ -41,6 +41,11 @@ function identityStub(): jest.Mocked<DeveloperIdentityService> {
       coveragePct: null,
       unattributedIdentities: 0,
     }),
+    attributionIndex: jest.fn().mockResolvedValue({
+      byLogin: new Map<string, string>(),
+      byEmail: new Map<string, string>(),
+      displayNames: new Map<string, string>(),
+    }),
   } as unknown as jest.Mocked<DeveloperIdentityService>;
 }
 
@@ -137,6 +142,186 @@ describe('InsightsService committer-date windowing', () => {
     expect(view.rows[0].dailySeries).toEqual([
       { date: '2026-06-02', commits: 1, locChanged: 4 },
     ]);
+  });
+});
+
+describe('InsightsService.dailyCommitActivity', () => {
+  let code: jest.Mocked<CodeService>;
+  let identities: jest.Mocked<DeveloperIdentityService>;
+  let service: InsightsService;
+
+  beforeEach(() => {
+    code = {
+      listCommitsPage: jest
+        .fn()
+        .mockResolvedValue({ commits: [], truncated: false }),
+    } as unknown as jest.Mocked<CodeService>;
+    identities = identityStub();
+    const tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('tenant-a'),
+    } as unknown as jest.Mocked<TenantContextService>;
+    service = new InsightsService(
+      tenantContext,
+      {} as unknown as PlanningService,
+      code,
+      {} as unknown as CorrelationService,
+      identities,
+      horizonStub(),
+    );
+  });
+
+  it('buckets commits into IST days, newest first, merging a person across login and recovered email', async () => {
+    identities.attributionIndex.mockResolvedValue({
+      byLogin: new Map([['Sangeetha-S_athma', 'Sangeetha-S_athma']]),
+      byEmail: new Map([['372281@example.org', 'Sangeetha-S_athma']]),
+      displayNames: new Map([['Sangeetha-S_athma', 'Sangeetha-S_athma']]),
+    });
+    (code.listCommitsPage as jest.Mock).mockResolvedValue({
+      commits: [
+        // same person, two git identities, one day — must be ONE entry of 2
+        commit({
+          authorLogin: 'Sangeetha-S_athma',
+          committedAt: new Date('2026-06-01T10:00:00.000Z'),
+        }),
+        commit({
+          authorLogin: null,
+          authorEmail: '372281@Example.org',
+          committedAt: new Date('2026-06-01T11:00:00.000Z'),
+        }),
+        commit({
+          authorLogin: 'Sangeetha-S_athma',
+          committedAt: new Date('2026-06-02T10:00:00.000Z'),
+        }),
+      ],
+      truncated: false,
+    });
+
+    const view = await service.dailyCommitActivity(
+      [],
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.days.map((d) => d.date)).toEqual(['2026-06-02', '2026-06-01']);
+    expect(view.days[1]).toMatchObject({
+      date: '2026-06-01',
+      totalCommits: 2,
+      unattributedCommits: 0,
+      developers: [
+        {
+          developer: 'Sangeetha-S_athma',
+          displayName: 'Sangeetha-S_athma',
+          commits: 2,
+        },
+      ],
+    });
+    expect(view.totals).toEqual({ commits: 3, activeDevelopers: 1 });
+    expect(view.truncated).toBe(false);
+  });
+
+  it('lists developers alphabetically within a day — counts are context, not ranking', async () => {
+    identities.attributionIndex.mockResolvedValue({
+      byLogin: new Map([
+        ['zara', 'zara'],
+        ['amit', 'amit'],
+      ]),
+      byEmail: new Map(),
+      displayNames: new Map([
+        ['zara', 'zara'],
+        ['amit', 'amit'],
+      ]),
+    });
+    (code.listCommitsPage as jest.Mock).mockResolvedValue({
+      commits: [
+        commit({
+          authorLogin: 'zara',
+          committedAt: new Date('2026-06-01T10:00:00.000Z'),
+        }),
+        commit({
+          authorLogin: 'zara',
+          committedAt: new Date('2026-06-01T11:00:00.000Z'),
+        }),
+        commit({
+          authorLogin: 'amit',
+          committedAt: new Date('2026-06-01T12:00:00.000Z'),
+        }),
+      ],
+      truncated: false,
+    });
+
+    const view = await service.dailyCommitActivity(
+      [],
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    // zara has more commits but amit renders first — the default order is
+    // alphabetical (CLAUDE.md: no volume ranking); any re-sort is the
+    // reader's explicit act in the UI.
+    expect(view.days[0].developers.map((d) => d.developer)).toEqual([
+      'amit',
+      'zara',
+    ]);
+  });
+
+  it('counts commits matching no identity as unattributed — disclosed, never dropped or guessed', async () => {
+    (code.listCommitsPage as jest.Mock).mockResolvedValue({
+      commits: [
+        commit({
+          authorLogin: null,
+          authorEmail: 'nobody@unknown.example',
+          committedAt: new Date('2026-06-01T10:00:00.000Z'),
+        }),
+      ],
+      truncated: false,
+    });
+
+    const view = await service.dailyCommitActivity(
+      [],
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.days[0]).toMatchObject({
+      totalCommits: 1,
+      unattributedCommits: 1,
+      developers: [],
+    });
+    expect(view.totals).toEqual({ commits: 1, activeDevelopers: 0 });
+  });
+
+  it('falls back to the raw login when the identity map has not resolved it yet', async () => {
+    (code.listCommitsPage as jest.Mock).mockResolvedValue({
+      commits: [
+        commit({
+          authorLogin: 'new-joiner',
+          committedAt: new Date('2026-06-01T10:00:00.000Z'),
+        }),
+      ],
+      truncated: false,
+    });
+
+    const view = await service.dailyCommitActivity(
+      [],
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    // A login IS an identity even before the resolution pass has seen it —
+    // treating it as unattributed would understate coverage.
+    expect(view.days[0].developers).toEqual([
+      { developer: 'new-joiner', displayName: 'new-joiner', commits: 1 },
+    ]);
+  });
+
+  it('propagates the truncation signal instead of presenting a capped read as the whole window', async () => {
+    (code.listCommitsPage as jest.Mock).mockResolvedValue({
+      commits: [commit()],
+      truncated: true,
+    });
+
+    const view = await service.dailyCommitActivity(
+      [],
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.truncated).toBe(true);
   });
 });
 

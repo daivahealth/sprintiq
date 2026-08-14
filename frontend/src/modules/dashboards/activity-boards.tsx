@@ -13,6 +13,7 @@ import { SearchSelect } from '../../components/search-select';
 import { timeAgo } from '../../lib/utils';
 import {
   type ActivityWindow,
+  useDailyDeveloperActivity,
   useDeveloperActivity,
   useDeveloperCatalog,
   useProjectActivity,
@@ -179,6 +180,125 @@ export function ProjectActivityBoard() {
 }
 
 /** GitHub-style per-developer activity: commit history, repos, LOC, projects. */
+/** IST day key ("2026-08-14") → "Thu, 14 Aug". */
+function formatDayKey(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  return d.toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+/**
+ * Team-level daily commit log: who committed each day, with counts.
+ *
+ * Defaults to alphabetical within each day — activity context, not a
+ * leaderboard (CLAUDE.md). The count sort exists but is the reader's explicit
+ * act: a deliberate deviation, requested and recorded in DASHBOARDS.md §4.1.3.
+ */
+function DailyActivitySection({ window }: { window: ActivityWindow }) {
+  const query = useDailyDeveloperActivity(window);
+  const [sort, setSort] = useState<'name' | 'commits'>('name');
+  const d = query.data;
+
+  return (
+    <Card className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-fg">Daily activity</h3>
+          <p className="text-xs text-fg-subtle">
+            Everyone who committed, day by day
+            {d ? (
+              <>
+                {' '}
+                · {d.totals.commits.toLocaleString()} commits by{' '}
+                {d.totals.activeDevelopers} developer
+                {d.totals.activeDevelopers === 1 ? '' : 's'} in this window
+              </>
+            ) : null}
+          </p>
+        </div>
+        <SegmentedControl
+          label="Sort"
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: 'name', label: 'A–Z' },
+            { value: 'commits', label: 'Most commits' },
+          ]}
+        />
+      </div>
+
+      {query.isLoading && <LoadingCard />}
+      {query.isError && <ErrorCard error={query.error} />}
+
+      {d?.truncated && (
+        <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
+          This window contains more commits than a single read returns, so
+          these daily figures under-report. Narrow the window for accurate
+          figures.
+        </p>
+      )}
+
+      {d && d.days.length === 0 && (
+        <p className="py-6 text-center text-sm text-fg-faint">
+          No commits in this window.
+        </p>
+      )}
+
+      {d && d.days.length > 0 && (
+        <div className="space-y-3">
+          {d.days.map((day) => {
+            const developers =
+              sort === 'commits'
+                ? // Explicitly chosen by the reader — the default stays A–Z.
+                  [...day.developers].sort(
+                    (a, b) =>
+                      b.commits - a.commits ||
+                      a.displayName.localeCompare(b.displayName),
+                  )
+                : day.developers;
+            return (
+              <div
+                key={day.date}
+                className="flex flex-col gap-1.5 border-b border-border-subtle pb-3 last:border-b-0 last:pb-0 sm:flex-row sm:items-baseline sm:gap-4"
+              >
+                <div className="flex shrink-0 items-baseline gap-2 sm:w-44">
+                  <span className="text-sm font-medium text-fg-secondary">
+                    {formatDayKey(day.date)}
+                  </span>
+                  <span className="text-xs tabular-nums text-fg-subtle">
+                    {day.totalCommits} commit{day.totalCommits === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {developers.map((dev) => (
+                    <span
+                      key={dev.developer}
+                      className="rounded bg-muted px-1.5 py-0.5 text-xs text-fg-secondary"
+                    >
+                      {dev.displayName}
+                      <span className="ml-1 tabular-nums text-fg-subtle">
+                        ×{dev.commits}
+                      </span>
+                    </span>
+                  ))}
+                  {day.unattributedCommits > 0 && (
+                    <Badge tone="warn">
+                      +{day.unattributedCommits} unattributed
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export function DeveloperActivityBoard() {
   const [appliedSearch, setAppliedSearch] = useState('');
   const [developer, setDeveloper] = useState<string | null>(null);
@@ -244,6 +364,8 @@ export function DeveloperActivityBoard() {
             they render numbers with no staleness signal at all. */}
         <FreshnessNote />
       </FilterBar>
+
+      <DailyActivitySection window={window} />
 
       {query.isLoading && developer && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}

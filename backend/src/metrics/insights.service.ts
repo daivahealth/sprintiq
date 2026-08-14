@@ -396,6 +396,28 @@ export interface DeveloperIdentityNote {
   inferred: boolean;
 }
 
+/**
+ * Team-level daily commit log: who committed each day, with counts.
+ * Activity context, not a ranking — developers are returned alphabetically
+ * within each day; a volume sort is the reader's explicit act in the UI
+ * (DASHBOARDS.md §4.1.3).
+ */
+export interface DailyDeveloperActivityView {
+  /** Newest day first. */
+  days: {
+    /** IST date key (istDateKey). */
+    date: string;
+    totalCommits: number;
+    /** Alphabetical by displayName. */
+    developers: { developer: string; displayName: string; commits: number }[];
+    /** Commits matching no known identity — disclosed, never dropped or guessed. */
+    unattributedCommits: number;
+  }[];
+  totals: { commits: number; activeDevelopers: number };
+  /** The read hit its ceiling — the window is under-reported and says so. */
+  truncated: boolean;
+}
+
 export interface DeveloperActivityView {
   developer: string;
   totals: {
@@ -1370,6 +1392,90 @@ export class InsightsService {
       .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
 
     return { rows, attribution, truncated };
+  }
+
+  /**
+   * Daily commit log for the whole scope: which developers committed on each
+   * day, with counts (activity context, not ranking — see the view's contract).
+   *
+   * Attribution runs through the identity map in bulk (`attributionIndex`),
+   * so a commit whose email GitHub never verified still counts under the
+   * right person — the same resolution that fixed the per-developer profile.
+   * A login the map hasn't resolved yet still counts as itself; only commits
+   * with neither a known login nor a known email land in `unattributedCommits`.
+   */
+  async dailyCommitActivity(
+    repos: string[],
+    from: Date,
+    to?: Date,
+  ): Promise<DailyDeveloperActivityView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const [{ commits, truncated }, index] = await Promise.all([
+      this.code.listCommitsPage(tenantId, {
+        ...(repos.length > 0 ? { repos } : {}),
+        from,
+        to: to ?? new Date(),
+      }),
+      this.identities.attributionIndex(tenantId),
+    ]);
+
+    interface DayAcc {
+      total: number;
+      unattributed: number;
+      byDeveloper: Map<string, number>;
+    }
+    const byDay = new Map<string, DayAcc>();
+    const activeDevelopers = new Set<string>();
+
+    for (const c of commits) {
+      const day = istDateKey(c.committedAt ?? c.authoredAt);
+      const acc = byDay.get(day) ?? {
+        total: 0,
+        unattributed: 0,
+        byDeveloper: new Map<string, number>(),
+      };
+      acc.total += 1;
+
+      // A login is an identity even before the resolution pass has seen it;
+      // only a commit with neither a known login nor a known email is
+      // genuinely unattributable.
+      const person = c.authorLogin
+        ? (index.byLogin.get(c.authorLogin) ?? c.authorLogin)
+        : c.authorEmail
+          ? index.byEmail.get(c.authorEmail.toLowerCase())
+          : undefined;
+      if (person) {
+        acc.byDeveloper.set(person, (acc.byDeveloper.get(person) ?? 0) + 1);
+        activeDevelopers.add(person);
+      } else {
+        acc.unattributed += 1;
+      }
+      byDay.set(day, acc);
+    }
+
+    return {
+      days: [...byDay.entries()]
+        .map(([date, acc]) => ({
+          date,
+          totalCommits: acc.total,
+          developers: [...acc.byDeveloper.entries()]
+            .map(([developer, count]) => ({
+              developer,
+              displayName: index.displayNames.get(developer) ?? developer,
+              commits: count,
+            }))
+            // Alphabetical by design (CLAUDE.md — no volume ranking); any
+            // re-sort is the reader's explicit act in the UI.
+            .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+          unattributedCommits: acc.unattributed,
+        }))
+        .sort((a, b) => b.date.localeCompare(a.date)),
+      totals: {
+        commits: commits.length,
+        activeDevelopers: activeDevelopers.size,
+      },
+      truncated,
+    };
   }
 
   /** GitHub-style activity profile for one developer (activity context, not ranking). */

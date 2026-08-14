@@ -160,6 +160,58 @@ describe('DeveloperIdentityService.resolveTenant', () => {
   });
 });
 
+describe('DeveloperIdentityService.attributionIndex', () => {
+  it('maps every known login and email to its canonical developer, with a display name', async () => {
+    const { prisma } = prismaStub([], []);
+    prisma.developerIdentity.findMany.mockResolvedValue([
+      {
+        canonicalDeveloperId: 'Sangeetha-S_athma',
+        sourceLogin: 'Sangeetha-S_athma',
+        email: null,
+        name: null,
+      },
+      {
+        canonicalDeveloperId: 'Sangeetha-S_athma',
+        sourceLogin: null,
+        email: '372281@Example.org',
+        name: 'Sangeetha S',
+      },
+    ]);
+    const service = new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    );
+
+    const index = await service.attributionIndex('tenant-a');
+
+    // Both halves of one person point at the same canonical id — this is the
+    // bulk counterpart of aliasesFor, for reads that bucket EVERY commit.
+    expect(index.byLogin.get('Sangeetha-S_athma')).toBe('Sangeetha-S_athma');
+    expect(index.byEmail.get('372281@example.org')).toBe('Sangeetha-S_athma');
+    expect(index.displayNames.get('Sangeetha-S_athma')).toBe(
+      'Sangeetha-S_athma',
+    );
+  });
+
+  it('prefers the login as display name, falling back to the recorded name', async () => {
+    const { prisma } = prismaStub([], []);
+    prisma.developerIdentity.findMany.mockResolvedValue([
+      {
+        canonicalDeveloperId: 'ravi kumar',
+        sourceLogin: null,
+        email: 'ravi@example.org',
+        name: 'Ravi Kumar',
+      },
+    ]);
+    const service = new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    );
+
+    const index = await service.attributionIndex('tenant-a');
+
+    expect(index.displayNames.get('ravi kumar')).toBe('Ravi Kumar');
+  });
+});
+
 describe('DeveloperIdentityService.aliasesFor', () => {
   it('returns every login and email the developer works under', async () => {
     const { prisma } = prismaStub([], []);

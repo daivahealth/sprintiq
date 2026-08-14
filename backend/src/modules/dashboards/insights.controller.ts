@@ -314,6 +314,22 @@ export class InsightsController {
     return { window, ...view, computedAt: new Date().toISOString() };
   }
 
+  /**
+   * Team-level daily commit log: which developers committed on each day, with
+   * counts. Activity context, not a ranking — developers come back
+   * alphabetical per day; a volume sort is the reader's explicit act in the
+   * UI (DASHBOARDS.md §4.1.3).
+   */
+  @Get('developer-activity/daily')
+  async dailyDeveloperActivity(@Query('window') window = 'month') {
+    const days = ACTIVITY_WINDOWS[window] ?? 30;
+    const view = await this.insights.dailyCommitActivity(
+      [],
+      istWindowFloor(days),
+    );
+    return { window, ...view, computedAt: new Date().toISOString() };
+  }
+
   /** GitHub-style per-developer activity (commit history, repos, LOC, projects). */
   @Get('developer-activity')
   async developerActivity(

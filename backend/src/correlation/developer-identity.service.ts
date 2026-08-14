@@ -48,6 +48,21 @@ export interface DeveloperAliases {
   emails: string[];
 }
 
+/**
+ * Bulk alias→person lookup for reads that bucket EVERY commit in a window —
+ * the counterpart of `aliasesFor`, which widens one developer's query.
+ * Attribution order mirrors collection reality: a commit's `authorLogin` is
+ * authoritative when present; otherwise its email (lowercased) is the match.
+ */
+export interface AttributionIndex {
+  /** sourceLogin → canonicalDeveloperId */
+  byLogin: Map<string, string>;
+  /** lowercased email → canonicalDeveloperId */
+  byEmail: Map<string, string>;
+  /** canonicalDeveloperId → what the UI should call this person */
+  displayNames: Map<string, string>;
+}
+
 /** How much of a window's commit volume can be attributed to a person at all. */
 export interface AttributionCoverage {
   commitsInScope: number;
@@ -229,6 +244,44 @@ export class DeveloperIdentityService {
       logins: [...logins],
       emails: [...emails],
     };
+  }
+
+  /**
+   * Every known alias mapped to its canonical developer, in one read — for
+   * reads that bucket a whole window of commits by person (e.g. the daily
+   * activity grid), where calling `aliasesFor` per developer would be N+1
+   * and filtering per person would re-scan the window N times.
+   */
+  async attributionIndex(tenantId: string): Promise<AttributionIndex> {
+    const rows = await this.prisma.developerIdentity.findMany({
+      where: { tenantId },
+      select: {
+        canonicalDeveloperId: true,
+        sourceLogin: true,
+        email: true,
+        name: true,
+      },
+    });
+
+    const byLogin = new Map<string, string>();
+    const byEmail = new Map<string, string>();
+    const displayNames = new Map<string, string>();
+    for (const row of rows) {
+      if (row.sourceLogin) {
+        byLogin.set(row.sourceLogin, row.canonicalDeveloperId);
+      }
+      if (row.email) {
+        byEmail.set(row.email.toLowerCase(), row.canonicalDeveloperId);
+      }
+      // Same preference order as the picker (`listDevelopers`): the login is
+      // the name people know from GitHub; the recorded git name is the
+      // fallback for the unresolved.
+      const current = displayNames.get(row.canonicalDeveloperId);
+      const candidate =
+        row.sourceLogin ?? current ?? row.name ?? row.canonicalDeveloperId;
+      displayNames.set(row.canonicalDeveloperId, candidate);
+    }
+    return { byLogin, byEmail, displayNames };
   }
 
   /**

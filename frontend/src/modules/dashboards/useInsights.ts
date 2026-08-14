@@ -294,6 +294,25 @@ export interface DeveloperActivityView {
   }[];
 }
 
+/**
+ * Team-level daily commit log: who committed each day, with counts. Activity
+ * context, not a ranking — developers arrive alphabetical per day; the
+ * count-sort is an explicit toggle in the section, never the default.
+ */
+export interface DailyDeveloperActivityView {
+  /** Newest day first. */
+  days: {
+    date: string;
+    totalCommits: number;
+    developers: { developer: string; displayName: string; commits: number }[];
+    /** Commits matching no known identity — disclosed, never dropped. */
+    unattributedCommits: number;
+  }[];
+  totals: { commits: number; activeDevelopers: number };
+  /** The read hit its ceiling — figures under-report the window and say so. */
+  truncated: boolean;
+}
+
 // ---- Hooks ------------------------------------------------------------------
 
 function scopeParams(scope: Scope, from?: string): URLSearchParams {
@@ -526,6 +545,17 @@ export function useDeveloperActivity(
         `/api/dashboards/developer-activity?developer=${encodeURIComponent(developer!)}&window=${window}`,
       ),
     enabled: Boolean(developer),
+  });
+}
+
+export function useDailyDeveloperActivity(window: ActivityWindow) {
+  return useQuery({
+    queryKey: ['developer-activity-daily', window],
+    queryFn: () =>
+      api.get<DailyDeveloperActivityView & { computedAt: string }>(
+        `/api/dashboards/developer-activity/daily?window=${window}`,
+      ),
+    staleTime: 60_000,
   });
 }
 
