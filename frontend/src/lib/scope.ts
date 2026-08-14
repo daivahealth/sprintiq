@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
+import { istWindowFloor } from "./utils";
 
 /**
  * The scope system (DASHBOARDS.md §3): one composable, URL-synced scope that
@@ -12,6 +13,14 @@ export interface Scope {
   groupBy: "repo" | "project" | "developer" | "day";
   /** Rolling window in days (7 | 30 | 90). */
   days: number;
+  /**
+   * Selected sprint (externalId), when a board has a sprint dimension.
+   *
+   * In the URL like every other scope axis, so a sprint can be linked to —
+   * which is what lets Velocity send you to that sprint's detail on Sprint
+   * Health instead of leaving you to find it in a dropdown.
+   */
+  sprint: string | null;
 }
 
 export const TIME_PRESETS = [7, 30, 90] as const;
@@ -27,17 +36,7 @@ function parseList(value: string | null): string[] {
 export function useScope() {
   const [params, setParams] = useSearchParams();
 
-  const scope: Scope = useMemo(() => {
-    const days = parseInt(params.get("days") ?? "", 10);
-    return {
-      projects: parseList(params.get("projects")),
-      repos: parseList(params.get("repos")),
-      groupBy: parseGroupBy(params.get("groupBy")),
-      days: TIME_PRESETS.includes(days as (typeof TIME_PRESETS)[number])
-        ? days
-        : DEFAULT_DAYS,
-    };
-  }, [params]);
+  const scope: Scope = useMemo(() => scopeFromParams(params), [params]);
 
   const setScope = useCallback(
     (next: Partial<Scope>) => {
@@ -57,6 +56,7 @@ export function useScope() {
             "days",
             merged.days === DEFAULT_DAYS ? "" : String(merged.days),
           );
+          syncParam(out, "sprint", merged.sprint ?? "");
           return out;
         },
         { replace: true },
@@ -65,15 +65,24 @@ export function useScope() {
     [setParams],
   );
 
-  /** ISO window derived from the rolling-days preset (sent to the API). */
+  /**
+   * ISO window start (sent to the API), aligned to IST calendar days.
+   *
+   * Calendar-aligned, not a rolling `now - days*86400000`: the activity boards
+   * have always bucketed by IST day, so a rolling window meant the same "last
+   * 30 days" covered a different range here than there, and two boards could
+   * disagree about the same question by a day's work at each edge. One
+   * definition now, shared with the backend's `istWindowFloor`.
+   */
   const from = useMemo(
-    () => new Date(Date.now() - scope.days * 86_400_000).toISOString(),
+    () => istWindowFloor(scope.days).toISOString(),
     [scope.days],
   );
 
   return { scope, setScope, from };
 }
 
+/** The single place the URL is read into a Scope — used by both the hook and its setter. */
 function scopeFromParams(params: URLSearchParams): Scope {
   const days = parseInt(params.get("days") ?? "", 10);
   return {
@@ -83,6 +92,7 @@ function scopeFromParams(params: URLSearchParams): Scope {
     days: TIME_PRESETS.includes(days as (typeof TIME_PRESETS)[number])
       ? days
       : DEFAULT_DAYS,
+    sprint: params.get("sprint") || null,
   };
 }
 

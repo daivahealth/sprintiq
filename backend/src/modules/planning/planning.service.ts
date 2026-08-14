@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Release, Sprint, Story } from '@prisma/client';
 import {
+  PlanningSprintChangeRef,
   PlanningSprintRef,
   PlanningStoryPayload,
   PlanningTransitionRef,
@@ -79,6 +80,12 @@ export class PlanningService implements OnModuleInit {
       connectionId,
       p.externalKey,
       p.transitions ?? [],
+    );
+    await this.recordSprintChanges(
+      event.tenantId,
+      connectionId,
+      p.externalKey,
+      p.sprintChanges ?? [],
     );
 
     const fields = {
@@ -164,6 +171,53 @@ export class PlanningService implements OnModuleInit {
         authorLogin: t.authorLogin ?? null,
         authorName: t.authorName ?? null,
       })),
+      skipDuplicates: true,
+    });
+  }
+
+  /**
+   * Appends the work item's sprint-membership timeline
+   * (`sprint_scope_change`) — one row per sprint touched per changelog entry,
+   * so a move (one entry: removed A, added B) lands as two rows sharing the
+   * changelog id. Same replay contract as `recordTransitions`:
+   * `createMany({ skipDuplicates })` on the
+   * (tenant, connection, changelogId, sprintExternalId) unique key makes a
+   * backfill re-walk, a boundary re-poll and a webhook converge on one row —
+   * a duplicated `added` would double-count scope_creep.
+   */
+  private async recordSprintChanges(
+    tenantId: string,
+    connectionId: string,
+    externalKey: string,
+    changes: PlanningSprintChangeRef[],
+  ): Promise<void> {
+    const rows = changes.flatMap((c) =>
+      [
+        ...c.addedSprintIds.map((sprintExternalId) => ({
+          sprintExternalId,
+          action: 'added',
+        })),
+        ...c.removedSprintIds.map((sprintExternalId) => ({
+          sprintExternalId,
+          action: 'removed',
+        })),
+      ].map((row) => ({
+        id: newId(),
+        tenantId,
+        connectionId,
+        externalKey,
+        changelogId: c.changelogId,
+        changedAt: new Date(c.at),
+        authorLogin: c.authorLogin ?? null,
+        authorName: c.authorName ?? null,
+        ...row,
+      })),
+    );
+    if (rows.length === 0) {
+      return;
+    }
+    await this.prisma.sprintScopeChange.createMany({
+      data: rows,
       skipDuplicates: true,
     });
   }
@@ -320,17 +374,23 @@ export class PlanningService implements OnModuleInit {
   listSprints(
     tenantId: string,
     projectKeys?: string[],
-    state?: string,
+    /** One state, or a set of them — the picker asks for several at once. */
+    state?: string | string[],
   ): Promise<Sprint[]> {
+    const states = typeof state === 'string' ? [state] : (state ?? []);
     return this.prisma.sprint.findMany({
       where: {
         tenantId,
         ...(projectKeys && projectKeys.length > 0
           ? { projectKey: { in: projectKeys } }
           : {}),
-        ...(state ? { state } : {}),
+        ...(states.length > 0 ? { state: { in: states } } : {}),
       },
-      orderBy: [{ endAt: 'desc' }, { name: 'desc' }],
+      // `nulls: 'last'` is load-bearing, not tidiness. Postgres sorts NULLs
+      // FIRST on a descending sort, so an unstarted sprint — which has no
+      // dates at all — outranked every real one and arrived at the top of the
+      // sprint picker, presented ahead of the sprint actually running.
+      orderBy: [{ endAt: { sort: 'desc', nulls: 'last' } }, { name: 'desc' }],
       take: 100,
     });
   }

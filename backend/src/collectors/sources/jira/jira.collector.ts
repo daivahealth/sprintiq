@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Connection } from '@prisma/client';
 import {
   PlanningSprintRef,
+  PlanningSprintChangeRef,
   PlanningStoryPayload,
   PlanningTransitionRef,
 } from '../../../common/events/contracts';
@@ -566,7 +567,17 @@ export class JiraCollector extends BaseSourceCollector {
       schemaVersion: '1.0',
       eventId: newId(),
       // Deterministic so webhook + poll converge on one persisted record.
-      idempotencyKey: `jira:${issueKey}:${eventType}:${occurredAt}`,
+      //
+      // `v2` is a payload-schema generation, bumped when the payload gains a
+      // field that only a re-walk can retro-fill (v2: `sprintChanges`). Under
+      // the unversioned key, re-collecting an issue UNCHANGED at the source
+      // produced the identical key and was dropped before the projector — so
+      // already-stored issues could never receive the new field, precisely on
+      // the history a re-backfill exists to recover. One re-ingestion wave per
+      // bump: v1 raw events stay (append-only log), every projector write is
+      // idempotent on natural keys, and future webhook/poll duplicates still
+      // converge within v2.
+      idempotencyKey: `jira:v2:${issueKey}:${eventType}:${occurredAt}`,
       sourceSystem: 'jira',
       connectionId: connection.id,
       collectionMode: mode,
@@ -624,6 +635,7 @@ export class JiraCollector extends BaseSourceCollector {
       status: status?.name ?? 'unknown',
       statusCategory: status?.statusCategory?.key ?? undefined,
       transitions: parseTransitions(changelog, statusCategories),
+      sprintChanges: parseSprintChanges(changelog, sprintFieldId),
       storyPoints: firstNumeric(fields, storyPointsFieldIds),
       title: typeof fields.summary === 'string' ? fields.summary : '',
       epicKey,
@@ -689,6 +701,68 @@ function parseTransitions(
     });
   }
   return transitions.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * Sprint-membership changes out of a Jira change log, oldest first.
+ *
+ * Jira's Sprint field ACCRETES history: moving a story to the next sprint
+ * appends the new sprint's id to a comma-separated list rather than replacing
+ * it, and removal (back to backlog) drops an id. So the usable event is the
+ * DIFF between `from` and `to`, not either value — and it is taken over the
+ * raw id lists, never `fromString`/`toString`, because sprint names may
+ * themselves contain commas and an unsplittable name list would corrupt the
+ * diff. Matching mirrors `parseTransitions`: the display name `Sprint` OR the
+ * site's resolved custom-field id, since Jira populates them inconsistently.
+ *
+ * A story created directly INTO a sprint produces no changelog entry at all —
+ * membership-from-birth is inferred at read time from the story's
+ * `sourceCreatedAt` plus the absence of an `added` event (DATA-MODEL.md §4).
+ */
+function parseSprintChanges(
+  changelog: JiraChangelogEntry[],
+  sprintFieldId?: string | null,
+): PlanningSprintChangeRef[] {
+  const changes: PlanningSprintChangeRef[] = [];
+  for (const entry of changelog) {
+    const item = (entry.items ?? []).find(
+      (i) =>
+        i.field === 'Sprint' ||
+        (sprintFieldId ? i.fieldId === sprintFieldId : false),
+    );
+    if (!item || !entry.id || typeof entry.created !== 'string') {
+      continue;
+    }
+    const fromIds = splitIdList(item.from);
+    const toIds = splitIdList(item.to);
+    const addedSprintIds = toIds.filter((id) => !fromIds.includes(id));
+    const removedSprintIds = fromIds.filter((id) => !toIds.includes(id));
+    // An entry that changed nothing (or whose ids were unparseable) carries no
+    // event — recording it would put an empty change in the timeline.
+    if (addedSprintIds.length === 0 && removedSprintIds.length === 0) {
+      continue;
+    }
+    changes.push({
+      changelogId: String(entry.id),
+      addedSprintIds,
+      removedSprintIds,
+      at: entry.created,
+      authorLogin: entry.author?.accountId ?? undefined,
+      authorName: entry.author?.displayName ?? undefined,
+    });
+  }
+  return changes.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/** Comma-separated id list ("5, 7") → trimmed non-empty ids. */
+function splitIdList(value: string | null | undefined): string[] {
+  if (typeof value !== 'string' || value.length === 0) {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
 }
 
 /**

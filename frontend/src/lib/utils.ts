@@ -28,6 +28,23 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
  * or the axis and the data it's zero-filling against will disagree on what
  * "today" means.
  */
+/**
+ * The UTC instant of IST midnight `windowDays - 1` days ago — the start of a
+ * calendar-aligned window ending today.
+ *
+ * Mirrors the backend's `istWindowFloor` exactly. This is the app's ONE window
+ * definition: before it, the Scope Bar sent a rolling `now - days*86400000`
+ * while the activity boards used IST calendar days, so "last 7 days" denoted
+ * two different ranges depending on which board you were reading, differing by
+ * up to a full day at each edge.
+ */
+export function istWindowFloor(windowDays: number): Date {
+  const todayIst = new Date(Date.now() + IST_OFFSET_MS);
+  todayIst.setUTCHours(0, 0, 0, 0);
+  const istMidnightUtc = new Date(todayIst.getTime() - IST_OFFSET_MS);
+  return new Date(istMidnightUtc.getTime() - (windowDays - 1) * 86_400_000);
+}
+
 export function istDayAxis(windowDays: number): string[] {
   const todayIst = new Date(Date.now() + IST_OFFSET_MS);
   todayIst.setUTCHours(0, 0, 0, 0);
@@ -38,6 +55,23 @@ export function istDayAxis(windowDays: number): string[] {
     );
   }
   return out;
+}
+
+/**
+ * How many day-labels to skip on a chart's x-axis so they don't collide.
+ *
+ * Thinning only kicks in once labels would actually overlap. The previous rule
+ * was an unconditional `ceil(days / 6)`, tuned for the 30-day view and never
+ * reconsidered for shorter ones — at 7 days it returned 2 and dropped three of
+ * the week's seven dates for no reason, since seven `MM-DD` labels fit across
+ * the axis with room to spare.
+ */
+export function dayLabelStride(dayCount: number): number {
+  const MAX_LABELS_THAT_FIT = 10;
+  if (dayCount <= MAX_LABELS_THAT_FIT) {
+    return 1;
+  }
+  return Math.ceil(dayCount / 6);
 }
 
 /** Hours → compact "Xh"/"Yd Zh" label. */

@@ -4,6 +4,7 @@ import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
 import { BackfillSchedulerService } from './scheduler/backfill-scheduler.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
+import { GithubCommitMessageReconcilerService } from './sources/github/github-commit-message-reconciler.service';
 import { GithubCommitReconcilerService } from './sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from './sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from './sources/github/github-pr-reconciler.service';
@@ -33,6 +34,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubClient,
     GithubCollector,
     GithubOrgSyncService,
+    GithubCommitMessageReconcilerService,
     GithubCommitReconcilerService,
     GithubPrReconcilerService,
     GithubReviewReconcilerService,
@@ -45,6 +47,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
   exports: [
     IngestionService,
     GithubOrgSyncService,
+    GithubCommitMessageReconcilerService,
     GithubCommitReconcilerService,
     GithubPrReconcilerService,
     GithubReviewReconcilerService,

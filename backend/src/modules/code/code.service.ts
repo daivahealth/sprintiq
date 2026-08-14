@@ -13,6 +13,18 @@ import { EventBus } from '../../common/events/event-bus';
 import { newId } from '../../common/id';
 import { PrismaService } from '../../database/prisma.service';
 
+/**
+ * Ceiling on a single commit-activity read.
+ *
+ * A bound is still needed — these rows are loaded into memory and summed — but
+ * the old 2,000 was low enough that an ordinary month of work on one mid-sized
+ * org approached it. Raised, and paired with an explicit `truncated` signal so
+ * that reaching it is reported rather than quietly changing the answer. If a
+ * tenant starts tripping this regularly the real fix is aggregating in SQL
+ * instead of loading rows at all.
+ */
+const COMMIT_READ_LIMIT = 20_000;
+
 /** Filters for commit activity reads (project/developer activity boards). */
 export interface CommitFilters {
   repos?: string[];
@@ -383,9 +395,20 @@ export class CodeService implements OnModuleInit {
     });
   }
 
-  /** Commit activity read (project/developer activity boards). */
-  listCommits(tenantId: string, filters: CommitFilters): Promise<Commit[]> {
-    return this.prisma.commit.findMany({
+  /**
+   * Commit activity read (project/developer activity boards).
+   *
+   * Returns whether the read hit its ceiling, because these rows are summed
+   * into totals rather than paged through: a silently-truncated read reports a
+   * smaller number and still presents it as the whole window. The tenant this
+   * was found on sat at ~70% of the old 2,000-row cap on a 30-day window, so it
+   * was months from under-reporting with nothing on screen to say so.
+   */
+  async listCommitsPage(
+    tenantId: string,
+    filters: CommitFilters,
+  ): Promise<{ commits: Commit[]; truncated: boolean }> {
+    const rows = await this.prisma.commit.findMany({
       where: {
         tenantId,
         ...(filters.repos && filters.repos.length > 0
@@ -400,8 +423,22 @@ export class CodeService implements OnModuleInit {
         },
       },
       orderBy: { committedAt: 'desc' },
-      take: 2000,
+      // One more than the ceiling: the extra row is how we KNOW there was more,
+      // rather than inferring it from a count that happens to equal the limit.
+      take: COMMIT_READ_LIMIT + 1,
     });
+    return {
+      commits: rows.slice(0, COMMIT_READ_LIMIT),
+      truncated: rows.length > COMMIT_READ_LIMIT,
+    };
+  }
+
+  /** Commit activity read, when the caller doesn't need the truncation signal. */
+  async listCommits(
+    tenantId: string,
+    filters: CommitFilters,
+  ): Promise<Commit[]> {
+    return (await this.listCommitsPage(tenantId, filters)).commits;
   }
 
   /** Distinct commit/PR authors — the developer picker catalog. */
@@ -433,6 +470,27 @@ export class CodeService implements OnModuleInit {
     return [...logins]
       .filter((l) => !needle || l.toLowerCase().includes(needle))
       .sort();
+  }
+
+  /**
+   * EVERY repository known to this tenant — the scope resolver's input.
+   *
+   * Deliberately unpaginated, unlike `listRepos`. Scope resolution was reusing
+   * the picker's first page, so a board with no explicit repo filter silently
+   * measured the alphabetically-first 50 repos and presented the result as the
+   * whole tenant. At the ~200 repos this product is specified for that is a
+   * three-quarters truncation with nothing on screen to indicate it. A list of
+   * repo names is small; the pagination existed for the picker's UI, not for
+   * correctness.
+   */
+  async listAllRepos(tenantId: string): Promise<string[]> {
+    const rows = await this.prisma.pullRequest.findMany({
+      where: { tenantId },
+      distinct: ['repoFullName'],
+      select: { repoFullName: true },
+      orderBy: { repoFullName: 'asc' },
+    });
+    return rows.map((r) => r.repoFullName);
   }
 
   /** Distinct repositories known to this tenant (catalog for pickers/explorer). */

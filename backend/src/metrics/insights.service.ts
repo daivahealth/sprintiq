@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PullRequest, Sprint, Story } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
-import { istDateKey } from '../common/time';
+import { istDateKey, istWeekKey } from '../common/time';
 import { CorrelationService } from '../correlation/correlation.service';
 import {
   AttributionCoverage,
   DeveloperIdentityService,
 } from '../correlation/developer-identity.service';
 import { CodeService } from '../modules/code/code.service';
+import { ConnectionsService } from '../modules/connections/connections.service';
 import {
   DONE_STATUSES,
   PlanningService,
@@ -63,6 +64,27 @@ export interface SprintHealthView {
   byType: { type: string; total: number; done: number }[];
 }
 
+/**
+ * A sprint Jira still calls active whose end date is long past — surfaced so
+ * someone closes it, rather than silently dropped or silently counted.
+ */
+export interface StaleSprint {
+  sprint: SprintSummary;
+  daysPastEnd: number;
+}
+
+export interface ActiveSprintsHealthView {
+  rows: SprintHealthView[];
+  stale: StaleSprint[];
+  staleGraceDays: number;
+}
+
+export interface ActiveSprintsRiskView {
+  rows: SprintRiskView[];
+  stale: StaleSprint[];
+  staleGraceDays: number;
+}
+
 export interface SprintRiskView {
   sprint: SprintSummary;
   openWithoutCode: WorkItemView[];
@@ -75,7 +97,66 @@ export interface VelocityRow {
   sprint: SprintSummary;
   committedPoints: number;
   completedPoints: number;
+  itemsTotal: number;
   itemsDone: number;
+  /**
+   * Items carrying no estimate. These are invisible to `committedPoints` and
+   * `completedPoints` entirely, so without this the points figures look like
+   * they describe the sprint when they describe a subset of it.
+   */
+  unestimatedItems: number;
+  /** Share of the sprint's items that carry an estimate at all. */
+  estimateCoveragePct: number | null;
+  /**
+   * Still running. Its points are partial by definition and comparing them to
+   * a finished sprint's understates it — shown, but never averaged into
+   * velocity and never fed to the forecast.
+   */
+  inProgress: boolean;
+  /** How far through its own window, for reading a partial sprint fairly. */
+  elapsedPct: number | null;
+  /**
+   * The sprint ended before the Jira collection floor, so only the few of its
+   * items touched since then were ever fetched — its counts are a fraction of
+   * what the sprint actually held. Shown, but never averaged: on a real project
+   * this dragged the reported velocity from 475 items per sprint to 241, and
+   * made Velocity and Forecasting disagree by 2x purely because one sampled six
+   * sprints across the floor and the other sampled three inside it.
+   */
+  beyondHorizon: boolean;
+}
+
+/**
+ * Velocity for ONE project. Velocity is only meaningful within a project —
+ * teams estimate on their own scales, so pooling sprints from several projects
+ * into one series produces a chart whose bars cannot be compared to each other.
+ */
+export interface ProjectVelocity {
+  projectKey: string;
+  /** Current → past: the in-flight sprint first, then closed ones newest-first. */
+  rows: VelocityRow[];
+  /** Mean over CLOSED sprints only. */
+  avgCompletedPoints: number | null;
+  /** Mean items completed over closed sprints — see `pointsReliable`. */
+  avgCompletedItems: number | null;
+  /** Closed sprints the averages are actually built from (horizon-excluded ones aren't). */
+  closedSprintsSampled: number;
+  /**
+   * Sprints shown but excluded from the averages because they closed before the
+   * collection floor. Non-zero means this project's history predates the data,
+   * and deepening the backfill window is what fixes it.
+   */
+  sprintsBeyondHorizon: number;
+  /** Estimate coverage across the sampled closed sprints. */
+  estimateCoveragePct: number | null;
+  /**
+   * False when too few items carry estimates for the points figures to describe
+   * the sprint. On a real project this read 25%: three-quarters of the work was
+   * unestimated, the completed items were overwhelmingly the unestimated ones,
+   * and "velocity" came out at ~2% of committed points while 76% of the sprint's
+   * items were finished. Throughput is the honest signal at that coverage.
+   */
+  pointsReliable: boolean;
 }
 
 export interface ForecastView {
@@ -88,6 +169,26 @@ export interface ForecastView {
   sprintsNeeded: number | null;
   projectedDate: string | null;
   assumedSprintDays: number;
+  /**
+   * The same projection run on item counts instead of points.
+   *
+   * Present because a points projection is only as good as its estimates. Where
+   * most of the backlog is unestimated, the points forecast silently answers a
+   * different question — "when will the estimated quarter be done?" — while the
+   * item forecast still answers the one that was asked.
+   */
+  avgVelocityItems: number | null;
+  sprintsNeededByItems: number | null;
+  projectedDateByItems: string | null;
+  /** Estimate coverage of the sampled sprints. */
+  estimateCoveragePct: number | null;
+  /**
+   * False when coverage is too low for the points projection to mean anything.
+   * On a real project the points path produced ~181 sprints (about 15 years)
+   * purely because the completed work was the unestimated work; the item path
+   * on the same data is an ordinary number.
+   */
+  pointsReliable: boolean;
 }
 
 export interface ProductivityWeek {
@@ -270,6 +371,12 @@ export interface ProjectActivityView {
   rows: ProjectActivityRow[];
   /** How much of the window's commit volume is attributable at all. */
   attribution: AttributionCoverage;
+  /**
+   * True when the underlying commit read hit its ceiling, so these totals cover
+   * only the most recent slice of the window. Reported rather than silently
+   * changing every number on the board.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -287,6 +394,28 @@ export interface DeveloperIdentityNote {
   recoveredEmails: string[];
   /** True when any figure below rests on an inferred identity, not a source-resolved one. */
   inferred: boolean;
+}
+
+/**
+ * Team-level daily commit log: who committed each day, with counts.
+ * Activity context, not a ranking — developers are returned alphabetically
+ * within each day; a volume sort is the reader's explicit act in the UI
+ * (DASHBOARDS.md §4.1.3).
+ */
+export interface DailyDeveloperActivityView {
+  /** Newest day first. */
+  days: {
+    /** IST date key (istDateKey). */
+    date: string;
+    totalCommits: number;
+    /** Alphabetical by displayName. */
+    developers: { developer: string; displayName: string; commits: number }[];
+    /** Commits matching no known identity — disclosed, never dropped or guessed. */
+    unattributedCommits: number;
+  }[];
+  totals: { commits: number; activeDevelopers: number };
+  /** The read hit its ceiling — the window is under-reported and says so. */
+  truncated: boolean;
 }
 
 export interface DeveloperActivityView {
@@ -326,6 +455,45 @@ export interface DeveloperActivityView {
 const DEFAULT_SPRINT_DAYS = 14;
 
 /**
+ * How far past its own end date a sprint can still be called "active" before we
+ * stop believing the label.
+ *
+ * Jira's `state` is whatever someone last set; nothing closes a sprint
+ * automatically. A team that stops using a board leaves its final sprint
+ * `active` forever — on this tenant one had been "active" for over four years,
+ * and it rendered as a live card at 100% elapsed, 0 days remaining, pace
+ * "behind", permanently, next to the sprint actually running.
+ *
+ * The grace period exists because running a few days past the planned end is
+ * ordinary; four years is not. Stale sprints are reported separately rather
+ * than dropped — the sprint is real and someone should close it in Jira, so
+ * hiding it would trade a misleading card for a silent omission.
+ */
+const STALE_ACTIVE_SPRINT_GRACE_DAYS = 14;
+
+/**
+ * Estimate coverage below which story points stop describing a sprint.
+ *
+ * Not a stylistic threshold — on a real project this read 25%: three-quarters
+ * of items carried no estimate, the items actually being completed were
+ * overwhelmingly those unestimated ones, and "completed points" came out at
+ * ~2% of committed while 76% of the sprint's items were finished. A velocity
+ * chart built on that is not a pessimistic reading, it is a different quantity
+ * wearing velocity's label. Above the floor the points are worth trusting;
+ * below it the board leads with throughput and says why.
+ */
+const MIN_ESTIMATE_COVERAGE_PCT = 70;
+
+/** True when Jira still calls this sprint active but its end date is long past. */
+function isStaleActive(sprint: Sprint, now = Date.now()): boolean {
+  if (sprint.state !== 'active' || !sprint.endAt) {
+    return false;
+  }
+  const daysPast = (now - sprint.endAt.getTime()) / 86_400_000;
+  return daysPast > STALE_ACTIVE_SPRINT_GRACE_DAYS;
+}
+
+/**
  * BC-8 insight read models behind the common dashboards (Sprint Health, Sprint
  * Risk, Velocity, Forecast, Productivity, Efficiency) plus work-item detailing
  * at every granularity (story/bug/subtask/epic/developer/release/sprint) with
@@ -340,6 +508,7 @@ export class InsightsService {
     private readonly code: CodeService,
     private readonly correlation: CorrelationService,
     private readonly identities: DeveloperIdentityService,
+    private readonly connections: ConnectionsService,
   ) {}
 
   /** Work-item detail rows (any granularity) with linked PRs per item. */
@@ -367,15 +536,22 @@ export class InsightsService {
    */
   async activeSprintsHealth(
     projectKeys: string[],
-  ): Promise<SprintHealthView[]> {
+  ): Promise<ActiveSprintsHealthView> {
     const tenantId = this.tenantContext.requireTenantId();
     const sprints = await this.planning.listSprints(
       tenantId,
       projectKeys,
       'active',
     );
+    // Split before computing: a sprint that ended years ago is not a live
+    // lifecycle, and ranking it against real ones by "pace" is meaningless —
+    // it is 100% elapsed by definition, so it always sorts to the top of a
+    // worst-first list and pushes the sprint that needs attention down.
+    const live = sprints.filter((s) => !isStaleActive(s));
+    const stale = sprints.filter((s) => isStaleActive(s));
+
     const views = await Promise.all(
-      sprints.map((s) => this.buildSprintHealth(tenantId, s)),
+      live.map((s) => this.buildSprintHealth(tenantId, s)),
     );
     const paceRank: Record<SprintPace, number> = {
       behind: 0,
@@ -383,11 +559,15 @@ export class InsightsService {
       unknown: 2,
       'on-track': 3,
     };
-    return views.sort(
-      (a, b) =>
-        paceRank[a.pace] - paceRank[b.pace] ||
-        (a.completionPct ?? 0) - (b.completionPct ?? 0),
-    );
+    return {
+      rows: views.sort(
+        (a, b) =>
+          paceRank[a.pace] - paceRank[b.pace] ||
+          (a.completionPct ?? 0) - (b.completionPct ?? 0),
+      ),
+      stale: stale.map(toStaleSprint),
+      staleGraceDays: STALE_ACTIVE_SPRINT_GRACE_DAYS,
+    };
   }
 
   private async buildSprintHealth(
@@ -451,22 +631,34 @@ export class InsightsService {
    * Risk for EVERY active sprint in scope (multi-project lifecycles), ranked
    * most-at-risk-first — the default view mirrors activeSprintsHealth.
    */
-  async activeSprintsRisk(projectKeys: string[]): Promise<SprintRiskView[]> {
+  async activeSprintsRisk(
+    projectKeys: string[],
+  ): Promise<ActiveSprintsRiskView> {
     const tenantId = this.tenantContext.requireTenantId();
     const sprints = await this.planning.listSprints(
       tenantId,
       projectKeys,
       'active',
     );
+    // Same split as activeSprintsHealth — an abandoned sprint's open items are
+    // not "at risk", they are simply never going to be done, and ranking them
+    // first buries the sprint someone can still act on.
+    const live = sprints.filter((s) => !isStaleActive(s));
+    const stale = sprints.filter((s) => isStaleActive(s));
+
     const views = await Promise.all(
-      sprints.map((s) => this.buildSprintRisk(tenantId, s)),
+      live.map((s) => this.buildSprintRisk(tenantId, s)),
     );
-    return views.sort(
-      (a, b) =>
-        b.atRiskPoints - a.atRiskPoints ||
-        b.openWithoutCode.length - a.openWithoutCode.length ||
-        b.openBugs - a.openBugs,
-    );
+    return {
+      rows: views.sort(
+        (a, b) =>
+          b.atRiskPoints - a.atRiskPoints ||
+          b.openWithoutCode.length - a.openWithoutCode.length ||
+          b.openBugs - a.openBugs,
+      ),
+      stale: stale.map(toStaleSprint),
+      staleGraceDays: STALE_ACTIVE_SPRINT_GRACE_DAYS,
+    };
   }
 
   private async buildSprintRisk(
@@ -489,27 +681,98 @@ export class InsightsService {
     };
   }
 
-  /** Completed vs committed points per closed sprint (most recent first). */
-  async velocity(projectKeys: string[], limit = 6): Promise<VelocityRow[]> {
+  /**
+   * Velocity, grouped by project and ordered current → past.
+   *
+   * Grouped because velocity does not survive being pooled: each team estimates
+   * on its own scale, so a single series mixing several projects' sprints
+   * invites comparisons between bars that mean different things. The in-flight
+   * sprint leads each group so the board answers "how are we doing now?" before
+   * "how did we do?", but it is excluded from every average — a sprint halfway
+   * through has completed half its work by definition.
+   */
+  async velocity(projectKeys: string[], limit = 6): Promise<ProjectVelocity[]> {
     const tenantId = this.tenantContext.requireTenantId();
-    const sprints = (
-      await this.planning.listSprints(tenantId, projectKeys, 'closed')
-    ).slice(0, limit);
+    const sprints = await this.planning.listSprints(tenantId, projectKeys);
+    // Nothing before this was ever collected, so a sprint that closed earlier
+    // holds only whatever has been touched since — see `beyondHorizon`.
+    const horizon = await this.jiraHorizon(tenantId);
 
-    const rows: VelocityRow[] = [];
+    const byProject = new Map<string, Sprint[]>();
     for (const sprint of sprints) {
-      const items = (
-        await this.planning.listItemsForSprint(tenantId, sprint.externalId)
-      ).filter((i) => i.type !== 'epic');
-      const done = items.filter((i) => isDone(i));
-      rows.push({
-        sprint: toSprintSummary(sprint),
-        committedPoints: sumStoryPoints(items),
-        completedPoints: sumStoryPoints(done),
-        itemsDone: done.length,
-      });
+      // `future` sprints have no dates and nothing in them — there is no
+      // velocity to report for work that hasn't started.
+      if (sprint.state === 'future' || isStaleActive(sprint)) {
+        continue;
+      }
+      byProject.set(sprint.projectKey, [
+        ...(byProject.get(sprint.projectKey) ?? []),
+        sprint,
+      ]);
     }
-    return rows;
+
+    const out: ProjectVelocity[] = [];
+    for (const [projectKey, projectSprints] of byProject) {
+      // listSprints already orders endAt desc; the running sprint ends latest
+      // so it naturally leads, but sort explicitly rather than rely on that.
+      const ordered = [...projectSprints].sort(
+        (a, b) =>
+          Number(b.state === 'active') - Number(a.state === 'active') ||
+          (b.endAt?.getTime() ?? 0) - (a.endAt?.getTime() ?? 0),
+      );
+      // The limit counts CLOSED sprints, so adding the in-flight one never
+      // pushes a closed sprint out of the history it is meant to show.
+      const active = ordered.filter((s) => s.state === 'active');
+      const closed = ordered
+        .filter((s) => s.state !== 'active')
+        .slice(0, limit);
+
+      const rows: VelocityRow[] = [];
+      for (const sprint of [...active, ...closed]) {
+        rows.push(await this.buildVelocityRow(tenantId, sprint, horizon));
+      }
+      out.push(summarizeVelocity(projectKey, rows));
+    }
+
+    // Projects with the most recent activity first — with 17 projects carrying
+    // sprints and most holding exactly one, recency is what makes the top of
+    // the page the part worth reading.
+    return out.sort(
+      (a, b) =>
+        (latestEnd(b.rows) ?? 0) - (latestEnd(a.rows) ?? 0) ||
+        a.projectKey.localeCompare(b.projectKey),
+    );
+  }
+
+  /** Newest Jira backfill floor — the point before which coverage stops. */
+  private async jiraHorizon(tenantId: string): Promise<Date | null> {
+    const horizon = await this.connections.getDataHorizon(tenantId);
+    return horizon.jira ? new Date(horizon.jira) : null;
+  }
+
+  private async buildVelocityRow(
+    tenantId: string,
+    sprint: Sprint,
+    horizon: Date | null,
+  ): Promise<VelocityRow> {
+    const items = (
+      await this.planning.listItemsForSprint(tenantId, sprint.externalId)
+    ).filter((i) => i.type !== 'epic');
+    const done = items.filter((i) => isDone(i));
+    const estimated = items.filter((i) => i.storyPoints !== null);
+
+    return {
+      sprint: toSprintSummary(sprint),
+      committedPoints: sumStoryPoints(items),
+      completedPoints: sumStoryPoints(done),
+      itemsTotal: items.length,
+      itemsDone: done.length,
+      unestimatedItems: items.length - estimated.length,
+      estimateCoveragePct: pct(estimated.length, items.length),
+      inProgress: sprint.state === 'active',
+      elapsedPct: sprintElapsedPct(sprint),
+      beyondHorizon: Boolean(horizon && sprint.endAt && sprint.endAt < horizon),
+    };
   }
 
   /** Naive-but-honest forecast: avg velocity of closed sprints vs open backlog. */
@@ -522,36 +785,55 @@ export class InsightsService {
 
     const out: ForecastView[] = [];
     for (const projectKey of projects) {
-      const velocityRows = await this.velocity([projectKey], 3);
-      const sampled = velocityRows.filter((r) => r.completedPoints > 0);
-      const avg =
-        sampled.length > 0
-          ? sampled.reduce((s, r) => s + r.completedPoints, 0) / sampled.length
-          : null;
+      const [group] = await this.velocity([projectKey], 3);
+      // Closed sprints only. `velocity` now leads each project with the
+      // in-flight sprint, whose partial completion would otherwise drag the
+      // average down by however far through it happens to be today.
+      const closed = (group?.rows ?? []).filter((r) => !r.inProgress);
+      // `committedPoints > 0`, not `completedPoints > 0`: a sprint that had
+      // estimated work and finished none of it is a real zero and belongs in
+      // the average; a sprint nobody estimated has no velocity to contribute.
+      // Matches `summarizeVelocity` so both boards quote the same figure.
+      const pointSample = closed.filter((r) => r.committedPoints > 0);
+      const itemSample = closed.filter((r) => r.itemsTotal > 0);
+
+      const avgPoints = meanOf(pointSample.map((r) => r.completedPoints));
+      const avgItems = meanOf(itemSample.map((r) => r.itemsDone));
 
       const backlog = await this.planning.listOpenBacklog(tenantId, [
         projectKey,
       ]);
       const remainingPoints = sumStoryPoints(backlog);
       const sprintDays = await this.avgSprintDays(tenantId, projectKey);
+
       const sprintsNeeded =
-        avg && avg > 0 ? Math.ceil(remainingPoints / avg) : null;
+        avgPoints && avgPoints > 0
+          ? Math.ceil(remainingPoints / avgPoints)
+          : null;
+      const sprintsNeededByItems =
+        avgItems && avgItems > 0 ? Math.ceil(backlog.length / avgItems) : null;
+      const projectDate = (sprints: number | null) =>
+        sprints === null
+          ? null
+          : new Date(
+              Date.now() + sprints * sprintDays * 86_400_000,
+            ).toISOString();
 
       out.push({
         projectKey,
-        sprintsSampled: sampled.length,
-        avgVelocityPoints: avg === null ? null : Number(avg.toFixed(1)),
+        sprintsSampled: pointSample.length,
+        avgVelocityPoints: avgPoints,
         remainingPoints,
         remainingItems: backlog.length,
         unestimatedItems: backlog.filter((b) => b.storyPoints === null).length,
         sprintsNeeded,
-        projectedDate:
-          sprintsNeeded === null
-            ? null
-            : new Date(
-                Date.now() + sprintsNeeded * sprintDays * 86_400_000,
-              ).toISOString(),
+        projectedDate: projectDate(sprintsNeeded),
         assumedSprintDays: sprintDays,
+        avgVelocityItems: avgItems,
+        sprintsNeededByItems,
+        projectedDateByItems: projectDate(sprintsNeededByItems),
+        estimateCoveragePct: group?.estimateCoveragePct ?? null,
+        pointsReliable: group?.pointsReliable ?? false,
       });
     }
     return out;
@@ -582,12 +864,11 @@ export class InsightsService {
     ).filter((pr) => pr.mergedAt);
 
     const weeks = new Map<string, ProductivityWeek>();
-    const bucket = (d: Date) => {
-      const day = new Date(d);
-      day.setUTCHours(0, 0, 0, 0);
-      day.setUTCDate(day.getUTCDate() - day.getUTCDay()); // week starts Sunday
-      return day.toISOString().slice(0, 10);
-    };
+    // Weeks start on the IST Sunday, not the UTC one. Bucketing on UTC put
+    // work done on a Sunday morning IST into the previous week, and made this
+    // the third date convention in the app alongside the IST activity boards
+    // and the (now also IST) scope window.
+    const bucket = (d: Date) => istWeekKey(d);
     const ensure = (w: string) => {
       const cur = weeks.get(w) ?? {
         weekStart: w,
@@ -1025,7 +1306,10 @@ export class InsightsService {
     const tenantId = this.tenantContext.requireTenantId();
     const end = to ?? new Date();
     const repoToProjects = await this.repoToProjects(tenantId);
-    const commits = await this.code.listCommits(tenantId, { from, to: end });
+    const { commits, truncated } = await this.code.listCommitsPage(tenantId, {
+      from,
+      to: end,
+    });
     const attribution = await this.identities.attributionCoverage(
       tenantId,
       from,
@@ -1107,7 +1391,91 @@ export class InsightsService {
       }))
       .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
 
-    return { rows, attribution };
+    return { rows, attribution, truncated };
+  }
+
+  /**
+   * Daily commit log for the whole scope: which developers committed on each
+   * day, with counts (activity context, not ranking — see the view's contract).
+   *
+   * Attribution runs through the identity map in bulk (`attributionIndex`),
+   * so a commit whose email GitHub never verified still counts under the
+   * right person — the same resolution that fixed the per-developer profile.
+   * A login the map hasn't resolved yet still counts as itself; only commits
+   * with neither a known login nor a known email land in `unattributedCommits`.
+   */
+  async dailyCommitActivity(
+    repos: string[],
+    from: Date,
+    to?: Date,
+  ): Promise<DailyDeveloperActivityView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const [{ commits, truncated }, index] = await Promise.all([
+      this.code.listCommitsPage(tenantId, {
+        ...(repos.length > 0 ? { repos } : {}),
+        from,
+        to: to ?? new Date(),
+      }),
+      this.identities.attributionIndex(tenantId),
+    ]);
+
+    interface DayAcc {
+      total: number;
+      unattributed: number;
+      byDeveloper: Map<string, number>;
+    }
+    const byDay = new Map<string, DayAcc>();
+    const activeDevelopers = new Set<string>();
+
+    for (const c of commits) {
+      const day = istDateKey(c.committedAt ?? c.authoredAt);
+      const acc = byDay.get(day) ?? {
+        total: 0,
+        unattributed: 0,
+        byDeveloper: new Map<string, number>(),
+      };
+      acc.total += 1;
+
+      // A login is an identity even before the resolution pass has seen it;
+      // only a commit with neither a known login nor a known email is
+      // genuinely unattributable.
+      const person = c.authorLogin
+        ? (index.byLogin.get(c.authorLogin) ?? c.authorLogin)
+        : c.authorEmail
+          ? index.byEmail.get(c.authorEmail.toLowerCase())
+          : undefined;
+      if (person) {
+        acc.byDeveloper.set(person, (acc.byDeveloper.get(person) ?? 0) + 1);
+        activeDevelopers.add(person);
+      } else {
+        acc.unattributed += 1;
+      }
+      byDay.set(day, acc);
+    }
+
+    return {
+      days: [...byDay.entries()]
+        .map(([date, acc]) => ({
+          date,
+          totalCommits: acc.total,
+          developers: [...acc.byDeveloper.entries()]
+            .map(([developer, count]) => ({
+              developer,
+              displayName: index.displayNames.get(developer) ?? developer,
+              commits: count,
+            }))
+            // Alphabetical by design (CLAUDE.md — no volume ranking); any
+            // re-sort is the reader's explicit act in the UI.
+            .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+          unattributedCommits: acc.unattributed,
+        }))
+        .sort((a, b) => b.date.localeCompare(a.date)),
+      totals: {
+        commits: commits.length,
+        activeDevelopers: activeDevelopers.size,
+      },
+      truncated,
+    };
   }
 
   /** GitHub-style activity profile for one developer (activity context, not ranking). */
@@ -1315,6 +1683,68 @@ function sumStoryPoints(items: Story[]): number {
   return items.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
 }
 
+/** Newest sprint end in a group — used to float recently-active projects up. */
+function latestEnd(rows: VelocityRow[]): number | null {
+  const ends = rows
+    .map((r) => (r.sprint.endAt ? Date.parse(r.sprint.endAt) : null))
+    .filter((t): t is number => t !== null);
+  return ends.length > 0 ? Math.max(...ends) : null;
+}
+
+/**
+ * Project-level averages, over CLOSED sprints only.
+ *
+ * The in-flight sprint is deliberately excluded: it has completed a fraction of
+ * its work because it is a fraction of the way through, and averaging that
+ * against finished sprints drags the mean down by an amount that depends
+ * entirely on what day you happen to load the page.
+ */
+function summarizeVelocity(
+  projectKey: string,
+  rows: VelocityRow[],
+): ProjectVelocity {
+  // Two exclusions, both about not averaging a number that isn't one:
+  // an in-progress sprint is partial by definition, and a sprint that closed
+  // before the collection floor holds only the few items touched since.
+  const closed = rows.filter((r) => !r.inProgress && !r.beyondHorizon);
+  // A sprint where nothing was estimated has no velocity — not a velocity of
+  // zero. Averaging those in would report a team as slowing down when all that
+  // changed is that they stopped estimating. Same predicate as `forecast`, so
+  // the two boards can't quote different averages for the same project.
+  const measurable = closed.filter((r) => r.committedPoints > 0);
+  const mean = (values: number[]): number | null =>
+    values.length > 0
+      ? Number((values.reduce((a, b) => a + b, 0) / values.length).toFixed(1))
+      : null;
+
+  const itemsTotal = closed.reduce((s, r) => s + r.itemsTotal, 0);
+  const estimated = closed.reduce(
+    (s, r) => s + (r.itemsTotal - r.unestimatedItems),
+    0,
+  );
+  const coverage = pct(estimated, itemsTotal);
+
+  return {
+    projectKey,
+    rows,
+    avgCompletedPoints: mean(measurable.map((r) => r.completedPoints)),
+    avgCompletedItems: mean(closed.map((r) => r.itemsDone)),
+    closedSprintsSampled: closed.length,
+    sprintsBeyondHorizon: rows.filter((r) => r.beyondHorizon).length,
+    estimateCoveragePct: coverage,
+    pointsReliable: coverage !== null && coverage >= MIN_ESTIMATE_COVERAGE_PCT,
+  };
+}
+
+function toStaleSprint(sprint: Sprint): StaleSprint {
+  return {
+    sprint: toSprintSummary(sprint),
+    daysPastEnd: sprint.endAt
+      ? Math.floor((Date.now() - sprint.endAt.getTime()) / 86_400_000)
+      : 0,
+  };
+}
+
 function toSprintSummary(sprint: Sprint): SprintSummary {
   return {
     externalId: sprint.externalId,
@@ -1324,6 +1754,12 @@ function toSprintSummary(sprint: Sprint): SprintSummary {
     startAt: sprint.startAt ? sprint.startAt.toISOString() : null,
     endAt: sprint.endAt ? sprint.endAt.toISOString() : null,
   };
+}
+
+function meanOf(values: number[]): number | null {
+  return values.length > 0
+    ? Number((values.reduce((a, b) => a + b, 0) / values.length).toFixed(1))
+    : null;
 }
 
 function pct(part: number, total: number): number | null {

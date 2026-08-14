@@ -30,6 +30,7 @@ describe('PlanningService — status-transition timeline', () => {
     sprint: { upsert: jest.Mock };
     release: { upsert: jest.Mock };
     issueStatusHistory: { createMany: jest.Mock };
+    sprintScopeChange: { createMany: jest.Mock };
   };
   let service: PlanningService;
 
@@ -43,6 +44,7 @@ describe('PlanningService — status-transition timeline', () => {
       sprint: { upsert: jest.fn().mockResolvedValue({}) },
       release: { upsert: jest.fn().mockResolvedValue({}) },
       issueStatusHistory: { createMany: jest.fn().mockResolvedValue({}) },
+      sprintScopeChange: { createMany: jest.fn().mockResolvedValue({}) },
     };
     const handlers: ((
       e: DomainEvent<PlanningStoryPayload>,
@@ -134,6 +136,55 @@ describe('PlanningService — status-transition timeline', () => {
 
     expect(prisma.issueStatusHistory.createMany).not.toHaveBeenCalled();
     expect(prisma.story.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('explodes each sprint change into one row per sprint touched, deduped on replay', async () => {
+    await handle(
+      storyEvent({
+        sprintChanges: [
+          {
+            // one changelog entry moving PAY-1 from sprint 5 to sprint 7 —
+            // two rows sharing the changelog id, split by sprint + action
+            changelogId: '760',
+            addedSprintIds: ['7'],
+            removedSprintIds: ['5'],
+            at: '2026-06-04T00:00:00.000Z',
+            authorLogin: 'acc_1',
+            authorName: 'Jane Doe',
+          },
+        ],
+      }),
+    );
+
+    expect(prisma.sprintScopeChange.createMany).toHaveBeenCalledTimes(1);
+    const arg = prisma.sprintScopeChange.createMany.mock.calls[0][0] as {
+      data: Record<string, unknown>[];
+      skipDuplicates: boolean;
+    };
+    expect(arg.skipDuplicates).toBe(true);
+    expect(arg.data).toHaveLength(2);
+    expect(arg.data[0]).toMatchObject({
+      tenantId: 'tenant-a',
+      connectionId: 'conn_1',
+      externalKey: 'PAY-1',
+      sprintExternalId: '7',
+      action: 'added',
+      changelogId: '760',
+      authorLogin: 'acc_1',
+      authorName: 'Jane Doe',
+    });
+    expect(arg.data[0].changedAt).toEqual(new Date('2026-06-04T00:00:00.000Z'));
+    expect(arg.data[1]).toMatchObject({
+      sprintExternalId: '5',
+      action: 'removed',
+      changelogId: '760',
+    });
+  });
+
+  it('does not touch the scope timeline when the event carries no sprint changes', async () => {
+    await handle(storyEvent({}));
+
+    expect(prisma.sprintScopeChange.createMany).not.toHaveBeenCalled();
   });
 
   it("persists Jira's creation date, and never overwrites a known one with null", async () => {

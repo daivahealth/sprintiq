@@ -1,4 +1,4 @@
-import { istDayAxis } from '../../lib/utils';
+import { dayLabelStride, istDayAxis } from '../../lib/utils';
 
 /**
  * GitHub-style daily contribution chart (dependency-free SVG): one column per
@@ -48,8 +48,8 @@ export function CommitChart({
     .map((d, i) => `${(x(i) + barW / 2).toFixed(1)},${yLoc(d.locChanged).toFixed(1)}`)
     .join(' ');
 
-  // Sparse x labels: first, last, and roughly weekly in between.
-  const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+  // Thinned only when the labels would actually collide — see dayLabelStride.
+  const labelEvery = dayLabelStride(days.length);
   const yTicks = commitTicks(maxCommits);
 
   return (

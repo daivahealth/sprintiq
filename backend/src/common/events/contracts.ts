@@ -122,6 +122,29 @@ export interface PlanningTransitionRef {
   authorName?: string;
 }
 
+/**
+ * One change to a work item's sprint membership, from the source system's own
+ * change log — the basis for `sprint_scope` (DATA-MODEL.md §4): committed at
+ * start vs added/removed mid-sprint is unanswerable from current membership
+ * alone. Same idempotent-replay shape as `PlanningTransitionRef`, keyed on the
+ * changelog entry id.
+ *
+ * Carries sprint IDS only, already diffed into added/removed. Jira's Sprint
+ * field accretes history (moving a story appends the new sprint; ids are a
+ * comma-separated list), so the diff — not the raw value — is the event. Names
+ * are deliberately absent: they resolve via the Sprint row, and sprint names
+ * may themselves contain commas, which makes the name list unsplittable.
+ */
+export interface PlanningSprintChangeRef {
+  /** Source changelog entry id — stable per change, used for de-duplication. */
+  changelogId: string;
+  addedSprintIds: string[];
+  removedSprintIds: string[];
+  at: string; // ISO timestamp of the change
+  authorLogin?: string;
+  authorName?: string;
+}
+
 export interface PlanningStoryPayload {
   externalKey: string; // e.g. PAY-2231
   projectKey: string; // e.g. PAY
@@ -160,4 +183,11 @@ export interface PlanningStoryPayload {
    * current status alone. Empty when the source didn't return a change log.
    */
   transitions?: PlanningTransitionRef[];
+  /**
+   * Sprint-membership timeline (`sprint_scope_change`, DATA-MODEL.md §4) — the
+   * basis for sprint_commitment_reliability and scope_creep (METRICS.md),
+   * neither of which is derivable from `sprint` (current membership) alone.
+   * Empty when the source didn't return a change log.
+   */
+  sprintChanges?: PlanningSprintChangeRef[];
 }

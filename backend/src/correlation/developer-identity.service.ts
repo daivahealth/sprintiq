@@ -25,11 +25,42 @@ export interface IdentityResolveResult {
   ambiguous: number;
 }
 
+/** One selectable developer in the picker. */
+export interface DeveloperCatalogEntry {
+  canonicalDeveloperId: string;
+  displayName: string;
+  /** False when no GitHub account could be matched — their work is still counted. */
+  attributed: boolean;
+  /**
+   * Newest commit across every identity this person commits under. Lets a board
+   * open on someone with recent work instead of whoever sorts first
+   * alphabetically — on this tenant only 36 of 83 developers committed in the
+   * last week, so an alphabetical default lands on an empty board more often
+   * than not, which reads as the board being broken.
+   */
+  lastActiveAt: string | null;
+}
+
 /** Every source identity one canonical developer commits or opens PRs under. */
 export interface DeveloperAliases {
   canonicalDeveloperId: string;
   logins: string[];
   emails: string[];
+}
+
+/**
+ * Bulk alias→person lookup for reads that bucket EVERY commit in a window —
+ * the counterpart of `aliasesFor`, which widens one developer's query.
+ * Attribution order mirrors collection reality: a commit's `authorLogin` is
+ * authoritative when present; otherwise its email (lowercased) is the match.
+ */
+export interface AttributionIndex {
+  /** sourceLogin → canonicalDeveloperId */
+  byLogin: Map<string, string>;
+  /** lowercased email → canonicalDeveloperId */
+  byEmail: Map<string, string>;
+  /** canonicalDeveloperId → what the UI should call this person */
+  displayNames: Map<string, string>;
 }
 
 /** How much of a window's commit volume can be attributed to a person at all. */
@@ -216,6 +247,44 @@ export class DeveloperIdentityService {
   }
 
   /**
+   * Every known alias mapped to its canonical developer, in one read — for
+   * reads that bucket a whole window of commits by person (e.g. the daily
+   * activity grid), where calling `aliasesFor` per developer would be N+1
+   * and filtering per person would re-scan the window N times.
+   */
+  async attributionIndex(tenantId: string): Promise<AttributionIndex> {
+    const rows = await this.prisma.developerIdentity.findMany({
+      where: { tenantId },
+      select: {
+        canonicalDeveloperId: true,
+        sourceLogin: true,
+        email: true,
+        name: true,
+      },
+    });
+
+    const byLogin = new Map<string, string>();
+    const byEmail = new Map<string, string>();
+    const displayNames = new Map<string, string>();
+    for (const row of rows) {
+      if (row.sourceLogin) {
+        byLogin.set(row.sourceLogin, row.canonicalDeveloperId);
+      }
+      if (row.email) {
+        byEmail.set(row.email.toLowerCase(), row.canonicalDeveloperId);
+      }
+      // Same preference order as the picker (`listDevelopers`): the login is
+      // the name people know from GitHub; the recorded git name is the
+      // fallback for the unresolved.
+      const current = displayNames.get(row.canonicalDeveloperId);
+      const candidate =
+        row.sourceLogin ?? current ?? row.name ?? row.canonicalDeveloperId;
+      displayNames.set(row.canonicalDeveloperId, candidate);
+    }
+    return { byLogin, byEmail, displayNames };
+  }
+
+  /**
    * Canonical developers for the picker: everyone with collected work,
    * including the people no GitHub account could be found for — they are the
    * ones the old login-only catalog made invisible.
@@ -223,26 +292,29 @@ export class DeveloperIdentityService {
   async listDevelopers(
     tenantId: string,
     search?: string,
-  ): Promise<
-    { canonicalDeveloperId: string; displayName: string; attributed: boolean }[]
-  > {
-    const rows = await this.prisma.developerIdentity.findMany({
-      where: { tenantId },
-      select: {
-        canonicalDeveloperId: true,
-        sourceLogin: true,
-        name: true,
-        method: true,
-      },
-    });
+  ): Promise<DeveloperCatalogEntry[]> {
+    const [rows, lastCommitByKey] = await Promise.all([
+      this.prisma.developerIdentity.findMany({
+        where: { tenantId },
+        select: {
+          canonicalDeveloperId: true,
+          sourceKey: true,
+          sourceLogin: true,
+          name: true,
+          method: true,
+        },
+      }),
+      this.lastCommitBySourceKey(tenantId),
+    ]);
 
     const byCanonical = new Map<
       string,
-      { displayName: string; attributed: boolean }
+      { displayName: string; attributed: boolean; lastActiveAt: Date | null }
     >();
     for (const row of rows) {
       const attributed = row.method !== 'unresolved';
       const existing = byCanonical.get(row.canonicalDeveloperId);
+      const seen = lastCommitByKey.get(row.sourceKey) ?? null;
       byCanonical.set(row.canonicalDeveloperId, {
         displayName:
           existing?.displayName ??
@@ -250,19 +322,64 @@ export class DeveloperIdentityService {
           row.name ??
           row.canonicalDeveloperId,
         attributed: existing ? existing.attributed || attributed : attributed,
+        // Newest across all of this person's identities — the whole point of
+        // resolving them is that their activity is one timeline, not several.
+        lastActiveAt: newest(existing?.lastActiveAt ?? null, seen),
       });
     }
 
     const needle = search?.toLowerCase();
-    return [...byCanonical.entries()]
-      .map(([canonicalDeveloperId, v]) => ({ canonicalDeveloperId, ...v }))
-      .filter(
-        (d) =>
-          !needle ||
-          d.canonicalDeveloperId.toLowerCase().includes(needle) ||
-          d.displayName.toLowerCase().includes(needle),
-      )
-      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+    return (
+      [...byCanonical.entries()]
+        .map(([canonicalDeveloperId, v]) => ({
+          canonicalDeveloperId,
+          displayName: v.displayName,
+          attributed: v.attributed,
+          lastActiveAt: v.lastActiveAt ? v.lastActiveAt.toISOString() : null,
+        }))
+        .filter(
+          (d) =>
+            !needle ||
+            d.canonicalDeveloperId.toLowerCase().includes(needle) ||
+            d.displayName.toLowerCase().includes(needle),
+        )
+        // Alphabetical: this is a searchable picker, and someone looking for a
+        // name scans for it. Recency rides along as a field so the board can
+        // OPEN on someone who has actually committed lately without reordering
+        // the list out from under the reader.
+        .sort((a, b) => a.displayName.localeCompare(b.displayName))
+    );
+  }
+
+  /** Newest commit per source identity, keyed the same way as `sourceKey`. */
+  private async lastCommitBySourceKey(
+    tenantId: string,
+  ): Promise<Map<string, Date>> {
+    const rows = await this.prisma.commit.groupBy({
+      by: ['authorLogin', 'authorEmail'],
+      where: { tenantId },
+      _max: { committedAt: true },
+    });
+    const out = new Map<string, Date>();
+    for (const row of rows) {
+      const at = row._max.committedAt;
+      if (!at) {
+        continue;
+      }
+      const key = row.authorLogin
+        ? `login:${row.authorLogin}`
+        : row.authorEmail
+          ? `email:${row.authorEmail.toLowerCase()}`
+          : null;
+      if (!key) {
+        continue;
+      }
+      const existing = out.get(key);
+      if (!existing || at > existing) {
+        out.set(key, at);
+      }
+    }
+    return out;
   }
 
   /**
@@ -424,6 +541,12 @@ export class DeveloperIdentityService {
       },
     });
   }
+}
+
+function newest(a: Date | null, b: Date | null): Date | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a > b ? a : b;
 }
 
 /**

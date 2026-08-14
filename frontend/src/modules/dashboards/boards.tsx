@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { FreshnessNote } from './FreshnessNote';
 import { MultiSelect } from '../../components/multi-select';
 import { Badge, Card, FilterBar, ProvenanceNote } from '../../components/ui';
@@ -8,6 +9,8 @@ import { ScopeBar } from './ScopeBar';
 import { useProjects } from './useCatalog';
 import {
   type SprintPace,
+  type StaleSprint,
+  type VelocityRow,
   useActiveSprintsHealth,
   useActiveSprintsRisk,
   useEfficiency,
@@ -43,21 +46,72 @@ function BoardHeader({ title, subtitle }: { title: string; subtitle: string }) {
   );
 }
 
-/** Shared sprint selection (auto-picks the active sprint in scope). */
+/**
+ * Shared sprint selection, held in the URL rather than component state.
+ *
+ * URL-backed so a sprint can be linked to: Velocity sends you straight to a
+ * sprint's detail here, which needs the selection to survive navigation. It
+ * also makes a drilled-in view shareable, like every other scope axis
+ * (DASHBOARDS.md §3 — the URL is the source of truth).
+ *
+ * Defaults to the running sprint when nothing is in the URL.
+ */
 function useSprintSelection() {
-  const { scope } = useScope();
+  const { scope, setScope } = useScope();
   const catalog = useSprintCatalog(scope.projects);
-  const [sprint, setSprint] = useState<string | null>(null);
   const sprints = catalog.data?.items ?? [];
+  const sprint = scope.sprint;
+  const setSprint = useCallback(
+    (externalId: string) => setScope({ sprint: externalId }),
+    [setScope],
+  );
 
   useEffect(() => {
     if (!sprint && sprints.length > 0) {
       const active = sprints.find((s) => s.state === 'active');
       setSprint((active ?? sprints[0]).externalId);
     }
-  }, [sprint, sprints]);
+  }, [sprint, sprints, setSprint]);
 
   return { sprints, sprint, setSprint, loading: catalog.isLoading };
+}
+
+/**
+ * Sprints Jira still calls active whose end date is long past.
+ *
+ * Shown rather than dropped: the sprint is real and someone needs to close it
+ * in Jira, so hiding it would trade a misleading card for a silent omission.
+ * Kept out of the ranked cards above because it is 100% elapsed by definition
+ * and would always sort above the sprint that can still be acted on.
+ */
+function StaleSprintsNote({
+  stale,
+  graceDays,
+}: {
+  stale?: StaleSprint[];
+  graceDays?: number;
+}) {
+  if (!stale || stale.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-3 rounded-md border border-border bg-subtle p-3 text-sm text-fg-muted">
+      <span className="font-medium text-fg">{stale.length}</span> sprint
+      {stale.length === 1 ? ' is' : 's are'} still marked active in Jira but
+      ended more than {graceDays ?? 14} days ago — excluded from the cards above
+      because a finished sprint has no pace to report.{' '}
+      {stale.map((s, i) => (
+        <span key={s.sprint.externalId}>
+          {i > 0 && ', '}
+          <span className="text-fg-secondary">
+            {s.sprint.projectKey} · {s.sprint.name}
+          </span>{' '}
+          ({s.daysPastEnd}d past end)
+        </span>
+      ))}
+      . Closing {stale.length === 1 ? 'it' : 'them'} in Jira clears this.
+    </div>
+  );
 }
 
 const PACE_TONE: Record<SprintPace, 'good' | 'warn' | 'bad' | 'neutral'> = {
@@ -168,6 +222,10 @@ export function SprintHealthBoard() {
               ))}
             </div>
           )}
+          <StaleSprintsNote
+            stale={active.data.stale}
+            graceDays={active.data.staleGraceDays}
+          />
           <ProvenanceNote>
             Computed {timeAgo(active.data.computedAt)}.
           </ProvenanceNote>
@@ -367,6 +425,10 @@ export function SprintRiskBoard() {
               ))}
             </div>
           )}
+          <StaleSprintsNote
+            stale={active.data.stale}
+            graceDays={active.data.staleGraceDays}
+          />
           <ProvenanceNote>
             Computed {timeAgo(active.data.computedAt)}.
           </ProvenanceNote>
@@ -403,46 +465,214 @@ export function SprintRiskBoard() {
   );
 }
 
+/** Short date for a sprint label — the sequence is unreadable without them. */
+function sprintDates(row: VelocityRow): string {
+  const fmt = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'short',
+    }) : '—';
+  return `${fmt(row.sprint.startAt)} – ${fmt(row.sprint.endAt)}`;
+}
+
+/**
+ * One sprint's row. Clicking drills into that sprint on Sprint Health, which
+ * is why sprint selection lives in the URL.
+ */
+function VelocitySprintRow({
+  row,
+  max,
+  byItems,
+  onOpen,
+}: {
+  row: VelocityRow;
+  max: number;
+  byItems: boolean;
+  onOpen: () => void;
+}) {
+  const value = byItems ? row.itemsDone : row.completedPoints;
+  const total = byItems ? row.itemsTotal : row.committedPoints;
+  const unit = byItems ? 'items' : 'pts';
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition hover:bg-subtle focus-visible:bg-subtle"
+      title={`Open ${row.sprint.name} on Sprint Health`}
+    >
+      <span className="w-40 shrink-0 truncate">
+        <span className="font-medium text-fg-secondary">{row.sprint.name}</span>
+        <span className="block text-xs text-fg-faint">{sprintDates(row)}</span>
+      </span>
+
+      <span className="relative h-5 flex-1 overflow-hidden rounded bg-muted">
+        <span
+          className={cn(
+            'absolute inset-y-0 left-0 rounded',
+            row.inProgress ? 'bg-brand/50' : 'bg-brand',
+          )}
+          style={{ width: `${max > 0 ? (value / max) * 100 : 0}%` }}
+        />
+        {/* Where the sprint is in its own window — without it a half-finished
+            bar on a half-elapsed sprint looks like underperformance. */}
+        {row.inProgress && row.elapsedPct !== null && (
+          <span
+            className="absolute inset-y-0 w-0.5 bg-fg-subtle"
+            style={{ left: `${row.elapsedPct}%` }}
+            title={`${row.elapsedPct}% of the sprint elapsed`}
+          />
+        )}
+      </span>
+
+      <span className="w-32 shrink-0 text-right tabular-nums text-fg-secondary">
+        {value}
+        <span className="text-fg-faint">
+          /{total} {unit}
+        </span>
+      </span>
+
+      <span className="w-24 shrink-0 text-right">
+        {row.inProgress ? (
+          <Badge tone="good">running</Badge>
+        ) : row.beyondHorizon ? (
+          <span
+            className="text-xs text-warning-fg"
+            title="This sprint closed before the collection window opened, so only the few of its items touched since were ever fetched. Its counts are partial and it is excluded from the average."
+          >
+            partial
+          </span>
+        ) : row.unestimatedItems > 0 && !byItems ? (
+          <span
+            className="text-xs text-warning-fg"
+            title={`${row.unestimatedItems} of ${row.itemsTotal} items carry no estimate, so they are invisible to the points figures`}
+          >
+            {row.estimateCoveragePct}% est.
+          </span>
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Velocity, one section per project.
+ *
+ * Grouped because velocity does not survive pooling — each team estimates on
+ * its own scale, so a single list mixing projects invites comparing bars that
+ * measure different things. Ordered current → past within each project, with
+ * the running sprint first.
+ */
 export function VelocityBoard() {
-  const { scope } = useScope();
+  const { scope, setScope } = useScope();
+  const navigate = useNavigate();
   const query = useVelocity(scope.projects);
-  const rows = query.data?.rows ?? [];
+  const groups = query.data?.groups ?? [];
+
+  const openSprint = (projectKey: string, externalId: string) => {
+    // Carry the project through so Sprint Health's picker is scoped to it.
+    setScope({ projects: [projectKey], sprint: externalId });
+    navigate(
+      `/sprint-health?projects=${encodeURIComponent(projectKey)}&sprint=${encodeURIComponent(externalId)}`,
+    );
+  };
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Velocity"
-        subtitle="Completed vs committed story points per closed sprint."
+        subtitle="How much each project completes per sprint, most recent first. Click a sprint to open it."
       />
       {/* Velocity is Jira-only — it sends projects and nothing else, so the
           repo/time/group-by axes would be controls that silently do nothing. */}
       <ScopeBar showRepos={false} showTime={false} showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
-      {query.data && (
-        <Card className="space-y-4">
-          {rows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-fg-faint">
-              No closed sprints in scope yet — velocity appears after the first
-              sprint closes.
-            </p>
-          ) : (
-            <>
-              <BarList
-                rows={rows.map((r) => ({
-                  label: `${r.sprint.projectKey} · ${r.sprint.name}`,
-                  value: r.completedPoints,
-                  secondary: `/ ${r.committedPoints} pts`,
-                }))}
-              />
-              <ProvenanceNote>
-                Bars show completed points; “/ N” is committed. Computed{' '}
-                {timeAgo(query.data.computedAt)}.
-              </ProvenanceNote>
-            </>
-          )}
+
+      {query.data && groups.length === 0 && (
+        <Card>
+          <p className="py-6 text-center text-sm text-fg-faint">
+            No sprints in scope yet — velocity appears once a project runs one.
+          </p>
         </Card>
       )}
+
+      {groups.map((g) => {
+        // Below the estimate-coverage floor the points figures describe a
+        // minority of the work, so the board leads with throughput instead.
+        const byItems = !g.pointsReliable;
+        const max = Math.max(
+          1,
+          ...g.rows.map((r) => (byItems ? r.itemsDone : r.completedPoints)),
+        );
+        return (
+          <Card key={g.projectKey} className="space-y-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="font-semibold text-fg">{g.projectKey}</h3>
+              <span className="text-sm text-fg-subtle">
+                {byItems ? (
+                  <>
+                    avg <strong>{g.avgCompletedItems ?? '—'}</strong> items per
+                    sprint
+                  </>
+                ) : (
+                  <>
+                    avg <strong>{g.avgCompletedPoints ?? '—'}</strong> pts per
+                    sprint
+                  </>
+                )}
+                <span className="text-fg-faint">
+                  {' '}
+                  · {g.closedSprintsSampled} closed sprint
+                  {g.closedSprintsSampled === 1 ? '' : 's'}
+                </span>
+              </span>
+            </div>
+
+            {(g.sprintsBeyondHorizon ?? 0) > 0 && (
+              <p className="rounded-md border border-warning-border bg-warning-bg p-2.5 text-xs text-warning-fg">
+                <strong>{g.sprintsBeyondHorizon}</strong> of this project’s
+                sprints closed before the collection window opened. Only the few
+                of their items touched since were ever fetched, so their counts
+                are a fraction of what those sprints held — they are shown but
+                excluded from the average. Deepening the backfill window is what
+                fills them in.
+              </p>
+            )}
+
+            {byItems && (
+              <p className="rounded-md border border-warning-border bg-warning-bg p-2.5 text-xs text-warning-fg">
+                Only <strong>{g.estimateCoveragePct ?? 0}%</strong> of this
+                project’s sprint items carry a story-point estimate, and the
+                items being completed are largely the unestimated ones — so
+                completed points describe a fraction of the work and would read
+                as near-zero delivery. Showing <strong>items completed</strong>{' '}
+                instead, which counts all of it.
+              </p>
+            )}
+
+            <div className="space-y-0.5">
+              {g.rows.map((r) => (
+                <VelocitySprintRow
+                  key={r.sprint.externalId}
+                  row={r}
+                  max={max}
+                  byItems={byItems}
+                  onOpen={() => openSprint(g.projectKey, r.sprint.externalId)}
+                />
+              ))}
+            </div>
+
+            <ProvenanceNote>
+              Ordered current → past. A running sprint is shown at half opacity
+              with a marker for how far through its own window it is, and is
+              excluded from the average — it has finished part of its work
+              because it is part of the way through. Computed{' '}
+              {timeAgo(query.data!.computedAt)}.
+            </ProvenanceNote>
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -475,33 +705,91 @@ export function ForecastBoard() {
                     : 'No velocity history'}
                 </Badge>
               </div>
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <Stat
-                  label="Avg velocity"
-                  value={f.avgVelocityPoints ?? '—'}
-                  hint="pts / sprint"
-                />
-                <Stat
-                  label="Remaining backlog"
-                  value={f.remainingPoints}
-                  hint={`${f.remainingItems} items · ${f.unestimatedItems} unestimated`}
-                />
-                <Stat label="Sprints needed" value={f.sprintsNeeded ?? '—'} />
-                <Stat
-                  label="Projected finish"
-                  value={
-                    f.projectedDate
-                      ? new Date(f.projectedDate).toLocaleDateString()
-                      : '—'
-                  }
-                  hint={`assumes ${f.assumedSprintDays}d sprints`}
-                />
-              </div>
-              {f.unestimatedItems > 0 && (
-                <p className="text-xs text-warning-fg">
-                  {f.unestimatedItems} unestimated item(s) are not in the
-                  projection — the real finish is later than shown.
-                </p>
+              {/* Below the estimate-coverage floor the points projection
+                  answers a different question than the one asked — "when will
+                  the estimated fraction be done?" — so the item projection
+                  leads and the points one is marked, not hidden. */}
+              {f.pointsReliable === false ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                    <Stat
+                      label="Avg throughput"
+                      value={f.avgVelocityItems ?? '—'}
+                      hint="items / sprint"
+                    />
+                    <Stat
+                      label="Remaining backlog"
+                      value={f.remainingItems}
+                      hint={`items · ${f.unestimatedItems} unestimated`}
+                    />
+                    <Stat
+                      label="Sprints needed"
+                      value={f.sprintsNeededByItems ?? '—'}
+                    />
+                    <Stat
+                      label="Projected finish"
+                      value={
+                        f.projectedDateByItems
+                          ? new Date(f.projectedDateByItems).toLocaleDateString()
+                          : '—'
+                      }
+                      hint={`assumes ${f.assumedSprintDays}d sprints`}
+                    />
+                  </div>
+                  <p className="rounded-md border border-warning-border bg-warning-bg p-2.5 text-xs text-warning-fg">
+                    Projected from <strong>items</strong>, not story points:
+                    only {f.estimateCoveragePct ?? 0}% of this project’s sprint
+                    work carries an estimate, and the items being completed are
+                    largely the unestimated ones. The points projection on the
+                    same data says{' '}
+                    <strong>{f.sprintsNeeded ?? '—'} sprints</strong>
+                    {f.projectedDate && (
+                      <>
+                        {' '}
+                        (
+                        {new Date(f.projectedDate).toLocaleDateString(undefined, {
+                          year: 'numeric',
+                          month: 'short',
+                        })}
+                        )
+                      </>
+                    )}
+                    , which reflects the estimating gap rather than the delivery
+                    rate. Estimating more of the backlog is what makes the
+                    points forecast usable.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                    <Stat
+                      label="Avg velocity"
+                      value={f.avgVelocityPoints ?? '—'}
+                      hint="pts / sprint"
+                    />
+                    <Stat
+                      label="Remaining backlog"
+                      value={f.remainingPoints}
+                      hint={`${f.remainingItems} items · ${f.unestimatedItems} unestimated`}
+                    />
+                    <Stat label="Sprints needed" value={f.sprintsNeeded ?? '—'} />
+                    <Stat
+                      label="Projected finish"
+                      value={
+                        f.projectedDate
+                          ? new Date(f.projectedDate).toLocaleDateString()
+                          : '—'
+                      }
+                      hint={`assumes ${f.assumedSprintDays}d sprints`}
+                    />
+                  </div>
+                  {f.unestimatedItems > 0 && (
+                    <p className="text-xs text-warning-fg">
+                      {f.unestimatedItems} unestimated item(s) are not in the
+                      projection — the real finish is later than shown.
+                    </p>
+                  )}
+                </>
               )}
             </Card>
           ))}

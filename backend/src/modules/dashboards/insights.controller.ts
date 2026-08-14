@@ -182,8 +182,8 @@ export class InsightsController {
    */
   @Get('sprint-health/active')
   async activeSprintsHealth(@Query('projects') projects?: string) {
-    const rows = await this.insights.activeSprintsHealth(parseList(projects));
-    return { rows, computedAt: new Date().toISOString() };
+    const view = await this.insights.activeSprintsHealth(parseList(projects));
+    return { ...view, computedAt: new Date().toISOString() };
   }
 
   @Get('sprint-health')
@@ -200,8 +200,8 @@ export class InsightsController {
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */
   @Get('sprint-risk/active')
   async activeSprintsRisk(@Query('projects') projects?: string) {
-    const rows = await this.insights.activeSprintsRisk(parseList(projects));
-    return { rows, computedAt: new Date().toISOString() };
+    const view = await this.insights.activeSprintsRisk(parseList(projects));
+    return { ...view, computedAt: new Date().toISOString() };
   }
 
   @Get('sprint-risk')
@@ -221,7 +221,7 @@ export class InsightsController {
     const n = parseInt(limit ?? '6', 10);
     return this.insights
       .velocity(parseList(projects), Number.isFinite(n) && n > 0 ? n : 6)
-      .then((rows) => ({ rows, computedAt: new Date().toISOString() }));
+      .then((groups) => ({ groups, computedAt: new Date().toISOString() }));
   }
 
   @Get('forecast')
@@ -314,6 +314,22 @@ export class InsightsController {
     return { window, ...view, computedAt: new Date().toISOString() };
   }
 
+  /**
+   * Team-level daily commit log: which developers committed on each day, with
+   * counts. Activity context, not a ranking — developers come back
+   * alphabetical per day; a volume sort is the reader's explicit act in the
+   * UI (DASHBOARDS.md §4.1.3).
+   */
+  @Get('developer-activity/daily')
+  async dailyDeveloperActivity(@Query('window') window = 'month') {
+    const days = ACTIVITY_WINDOWS[window] ?? 30;
+    const view = await this.insights.dailyCommitActivity(
+      [],
+      istWindowFloor(days),
+    );
+    return { window, ...view, computedAt: new Date().toISOString() };
+  }
+
   /** GitHub-style per-developer activity (commit history, repos, LOC, projects). */
   @Get('developer-activity')
   async developerActivity(
@@ -341,7 +357,8 @@ export class InsightsController {
     if (projects.length > 0) {
       return this.correlation.reposLinkedToProjects(tenantId, projects);
     }
-    return this.code.listRepos(tenantId, undefined, 1, 50);
+    // Every repo, not the picker's first page — see CodeService.listAllRepos.
+    return this.code.listAllRepos(tenantId);
   }
 }
 

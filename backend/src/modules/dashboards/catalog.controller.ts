@@ -30,17 +30,26 @@ export class CatalogController {
     return { items: keys.map((key) => ({ key })) };
   }
 
-  /** Sprints (optionally by projects/state) for sprint-scoped dashboards. */
+  /**
+   * Sprints for sprint-scoped dashboards.
+   *
+   * `state` accepts a comma-separated set. Sprint Health and Sprint Risk ask
+   * for `active,closed`: an unstarted sprint has no dates, no transitions and
+   * nothing delivered, so every figure those boards compute is empty for it —
+   * listing one alongside real sprints only invites picking it and seeing a
+   * blank board.
+   */
   @Get('sprints')
   async sprints(
     @CurrentUser() user: AuthUser,
     @Query('projects') projects?: string,
     @Query('state') state?: string,
   ) {
+    const states = parseList(state);
     const sprints = await this.planning.listSprints(
       user.tenantId,
       parseList(projects),
-      state || undefined,
+      states.length > 0 ? states : undefined,
     );
     return {
       items: sprints.map((s) => ({
@@ -98,6 +107,7 @@ export class CatalogController {
           login: d.canonicalDeveloperId,
           displayName: d.displayName,
           attributed: d.attributed,
+          lastActiveAt: d.lastActiveAt,
         })),
       };
     }
@@ -107,6 +117,7 @@ export class CatalogController {
         login,
         displayName: login,
         attributed: true,
+        lastActiveAt: null,
       })),
     };
   }

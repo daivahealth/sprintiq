@@ -1,4 +1,4 @@
-import { cn, istDayAxis } from '../../lib/utils';
+import { cn, dayLabelStride, istDayAxis } from '../../lib/utils';
 import type { ProjectActivityRow } from './useInsights';
 
 /**
@@ -69,7 +69,8 @@ export function ProjectActivityChart({
   const y = (v: number) => PAD.top + plotH - (v / maxCommits) * plotH;
   const x = (i: number) => PAD.left + i * step;
 
-  const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+  // Thinned only when the labels would actually collide — see dayLabelStride.
+  const labelEvery = dayLabelStride(days.length);
   const yTicks = commitTicks(maxCommits);
 
   return (

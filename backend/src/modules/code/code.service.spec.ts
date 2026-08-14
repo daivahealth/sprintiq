@@ -27,7 +27,8 @@ describe('CodeService.listCommits', () => {
         committedAt: { gte: from, lte: to },
       },
       orderBy: { committedAt: 'desc' },
-      take: 2000,
+      // limit + 1: the extra row is how the read knows it was truncated.
+      take: 20_001,
     });
   });
 });
