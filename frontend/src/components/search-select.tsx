@@ -54,14 +54,29 @@ export function SearchSelect({
     value ??
     '';
   const [query, setQuery] = useState(selectedLabel);
+  /**
+   * True only once the USER has edited the input since opening it. The input
+   * doubles as the selected-value display, so `query` also changes
+   * programmatically (auto-select, closing without picking) — and letting
+   * those changes reach `onSearch` silently narrowed the server-side catalog
+   * to the one selected person: opening the picker listed a single option,
+   * and typing appended to the pre-filled label, producing a query like
+   * "Animesh-Khatua_athmasan" that matches nothing. Only deliberate edits
+   * may drive the search.
+   */
+  const [dirty, setDirty] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Reflect the selected value in the input once the user isn't actively
-  // editing it (e.g. programmatic auto-select, or closing without picking).
+  // Closing (picked or clicked away): reflect the selected value in the input
+  // again, and clear any server-side filter so the next open shows the full
+  // list rather than staying pinned to the last search's results.
   useEffect(() => {
     if (!open) {
       setQuery(selectedLabel);
+      setDirty(false);
+      onSearch('');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLabel, open]);
 
   useEffect(() => {
@@ -78,11 +93,15 @@ export function SearchSelect({
   }, [open]);
 
   // Debounced server-side search — fast typing collapses to one request.
+  // Gated on `dirty`: programmatic query changes must never fire a search.
   useEffect(() => {
+    if (!dirty) {
+      return;
+    }
     const t = setTimeout(() => onSearch(query), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, dirty]);
 
   const handleSelect = (option: SearchSelectOption) => {
     onSelect(optionValue(option));
@@ -103,9 +122,17 @@ export function SearchSelect({
       >
         <input
           value={query}
-          onFocus={() => setOpen(true)}
+          onFocus={(e) => {
+            setOpen(true);
+            // The input arrives pre-filled with the selected value (the board
+            // auto-selects a developer on load). Select it so typing REPLACES
+            // it, combobox-style — appending to a full login was how a search
+            // for "san" became "Animesh-Khatua_athmasan" and matched nothing.
+            e.target.select();
+          }}
           onChange={(e) => {
             setQuery(e.target.value);
+            setDirty(true);
             setOpen(true);
           }}
           placeholder={placeholder}
