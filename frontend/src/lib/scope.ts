@@ -13,6 +13,14 @@ export interface Scope {
   groupBy: "repo" | "project" | "developer" | "day";
   /** Rolling window in days (7 | 30 | 90). */
   days: number;
+  /**
+   * Selected sprint (externalId), when a board has a sprint dimension.
+   *
+   * In the URL like every other scope axis, so a sprint can be linked to —
+   * which is what lets Velocity send you to that sprint's detail on Sprint
+   * Health instead of leaving you to find it in a dropdown.
+   */
+  sprint: string | null;
 }
 
 export const TIME_PRESETS = [7, 30, 90] as const;
@@ -28,17 +36,7 @@ function parseList(value: string | null): string[] {
 export function useScope() {
   const [params, setParams] = useSearchParams();
 
-  const scope: Scope = useMemo(() => {
-    const days = parseInt(params.get("days") ?? "", 10);
-    return {
-      projects: parseList(params.get("projects")),
-      repos: parseList(params.get("repos")),
-      groupBy: parseGroupBy(params.get("groupBy")),
-      days: TIME_PRESETS.includes(days as (typeof TIME_PRESETS)[number])
-        ? days
-        : DEFAULT_DAYS,
-    };
-  }, [params]);
+  const scope: Scope = useMemo(() => scopeFromParams(params), [params]);
 
   const setScope = useCallback(
     (next: Partial<Scope>) => {
@@ -58,6 +56,7 @@ export function useScope() {
             "days",
             merged.days === DEFAULT_DAYS ? "" : String(merged.days),
           );
+          syncParam(out, "sprint", merged.sprint ?? "");
           return out;
         },
         { replace: true },
@@ -83,6 +82,7 @@ export function useScope() {
   return { scope, setScope, from };
 }
 
+/** The single place the URL is read into a Scope — used by both the hook and its setter. */
 function scopeFromParams(params: URLSearchParams): Scope {
   const days = parseInt(params.get("days") ?? "", 10);
   return {
@@ -92,6 +92,7 @@ function scopeFromParams(params: URLSearchParams): Scope {
     days: TIME_PRESETS.includes(days as (typeof TIME_PRESETS)[number])
       ? days
       : DEFAULT_DAYS,
+    sprint: params.get("sprint") || null,
   };
 }
 

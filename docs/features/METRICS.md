@@ -29,8 +29,9 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Definition:** completed story points per sprint.
 - **Formula:** `Σ story_points where story.resolved_at ∈ sprint AND status ∈ done-set`.
 - **Window:** sprint (+ rolling 3/6-sprint avg & variance).
-- **Scopes:** team, project, sprint.
+- **Scopes:** team, project, sprint. **Never pooled across projects** — teams estimate on their own scales, so a series mixing projects compares quantities that aren't comparable.
 - **Source:** `story`, `sprint_scope`, `issue_status_history`.
+- **Notes — estimate coverage is part of the metric, not a footnote.** Points can only see estimated items, so where most of a sprint is unestimated this measures a minority of the work while presenting itself as the whole. On the reference tenant, coverage of 20–27% put completed points at ~2% of committed while ~76% of items were finished, because the completed work was precisely the unestimated work. Below `MIN_ESTIMATE_COVERAGE_PCT` (70%) the boards report **items completed** (`throughput`) as the headline and say why (DASHBOARDS.md §4.3). A sprint with no estimates at all is excluded from the average rather than counted as zero — it has no velocity, which is not the same as a velocity of zero. An in-progress sprint is likewise never averaged in: it has completed part of its work because it is part of the way through.
 - **Notes:** report **rolling average + variance**, never a single sprint as "the number." Unpointed stories tracked separately (count) so velocity isn't silently understated.
 
 ### throughput

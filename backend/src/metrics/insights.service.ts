@@ -96,7 +96,50 @@ export interface VelocityRow {
   sprint: SprintSummary;
   committedPoints: number;
   completedPoints: number;
+  itemsTotal: number;
   itemsDone: number;
+  /**
+   * Items carrying no estimate. These are invisible to `committedPoints` and
+   * `completedPoints` entirely, so without this the points figures look like
+   * they describe the sprint when they describe a subset of it.
+   */
+  unestimatedItems: number;
+  /** Share of the sprint's items that carry an estimate at all. */
+  estimateCoveragePct: number | null;
+  /**
+   * Still running. Its points are partial by definition and comparing them to
+   * a finished sprint's understates it — shown, but never averaged into
+   * velocity and never fed to the forecast.
+   */
+  inProgress: boolean;
+  /** How far through its own window, for reading a partial sprint fairly. */
+  elapsedPct: number | null;
+}
+
+/**
+ * Velocity for ONE project. Velocity is only meaningful within a project —
+ * teams estimate on their own scales, so pooling sprints from several projects
+ * into one series produces a chart whose bars cannot be compared to each other.
+ */
+export interface ProjectVelocity {
+  projectKey: string;
+  /** Current → past: the in-flight sprint first, then closed ones newest-first. */
+  rows: VelocityRow[];
+  /** Mean over CLOSED sprints only. */
+  avgCompletedPoints: number | null;
+  /** Mean items completed over closed sprints — see `pointsReliable`. */
+  avgCompletedItems: number | null;
+  closedSprintsSampled: number;
+  /** Estimate coverage across the sampled closed sprints. */
+  estimateCoveragePct: number | null;
+  /**
+   * False when too few items carry estimates for the points figures to describe
+   * the sprint. On a real project this read 25%: three-quarters of the work was
+   * unestimated, the completed items were overwhelmingly the unestimated ones,
+   * and "velocity" came out at ~2% of committed points while 76% of the sprint's
+   * items were finished. Throughput is the honest signal at that coverage.
+   */
+  pointsReliable: boolean;
 }
 
 export interface ForecastView {
@@ -109,6 +152,26 @@ export interface ForecastView {
   sprintsNeeded: number | null;
   projectedDate: string | null;
   assumedSprintDays: number;
+  /**
+   * The same projection run on item counts instead of points.
+   *
+   * Present because a points projection is only as good as its estimates. Where
+   * most of the backlog is unestimated, the points forecast silently answers a
+   * different question — "when will the estimated quarter be done?" — while the
+   * item forecast still answers the one that was asked.
+   */
+  avgVelocityItems: number | null;
+  sprintsNeededByItems: number | null;
+  projectedDateByItems: string | null;
+  /** Estimate coverage of the sampled sprints. */
+  estimateCoveragePct: number | null;
+  /**
+   * False when coverage is too low for the points projection to mean anything.
+   * On a real project the points path produced ~181 sprints (about 15 years)
+   * purely because the completed work was the unestimated work; the item path
+   * on the same data is an ordinary number.
+   */
+  pointsReliable: boolean;
 }
 
 export interface ProductivityWeek {
@@ -369,6 +432,19 @@ const DEFAULT_SPRINT_DAYS = 14;
  */
 const STALE_ACTIVE_SPRINT_GRACE_DAYS = 14;
 
+/**
+ * Estimate coverage below which story points stop describing a sprint.
+ *
+ * Not a stylistic threshold — on a real project this read 25%: three-quarters
+ * of items carried no estimate, the items actually being completed were
+ * overwhelmingly those unestimated ones, and "completed points" came out at
+ * ~2% of committed while 76% of the sprint's items were finished. A velocity
+ * chart built on that is not a pessimistic reading, it is a different quantity
+ * wearing velocity's label. Above the floor the points are worth trusting;
+ * below it the board leads with throughput and says why.
+ */
+const MIN_ESTIMATE_COVERAGE_PCT = 70;
+
 /** True when Jira still calls this sprint active but its end date is long past. */
 function isStaleActive(sprint: Sprint, now = Date.now()): boolean {
   if (sprint.state !== 'active' || !sprint.endAt) {
@@ -565,27 +641,87 @@ export class InsightsService {
     };
   }
 
-  /** Completed vs committed points per closed sprint (most recent first). */
-  async velocity(projectKeys: string[], limit = 6): Promise<VelocityRow[]> {
+  /**
+   * Velocity, grouped by project and ordered current → past.
+   *
+   * Grouped because velocity does not survive being pooled: each team estimates
+   * on its own scale, so a single series mixing several projects' sprints
+   * invites comparisons between bars that mean different things. The in-flight
+   * sprint leads each group so the board answers "how are we doing now?" before
+   * "how did we do?", but it is excluded from every average — a sprint halfway
+   * through has completed half its work by definition.
+   */
+  async velocity(projectKeys: string[], limit = 6): Promise<ProjectVelocity[]> {
     const tenantId = this.tenantContext.requireTenantId();
-    const sprints = (
-      await this.planning.listSprints(tenantId, projectKeys, 'closed')
-    ).slice(0, limit);
+    const sprints = await this.planning.listSprints(tenantId, projectKeys);
 
-    const rows: VelocityRow[] = [];
+    const byProject = new Map<string, Sprint[]>();
     for (const sprint of sprints) {
-      const items = (
-        await this.planning.listItemsForSprint(tenantId, sprint.externalId)
-      ).filter((i) => i.type !== 'epic');
-      const done = items.filter((i) => isDone(i));
-      rows.push({
-        sprint: toSprintSummary(sprint),
-        committedPoints: sumStoryPoints(items),
-        completedPoints: sumStoryPoints(done),
-        itemsDone: done.length,
-      });
+      // `future` sprints have no dates and nothing in them — there is no
+      // velocity to report for work that hasn't started.
+      if (sprint.state === 'future' || isStaleActive(sprint)) {
+        continue;
+      }
+      byProject.set(sprint.projectKey, [
+        ...(byProject.get(sprint.projectKey) ?? []),
+        sprint,
+      ]);
     }
-    return rows;
+
+    const out: ProjectVelocity[] = [];
+    for (const [projectKey, projectSprints] of byProject) {
+      // listSprints already orders endAt desc; the running sprint ends latest
+      // so it naturally leads, but sort explicitly rather than rely on that.
+      const ordered = [...projectSprints].sort(
+        (a, b) =>
+          Number(b.state === 'active') - Number(a.state === 'active') ||
+          (b.endAt?.getTime() ?? 0) - (a.endAt?.getTime() ?? 0),
+      );
+      // The limit counts CLOSED sprints, so adding the in-flight one never
+      // pushes a closed sprint out of the history it is meant to show.
+      const active = ordered.filter((s) => s.state === 'active');
+      const closed = ordered
+        .filter((s) => s.state !== 'active')
+        .slice(0, limit);
+
+      const rows: VelocityRow[] = [];
+      for (const sprint of [...active, ...closed]) {
+        rows.push(await this.buildVelocityRow(tenantId, sprint));
+      }
+      out.push(summarizeVelocity(projectKey, rows));
+    }
+
+    // Projects with the most recent activity first — with 17 projects carrying
+    // sprints and most holding exactly one, recency is what makes the top of
+    // the page the part worth reading.
+    return out.sort(
+      (a, b) =>
+        (latestEnd(b.rows) ?? 0) - (latestEnd(a.rows) ?? 0) ||
+        a.projectKey.localeCompare(b.projectKey),
+    );
+  }
+
+  private async buildVelocityRow(
+    tenantId: string,
+    sprint: Sprint,
+  ): Promise<VelocityRow> {
+    const items = (
+      await this.planning.listItemsForSprint(tenantId, sprint.externalId)
+    ).filter((i) => i.type !== 'epic');
+    const done = items.filter((i) => isDone(i));
+    const estimated = items.filter((i) => i.storyPoints !== null);
+
+    return {
+      sprint: toSprintSummary(sprint),
+      committedPoints: sumStoryPoints(items),
+      completedPoints: sumStoryPoints(done),
+      itemsTotal: items.length,
+      itemsDone: done.length,
+      unestimatedItems: items.length - estimated.length,
+      estimateCoveragePct: pct(estimated.length, items.length),
+      inProgress: sprint.state === 'active',
+      elapsedPct: sprintElapsedPct(sprint),
+    };
   }
 
   /** Naive-but-honest forecast: avg velocity of closed sprints vs open backlog. */
@@ -598,36 +734,55 @@ export class InsightsService {
 
     const out: ForecastView[] = [];
     for (const projectKey of projects) {
-      const velocityRows = await this.velocity([projectKey], 3);
-      const sampled = velocityRows.filter((r) => r.completedPoints > 0);
-      const avg =
-        sampled.length > 0
-          ? sampled.reduce((s, r) => s + r.completedPoints, 0) / sampled.length
-          : null;
+      const [group] = await this.velocity([projectKey], 3);
+      // Closed sprints only. `velocity` now leads each project with the
+      // in-flight sprint, whose partial completion would otherwise drag the
+      // average down by however far through it happens to be today.
+      const closed = (group?.rows ?? []).filter((r) => !r.inProgress);
+      // `committedPoints > 0`, not `completedPoints > 0`: a sprint that had
+      // estimated work and finished none of it is a real zero and belongs in
+      // the average; a sprint nobody estimated has no velocity to contribute.
+      // Matches `summarizeVelocity` so both boards quote the same figure.
+      const pointSample = closed.filter((r) => r.committedPoints > 0);
+      const itemSample = closed.filter((r) => r.itemsTotal > 0);
+
+      const avgPoints = meanOf(pointSample.map((r) => r.completedPoints));
+      const avgItems = meanOf(itemSample.map((r) => r.itemsDone));
 
       const backlog = await this.planning.listOpenBacklog(tenantId, [
         projectKey,
       ]);
       const remainingPoints = sumStoryPoints(backlog);
       const sprintDays = await this.avgSprintDays(tenantId, projectKey);
+
       const sprintsNeeded =
-        avg && avg > 0 ? Math.ceil(remainingPoints / avg) : null;
+        avgPoints && avgPoints > 0
+          ? Math.ceil(remainingPoints / avgPoints)
+          : null;
+      const sprintsNeededByItems =
+        avgItems && avgItems > 0 ? Math.ceil(backlog.length / avgItems) : null;
+      const projectDate = (sprints: number | null) =>
+        sprints === null
+          ? null
+          : new Date(
+              Date.now() + sprints * sprintDays * 86_400_000,
+            ).toISOString();
 
       out.push({
         projectKey,
-        sprintsSampled: sampled.length,
-        avgVelocityPoints: avg === null ? null : Number(avg.toFixed(1)),
+        sprintsSampled: pointSample.length,
+        avgVelocityPoints: avgPoints,
         remainingPoints,
         remainingItems: backlog.length,
         unestimatedItems: backlog.filter((b) => b.storyPoints === null).length,
         sprintsNeeded,
-        projectedDate:
-          sprintsNeeded === null
-            ? null
-            : new Date(
-                Date.now() + sprintsNeeded * sprintDays * 86_400_000,
-              ).toISOString(),
+        projectedDate: projectDate(sprintsNeeded),
         assumedSprintDays: sprintDays,
+        avgVelocityItems: avgItems,
+        sprintsNeededByItems,
+        projectedDateByItems: projectDate(sprintsNeededByItems),
+        estimateCoveragePct: group?.estimateCoveragePct ?? null,
+        pointsReliable: group?.pointsReliable ?? false,
       });
     }
     return out;
@@ -1393,6 +1548,55 @@ function sumStoryPoints(items: Story[]): number {
   return items.reduce((s, i) => s + (i.storyPoints ?? 0), 0);
 }
 
+/** Newest sprint end in a group — used to float recently-active projects up. */
+function latestEnd(rows: VelocityRow[]): number | null {
+  const ends = rows
+    .map((r) => (r.sprint.endAt ? Date.parse(r.sprint.endAt) : null))
+    .filter((t): t is number => t !== null);
+  return ends.length > 0 ? Math.max(...ends) : null;
+}
+
+/**
+ * Project-level averages, over CLOSED sprints only.
+ *
+ * The in-flight sprint is deliberately excluded: it has completed a fraction of
+ * its work because it is a fraction of the way through, and averaging that
+ * against finished sprints drags the mean down by an amount that depends
+ * entirely on what day you happen to load the page.
+ */
+function summarizeVelocity(
+  projectKey: string,
+  rows: VelocityRow[],
+): ProjectVelocity {
+  const closed = rows.filter((r) => !r.inProgress);
+  // A sprint where nothing was estimated has no velocity — not a velocity of
+  // zero. Averaging those in would report a team as slowing down when all that
+  // changed is that they stopped estimating. Same predicate as `forecast`, so
+  // the two boards can't quote different averages for the same project.
+  const measurable = closed.filter((r) => r.committedPoints > 0);
+  const mean = (values: number[]): number | null =>
+    values.length > 0
+      ? Number((values.reduce((a, b) => a + b, 0) / values.length).toFixed(1))
+      : null;
+
+  const itemsTotal = closed.reduce((s, r) => s + r.itemsTotal, 0);
+  const estimated = closed.reduce(
+    (s, r) => s + (r.itemsTotal - r.unestimatedItems),
+    0,
+  );
+  const coverage = pct(estimated, itemsTotal);
+
+  return {
+    projectKey,
+    rows,
+    avgCompletedPoints: mean(measurable.map((r) => r.completedPoints)),
+    avgCompletedItems: mean(closed.map((r) => r.itemsDone)),
+    closedSprintsSampled: closed.length,
+    estimateCoveragePct: coverage,
+    pointsReliable: coverage !== null && coverage >= MIN_ESTIMATE_COVERAGE_PCT,
+  };
+}
+
 function toStaleSprint(sprint: Sprint): StaleSprint {
   return {
     sprint: toSprintSummary(sprint),
@@ -1411,6 +1615,12 @@ function toSprintSummary(sprint: Sprint): SprintSummary {
     startAt: sprint.startAt ? sprint.startAt.toISOString() : null,
     endAt: sprint.endAt ? sprint.endAt.toISOString() : null,
   };
+}
+
+function meanOf(values: number[]): number | null {
+  return values.length > 0
+    ? Number((values.reduce((a, b) => a + b, 0) / values.length).toFixed(1))
+    : null;
 }
 
 function pct(part: number, total: number): number | null {

@@ -221,7 +221,7 @@ export class InsightsController {
     const n = parseInt(limit ?? '6', 10);
     return this.insights
       .velocity(parseList(projects), Number.isFinite(n) && n > 0 ? n : 6)
-      .then((rows) => ({ rows, computedAt: new Date().toISOString() }));
+      .then((groups) => ({ groups, computedAt: new Date().toISOString() }));
   }
 
   @Get('forecast')

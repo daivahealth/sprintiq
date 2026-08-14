@@ -72,7 +72,27 @@ export interface VelocityRow {
   sprint: SprintSummary;
   committedPoints: number;
   completedPoints: number;
+  itemsTotal: number;
   itemsDone: number;
+  /** Items with no estimate — invisible to both points figures. */
+  unestimatedItems: number;
+  estimateCoveragePct: number | null;
+  /** Still running: partial by definition, never averaged in. */
+  inProgress: boolean;
+  elapsedPct: number | null;
+}
+
+/** Velocity for one project — the only scope at which it's comparable. */
+export interface ProjectVelocity {
+  projectKey: string;
+  /** Current → past; the running sprint first. */
+  rows: VelocityRow[];
+  avgCompletedPoints: number | null;
+  avgCompletedItems: number | null;
+  closedSprintsSampled: number;
+  estimateCoveragePct: number | null;
+  /** False when too little is estimated for points to describe the sprint. */
+  pointsReliable: boolean;
 }
 
 export interface ForecastView {
@@ -85,6 +105,13 @@ export interface ForecastView {
   sprintsNeeded: number | null;
   projectedDate: string | null;
   assumedSprintDays: number;
+  /** The same projection on item counts — the one that survives low estimate coverage. */
+  avgVelocityItems: number | null;
+  sprintsNeededByItems: number | null;
+  projectedDateByItems: string | null;
+  estimateCoveragePct: number | null;
+  /** False when too little is estimated for the points projection to mean anything. */
+  pointsReliable: boolean;
 }
 
 export interface ProductivityWeek {
@@ -396,7 +423,7 @@ export function useVelocity(projects: string[]) {
   return useQuery({
     queryKey: ['velocity', projects.join(',')],
     queryFn: () =>
-      api.get<{ rows: VelocityRow[]; computedAt: string }>(
+      api.get<{ groups: ProjectVelocity[]; computedAt: string }>(
         `/api/dashboards/velocity?${params}`,
       ),
   });

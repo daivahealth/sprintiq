@@ -49,8 +49,8 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 | **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table, listed by Changed LOC descending — **except `groupBy=developer`, which is alphabetical** (see §4.1) |
 | **Sprint Health** | `/sprint-health` | `dashboards/sprint-health/active` + `dashboards/sprint-health` | **multi-project default: one card per concurrent active sprint** (each project runs its own lifecycle), ranked worst-pace-first with **cadence-normalized pace** (completion % vs elapsed % of that sprint's own window → on-track/at-risk/behind); click to drill into committed vs completed, code linkage, by-type progress |
 | **Sprint Risk** | `/sprint-risk` | `dashboards/sprint-risk/active` + `dashboards/sprint-risk` | **multi-project default: one risk card per concurrent active sprint**, ranked most-at-risk-first; project picker; click to drill into open items **without linked code** (at-risk pts), open bugs, unestimated work — each row with its PRs. Long item titles stay within the Item column and truncate rather than obscuring adjacent data. |
-| **Velocity** | `/velocity` | `dashboards/velocity` | completed vs committed points per closed sprint |
-| **Forecasting** | `/forecast` | `dashboards/forecast` | avg velocity (last 3 closed) vs remaining backlog → sprints needed + projected date; unestimated items flagged |
+| **Velocity** | `/velocity` | `dashboards/velocity` | **one section per project**, sprints ordered current → past with the running sprint first; rows click through to that sprint on Sprint Health. Falls back to items-completed where estimate coverage is too low for points to mean anything (§4.3) |
+| **Forecasting** | `/forecast` | `dashboards/forecast` | avg velocity (last 3 closed) vs remaining backlog → sprints needed + projected date. Projects from **items** rather than points where estimate coverage is below the floor, showing the points answer alongside so the gap is visible (§4.3) |
 | **Productivity** | `/productivity` | `dashboards/productivity` | weekly throughput: items + points (Jira) and merged PRs + LOC (GitHub) — team-level |
 | **Efficiency** | `/efficiency` | `dashboards/efficiency` | PR cycle p50/p85, story cycle p50/p85, **traceability both directions** |
 | **Project Activity** | `/project-activity` | `dashboards/project-activity` | most-active projects by **commits + LOC across all mapped repos** (delivery graph), day/week/month windows; unlinked repos bucketed honestly |
@@ -89,6 +89,33 @@ Jira never closes a sprint by itself — `state` is whatever someone last set. A
 An active sprint whose `endAt` passed more than **`STALE_ACTIVE_SPRINT_GRACE_DAYS` (14)** ago is therefore treated as stale: excluded from the ranked active cards on Sprint Health and Sprint Risk, and reported separately with how far past its end it is. Excluded because it is 100% elapsed by definition, so pace-ranking always floats it above the sprint that can still be acted on; **reported rather than hidden** because the sprint is real and someone needs to close it — hiding it would trade a misleading card for a silent omission. A short overrun is ordinary and stays in the normal cards, which is what the grace period is for.
 
 Unstarted (`future`) sprints are likewise kept out of the sprint picker, which requests `state=active,closed`: they have no dates, no transitions and nothing delivered, so every figure these boards compute is empty for one. Note also that sprint ordering must specify `nulls: 'last'` — Postgres sorts `NULL` **first** on a descending sort, so a dateless future sprint otherwise outranked every real one and arrived at the top of the picker.
+
+### 4.3 Velocity: why it is grouped, and when points stop meaning anything
+
+**Grouped by project.** Velocity does not survive being pooled. Each team estimates on its own scale, so a single series mixing projects invites comparing bars that measure different things — the board previously showed six sprints spanning five projects as one sequence. Each project now gets its own section, ordered **current → past** with the running sprint leading, and each row clicks through to that sprint on Sprint Health (which is why sprint selection lives in the URL, §3).
+
+**The running sprint is shown but never averaged.** It has completed a fraction of its work because it is a fraction of the way through; averaging it in would make velocity depend on which day the page is opened. It renders at half opacity with a marker for elapsed %, and is excluded from `avgCompletedPoints` / `avgCompletedItems` and from the forecast sample.
+
+**Estimate coverage gates the points figures.** `committedPoints` and `completedPoints` can only see items that carry a story-point estimate. Where most items don't, those figures describe a minority of the sprint while presenting themselves as the whole of it. On the reference tenant this was severe and not obvious:
+
+| Sprint | items done | completed points | estimate coverage |
+|---|---|---|---|
+| ACT Sprint-26-7 | 258 / 346 | **17** / 261 | 27% |
+| ACT Sprint-26-6 | 777 / 1025 | **33** / 1374 | 25% |
+| CIHL Sprint-26-8 (running) | 1263 / 1910 | **0** / 3198 | 20% |
+
+Three-quarters of the work carried no estimate, *and the items being completed were overwhelmingly those unestimated ones* — so velocity read at ~2% of committed points while roughly 76% of each sprint was actually finished. The chart wasn't pessimistic; it was measuring a different quantity under velocity's name.
+
+Below **`MIN_ESTIMATE_COVERAGE_PCT` (70%)** the board therefore leads with **items completed**, states the coverage and why, and Forecasting does the same. A sprint nobody estimated is excluded from the points average entirely rather than counted as a zero — otherwise a team reads as slowing down when all that changed is that they stopped estimating.
+
+This is not cosmetic. The same data through the two paths:
+
+| ACT forecast | Projection | Finish |
+|---|---|---|
+| by points | 180 sprints | 2044 |
+| by items | 7 sprints | 2027 |
+
+The points answer is still shown, labelled, so the cost of the estimating gap is visible rather than hidden — closing it is what makes the points forecast usable again.
 
 ### 4.2 Attribution coverage
 
