@@ -198,6 +198,8 @@ describe('ConnectionsService.getSyncStatus', () => {
       backfillComplete: 2,
       backfillInProgress: 1,
       totalEventsIngested: 0,
+      failing: [],
+      rateLimited: 0,
     });
   });
 
@@ -323,6 +325,58 @@ describe('ConnectionsService.getSyncStatus', () => {
     const result = await svc.getSyncStatus('tenant-a');
 
     expect(github(result).inProgress[0].syncIntervalMinutes).toBe(240);
+  });
+
+  it('rolls failing connections up into the summary, so one call answers "is the backfill healthy?"', async () => {
+    const lastErrorAt = new Date('2026-08-14T06:00:00.000Z');
+    (prisma.connection.findMany as jest.Mock).mockResolvedValue([
+      connection({ id: 'healthy', lastError: null, lastErrorAt: null }),
+      connection({
+        id: 'stuck',
+        name: 'athmahealth/billing',
+        lastError: 'GitHub rejected the token',
+        lastErrorAt,
+      }),
+    ]);
+    mockDefaults();
+
+    const result = await svc.getSyncStatus('tenant-a');
+
+    // Per-connection lastError already exists deeper in the tree — the summary
+    // list is what makes "all 17 backfilled AND nothing failing" a single read.
+    expect(result.summary.failing).toEqual([
+      {
+        sourceSystem: 'github',
+        name: 'athmahealth/billing',
+        error: 'GitHub rejected the token',
+        lastErrorAt,
+      },
+    ]);
+  });
+
+  it('counts actively rate-limited connections in the summary — a pause, not a failure', async () => {
+    (prisma.connection.findMany as jest.Mock).mockResolvedValue([
+      connection({
+        id: 'cooling_down',
+        rateLimitState: {
+          resetAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      }),
+      connection({
+        id: 'expired_cooldown',
+        rateLimitState: {
+          resetAt: new Date(Date.now() - 60_000).toISOString(),
+        },
+      }),
+    ]);
+    mockDefaults();
+
+    const result = await svc.getSyncStatus('tenant-a');
+
+    // Distinguished from `failing`: a reserve pause during a deep backfill is
+    // expected behavior, but it explains why progress has a slow tail.
+    expect(result.summary.rateLimited).toBe(1);
+    expect(result.summary.failing).toEqual([]);
   });
 
   it('scopes recent run history per source, newest first, with connection names attached', async () => {

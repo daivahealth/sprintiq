@@ -51,10 +51,26 @@ function dateRange(from: string | null, to: string | null): string {
   return `${fromD.toLocaleDateString()} → ${toD.toLocaleDateString()} (${days}d)`;
 }
 
-function StatCard({ label, value }: { label: string; value: string | number }) {
+function StatCard({
+  label,
+  value,
+  danger = false,
+}: {
+  label: string;
+  value: string | number;
+  /** Paints the value in the danger tone — only when the number itself is bad news. */
+  danger?: boolean;
+}) {
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
-      <p className="text-2xl font-semibold tracking-[-0.03em] tabular-nums text-fg">{value}</p>
+      <p
+        className={cn(
+          "text-2xl font-semibold tracking-[-0.03em] tabular-nums",
+          danger ? "text-danger-fg" : "text-fg",
+        )}
+      >
+        {value}
+      </p>
       <p className="text-xs text-fg-subtle">{label}</p>
     </div>
   );
@@ -361,15 +377,44 @@ export function SyncStatusPage() {
 
       {query.data && (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label="Connections" value={query.data.summary.totalConnections} />
             <StatCard label="Backfill complete" value={query.data.summary.backfillComplete} />
             <StatCard label="Backfilling now" value={query.data.summary.backfillInProgress} />
+            <StatCard
+              label="Failing"
+              value={query.data.summary.failing.length}
+              danger={query.data.summary.failing.length > 0}
+            />
+            <StatCard label="Rate-limited" value={query.data.summary.rateLimited} />
             <StatCard
               label="Events ingested"
               value={query.data.summary.totalEventsIngested.toLocaleString()}
             />
           </div>
+
+          {/* Failure outranks everything on this screen — name the stuck
+              connections up top instead of making the admin open each source
+              tab to find them. */}
+          {query.data.summary.failing.length > 0 && (
+            <Card className="space-y-1 border-danger-border">
+              <h3 className="text-sm font-semibold text-danger-fg">
+                {query.data.summary.failing.length} connection
+                {query.data.summary.failing.length === 1 ? "" : "s"} failing
+              </h3>
+              <ul className="space-y-0.5 text-sm text-fg-muted">
+                {query.data.summary.failing.map((f) => (
+                  <li key={`${f.sourceSystem}:${f.name}`}>
+                    <span className="font-medium text-fg-secondary">
+                      {sourceLabel(f.sourceSystem)} · {f.name}
+                    </span>{" "}
+                    — {f.error}
+                    {f.lastErrorAt ? ` (${timeAgo(f.lastErrorAt)})` : ""}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
 
           <SourceTabs
             sources={query.data.sources}

@@ -218,6 +218,15 @@ export interface SyncStatusResponse {
     backfillComplete: number;
     backfillInProgress: number;
     totalEventsIngested: number;
+    /** Connections whose last pass failed — empty means every source is reachable. */
+    failing: {
+      sourceSystem: string;
+      name: string;
+      error: string;
+      lastErrorAt: string | null;
+    }[];
+    /** Connections paused in a rate-limit cooldown — expected during deep backfills, not a failure. */
+    rateLimited: number;
   };
   sources: SourceSyncStatus[];
 }

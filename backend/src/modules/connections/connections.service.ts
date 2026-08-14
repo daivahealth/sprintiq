@@ -67,6 +67,23 @@ export interface SyncStatusView {
     backfillComplete: number;
     backfillInProgress: number;
     totalEventsIngested: number;
+    /**
+     * Connections whose last pass failed, rolled up so one call answers "is
+     * the backfill healthy?" — the per-connection lastError deeper in the
+     * tree requires walking every source's arrays to reach the same verdict.
+     */
+    failing: {
+      sourceSystem: string;
+      name: string;
+      error: string;
+      lastErrorAt: Date | null;
+    }[];
+    /**
+     * Connections currently paused in a rate-limit cooldown. A pause is
+     * expected during a deep backfill (reserve protection), not a failure —
+     * but it explains why progress has a slow tail.
+     */
+    rateLimited: number;
   };
   /** One entry per source that has its own scheduled tick (github, jira) — always present, even with 0 connections. */
   sources: SourceSyncStatus[];
@@ -459,6 +476,15 @@ export class ConnectionsService {
           (sum, i) => sum + i.eventsIngested,
           0,
         ),
+        failing: items
+          .filter((i) => i.lastError)
+          .map((i) => ({
+            sourceSystem: i.sourceSystem,
+            name: i.name,
+            error: i.lastError as string,
+            lastErrorAt: i.lastErrorAt,
+          })),
+        rateLimited: items.filter((i) => i.rateLimitedUntil).length,
       },
       sources,
     };
