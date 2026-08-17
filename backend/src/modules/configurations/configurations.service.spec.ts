@@ -21,6 +21,7 @@ describe('ConfigurationsService', () => {
       updateConfig: jest.fn().mockResolvedValue(undefined),
       setStatus: jest.fn().mockResolvedValue(undefined),
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
+      clearSyncProgress: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     const secrets = {
       setSecret: jest.fn().mockResolvedValue(undefined),
@@ -379,7 +380,7 @@ describe('ConfigurationsService', () => {
       const [, input] = (connections.updateConfig as jest.Mock).mock
         .calls[0] as [string, { config: { backfillSince: string } }];
       expect(input.config.backfillSince).not.toBe('2026-06-01T00:00:00.000Z');
-      expect(connections.setSyncCursors).toHaveBeenCalledWith('conn_gh', {});
+      expect(connections.clearSyncProgress).toHaveBeenCalledWith('conn_gh');
     });
 
     it('preserves backfillSince and does not reset cursors on an unrelated re-save', async () => {
@@ -419,7 +420,7 @@ describe('ConfigurationsService', () => {
       const [, input] = (connections.updateConfig as jest.Mock).mock
         .calls[0] as [string, { config: { backfillSince: string } }];
       expect(input.config.backfillSince).toBe('2026-06-01T00:00:00.000Z');
-      expect(connections.setSyncCursors).not.toHaveBeenCalled();
+      expect(connections.clearSyncProgress).not.toHaveBeenCalled();
     });
 
     it('resets cursors when the target repo changes, even if backfillDays is unchanged', async () => {
@@ -447,7 +448,46 @@ describe('ConfigurationsService', () => {
         status: 'active',
       });
 
-      expect(connections.setSyncCursors).toHaveBeenCalledWith('conn_gh', {});
+      expect(connections.clearSyncProgress).toHaveBeenCalledWith('conn_gh');
+    });
+
+    it('clears backfill completion on a rescope so the edit takes effect on the next tick, not in four hours', async () => {
+      // Clearing cursors alone leaves `backfillCompletedAt` set, and the
+      // scheduler's due-check gates a connection with both `lastSyncAt` and
+      // `backfillCompletedAt` on its 4-hour interval. The re-walk the admin
+      // just asked for would sit idle for up to that long — and the Sync
+      // Status screen would report the connection as fully backfilled the
+      // whole time it was actually walking history again.
+      const { svc, prisma, connections } = build(null);
+      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
+        id: 'cfg_gh',
+        namespace: 'github',
+        updatedAt: new Date(),
+      });
+      (connections.findByTenantSourceAndName as jest.Mock).mockResolvedValue({
+        id: 'conn_gh',
+        status: 'active',
+        lastSyncAt: new Date(),
+        backfillCompletedAt: new Date(),
+        syncLagSeconds: 0,
+        config: { repoFullName: 'acme/payments', backfillDays: 30 },
+      });
+
+      await svc.upsertTenantConfiguration('tenant-a', {
+        namespace: 'github',
+        values: {
+          organization: 'acme',
+          defaultRepo: 'payments',
+          backfillDays: 365,
+        },
+        secretRefs: { tokenRef: 'GITHUB_TOKEN' },
+        status: 'active',
+      });
+
+      // The one call that makes the connection due again. `setSyncCursors`
+      // cannot do this — it only writes the cursor column.
+      expect(connections.clearSyncProgress).toHaveBeenCalledWith('conn_gh');
+      expect(connections.setSyncCursors).not.toHaveBeenCalled();
     });
   });
 

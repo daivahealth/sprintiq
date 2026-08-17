@@ -820,7 +820,11 @@ export function ProductivityBoard() {
         title="Productivity"
         subtitle="Weekly throughput across Jira (items, points) and GitHub (PRs, LOC)."
       />
-      <ScopeBar />
+      {/* No Group by: this board is bucketed by WEEK by construction, and
+          `useProductivity` never sends the axis (`scopeParams` drops it). The
+          control changed the URL and nothing else — the same dead-filter
+          defect §12 #20 fixed on the Jira-only boards. */}
+      <ScopeBar showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {query.data && (
@@ -1028,7 +1032,10 @@ export function EfficiencyBoard() {
         title="Efficiency"
         subtitle="Cycle times plus bi-directional Jira↔GitHub traceability."
       />
-      <ScopeBar />
+      {/* No Group by: `useEfficiency` sends projects/repos/from only. Every
+          figure here is a scope-wide percentile or coverage ratio — there are
+          no per-group rows for the axis to split. */}
+      <ScopeBar showGroupBy={false} />
       {query.isLoading && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}
       {d && (

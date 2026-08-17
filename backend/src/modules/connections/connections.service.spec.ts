@@ -162,6 +162,56 @@ describe('ConnectionsService.getSyncStatus', () => {
     return source;
   }
 
+  it('reports how far each source is complete through, so the two can be compared', async () => {
+    // The whole point of splitting this per source: GitHub backfills far
+    // slower than Jira polls, and an admin asking "will today's data be in
+    // tonight?" needs to see WHICH side is behind, not one blended number.
+    (prisma.connection.findMany as jest.Mock).mockResolvedValue([
+      connection({
+        id: 'gh',
+        sourceSystem: 'github',
+        collectedThroughAt: new Date('2026-08-17T06:00:00.000Z'),
+        backfillCompletedAt: new Date(),
+      }),
+      connection({
+        id: 'jira',
+        sourceSystem: 'jira',
+        collectedThroughAt: new Date('2026-08-17T14:00:00.000Z'),
+        backfillCompletedAt: new Date(),
+      }),
+    ]);
+    mockDefaults();
+
+    const result = await svc.getSyncStatus('tenant-a');
+
+    expect(github(result).collectedThroughAt).toEqual(
+      new Date('2026-08-17T06:00:00.000Z'),
+    );
+    expect(
+      result.sources.find((s) => s.sourceSystem === 'jira')?.collectedThroughAt,
+    ).toEqual(new Date('2026-08-17T14:00:00.000Z'));
+  });
+
+  it('reports a source as complete through nothing while any of its connections is still backfilling', async () => {
+    // Same all-or-nothing rule as tenant freshness: one repo mid-backfill
+    // means the source is not complete through anything, however current its
+    // siblings are.
+    (prisma.connection.findMany as jest.Mock).mockResolvedValue([
+      connection({
+        id: 'done',
+        collectedThroughAt: new Date('2026-08-17T06:00:00.000Z'),
+        backfillCompletedAt: new Date(),
+      }),
+      connection({ id: 'walking', collectedThroughAt: null }),
+    ]);
+    mockDefaults();
+
+    const result = await svc.getSyncStatus('tenant-a');
+
+    expect(github(result).collectedThroughAt).toBeNull();
+    expect(github(result).incomplete).toBe(1);
+  });
+
   it('always includes github and jira as sources, even with zero connections', async () => {
     (prisma.connection.findMany as jest.Mock).mockResolvedValue([]);
     mockDefaults();
@@ -452,12 +502,14 @@ describe('ConnectionsService.getDataFreshness', () => {
         sourceSystem: 'github',
         name: 'acme/api',
         lastSyncAt: recent,
+        collectedThroughAt: null,
         lastError: null,
       },
       {
         sourceSystem: 'jira',
         name: 'acme jira',
         lastSyncAt: old,
+        collectedThroughAt: null,
         lastError: null,
       },
     ]);
@@ -469,8 +521,12 @@ describe('ConnectionsService.getDataFreshness', () => {
     expect(f.lastSyncAt).toEqual(old);
     expect(f.staleSeconds).toBeGreaterThanOrEqual(4 * 60 * 60 - 5);
     expect(f.sources).toEqual([
-      { sourceSystem: 'github', lastSyncAt: recent },
-      { sourceSystem: 'jira', lastSyncAt: old },
+      {
+        sourceSystem: 'github',
+        lastSyncAt: recent,
+        collectedThroughAt: null,
+      },
+      { sourceSystem: 'jira', lastSyncAt: old, collectedThroughAt: null },
     ]);
   });
 
@@ -506,20 +562,113 @@ describe('ConnectionsService.getDataFreshness', () => {
         sourceSystem: 'github',
         name: 'acme/new',
         lastSyncAt: null,
+        collectedThroughAt: null,
         lastError: null,
       },
       {
         sourceSystem: 'github',
         name: 'acme/api',
         lastSyncAt: recent,
+        collectedThroughAt: null,
         lastError: null,
       },
     ]);
 
     const f = await svc.getDataFreshness('tenant-a');
 
-    expect(f.sources).toEqual([{ sourceSystem: 'github', lastSyncAt: recent }]);
+    expect(f.sources).toEqual([
+      { sourceSystem: 'github', lastSyncAt: recent, collectedThroughAt: null },
+    ]);
     expect(f.neverSynced).toBe(1);
+  });
+
+  it('reports completeness from collectedThroughAt, not from when we last called the API', async () => {
+    // The distinction the whole freshness contract turns on. This connection
+    // talked to GitHub a minute ago and is still 80 pages behind: "synced 1
+    // minute ago" is true and useless. What a board needs to know is that
+    // nothing after 06:00 has been collected.
+    const justNow = new Date(Date.now() - 60_000);
+    const throughEarlyMorning = new Date('2026-08-17T06:00:00.000Z');
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'github',
+        name: 'acme/api',
+        lastSyncAt: justNow,
+        collectedThroughAt: throughEarlyMorning,
+        lastError: null,
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    expect(f.collectedThroughAt).toEqual(throughEarlyMorning);
+    expect(f.lastSyncAt).toEqual(justNow);
+  });
+
+  it('reports the OLDEST completeness across sources, because a board mixes them', async () => {
+    const githubThrough = new Date('2026-08-17T06:00:00.000Z');
+    const jiraThrough = new Date('2026-08-17T14:00:00.000Z');
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'github',
+        name: 'acme/api',
+        lastSyncAt: new Date(),
+        collectedThroughAt: githubThrough,
+        lastError: null,
+      },
+      {
+        sourceSystem: 'jira',
+        name: 'acme jira',
+        lastSyncAt: new Date(),
+        collectedThroughAt: jiraThrough,
+        lastError: null,
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    // GitHub backfills slower than Jira polls — the exact asymmetry that makes
+    // a mixed board disagree with itself. The older bound is the honest one.
+    expect(f.collectedThroughAt).toEqual(githubThrough);
+    expect(f.sources).toEqual([
+      {
+        sourceSystem: 'github',
+        lastSyncAt: expect.any(Date),
+        collectedThroughAt: githubThrough,
+      },
+      {
+        sourceSystem: 'jira',
+        lastSyncAt: expect.any(Date),
+        collectedThroughAt: jiraThrough,
+      },
+    ]);
+  });
+
+  it('counts a still-backfilling connection as incomplete rather than letting siblings speak for it', async () => {
+    // A connection mid-backfill has no completeness at all. Averaging it away
+    // — or letting the finished sibling set the tenant's watermark — would
+    // report the tenant complete through a time half its data predates.
+    findMany.mockResolvedValue([
+      {
+        sourceSystem: 'github',
+        name: 'acme/api',
+        lastSyncAt: new Date(),
+        collectedThroughAt: new Date('2026-08-17T06:00:00.000Z'),
+        lastError: null,
+      },
+      {
+        sourceSystem: 'github',
+        name: 'acme/web',
+        lastSyncAt: new Date(),
+        collectedThroughAt: null,
+        lastError: null,
+      },
+    ]);
+
+    const f = await svc.getDataFreshness('tenant-a');
+
+    expect(f.incomplete).toBe(1);
+    expect(f.collectedThroughAt).toBeNull();
   });
 
   it('surfaces failing connections, whose slice is frozen at an unknown age', async () => {

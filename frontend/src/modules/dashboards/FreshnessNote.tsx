@@ -3,52 +3,95 @@ import { timeAgo } from '../../lib/utils';
 import { useFreshness } from './useInsights';
 
 /**
- * "Data as of …" beside the scope, on every board (DASHBOARDS.md §1.5,
- * METRICS.md §9).
+ * "Data complete for this range" beside the scope, on every board
+ * (DASHBOARDS.md §1.5, METRICS.md §9).
  *
- * Ingestion is poll-only on a 4-hour default interval, so every number on
- * screen can be hours old while the page itself was rendered a second ago.
- * Without this the UI implies live data it does not have — and a failing
- * connection is worse than merely stale, because its slice is frozen at an
- * age nothing on the page would otherwise reveal.
+ * Judges the window ACTUALLY ON SCREEN, not the whole dataset. That is the
+ * point: collection is a range, `[collectedBackTo, collectedThroughAt]`, and a
+ * board showing the last 7 days over a complete last 7 days is complete —
+ * however far a 12-month historical walk still has to go. Reporting global
+ * completeness instead meant a tenant mid-backfill could say nothing but
+ * "incomplete" for days, on boards whose numbers were entirely correct. An
+ * unnecessary warning is not free: it teaches people to ignore the real ones.
  *
- * Reports the OLDEST sync across active connections, not the newest: a board
- * mixes Jira and GitHub facts, so the freshest source says nothing about the
- * number next to it.
+ * So there are two independent questions, and each is only raised when it
+ * actually applies to this board:
+ *  - **Does the window reach past the data?** `collectedBackTo > from` — say
+ *    so, with the date history actually starts, because those numbers really
+ *    are short.
+ *  - **Is the recent end behind?** `collectedThroughAt` old — say so.
+ *
+ * Boards without a time window (Sprint Health, Sprint Risk) pass no
+ * `windowFrom` and get the plain statement.
  */
 
-/** Beyond this, "a while ago" is worth flagging rather than just stating. */
-const STALE_WARN_SECONDS = 6 * 60 * 60;
+/** Beyond this, being behind is worth flagging rather than just stating. */
+const BEHIND_WARN_SECONDS = 6 * 60 * 60;
 
-export function FreshnessNote() {
+export function FreshnessNote({ windowFrom }: { windowFrom?: string }) {
   const { data } = useFreshness();
   if (!data) {
     return null;
   }
 
-  const { lastSyncAt, staleSeconds, neverSynced, failing } = data;
+  const { collectedThroughAt, collectedBackTo, behindSeconds, incomplete } =
+    data;
+  const { neverSynced, failing } = data;
+
+  // Does this board's window reach past what has been collected? Only
+  // answerable when the board has a window AND a lower bound exists.
+  const windowStartsBeforeData =
+    windowFrom != null &&
+    collectedBackTo != null &&
+    new Date(collectedBackTo) > new Date(windowFrom);
+
+  const behind = behindSeconds !== null && behindSeconds > BEHIND_WARN_SECONDS;
   const hasProblem = failing.length > 0 || neverSynced > 0;
-  const stale = staleSeconds !== null && staleSeconds > STALE_WARN_SECONDS;
+  // Backfill only matters to THIS board if it actually clips its window, or if
+  // nothing has been collected at all yet.
+  const backfillAffectsThisBoard =
+    incomplete > 0 && (windowFrom == null || collectedBackTo == null);
+
+  const tone = hasProblem
+    ? 'bad'
+    : windowStartsBeforeData || behind || backfillAffectsThisBoard
+      ? 'warn'
+      : 'good';
 
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-fg-faint">
-      <StatusDot
-        tone={hasProblem ? 'bad' : stale ? 'warn' : 'good'}
-        aria-hidden
-      />
+      <StatusDot tone={tone} aria-hidden />
+
       <span>
-        {lastSyncAt
-          ? `Data as of ${timeAgo(lastSyncAt)}`
-          : 'No source has synced yet'}
+        {collectedThroughAt
+          ? `Data complete through ${timeAgo(collectedThroughAt)}`
+          : backfillAffectsThisBoard
+            ? 'Still collecting history — coverage is incomplete'
+            : 'No source has synced yet'}
       </span>
 
-      {data.sources.length > 1 && lastSyncAt && (
+      {/* The one that matters for a windowed board: the range on screen
+          extends past where collection has reached, so these numbers are
+          genuinely short and by how much is stated. */}
+      {windowStartsBeforeData && collectedBackTo && (
+        <span className="text-warning-fg">
+          — history only goes back to{' '}
+          {new Date(collectedBackTo).toLocaleDateString()}, so earlier days in
+          this range are still being collected
+        </span>
+      )}
+
+      {data.sources.length > 1 && (
         <span className="text-fg-faint">
           (
           {data.sources
             .map(
               (s) =>
-                `${s.sourceSystem} ${s.lastSyncAt ? timeAgo(s.lastSyncAt) : 'never'}`,
+                `${s.sourceSystem} ${
+                  s.collectedThroughAt
+                    ? timeAgo(s.collectedThroughAt)
+                    : 'backfilling'
+                }`,
             )
             .join(' · ')}
           )

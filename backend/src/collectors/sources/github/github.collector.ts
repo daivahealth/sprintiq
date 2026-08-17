@@ -12,7 +12,11 @@ import {
   CanonicalEnvelope,
   CollectionMode,
 } from '../../ingestion/canonical-envelope';
-import { BaseSourceCollector } from '../../framework/source-collector';
+import {
+  BaseSourceCollector,
+  PollOptions,
+  PollResult,
+} from '../../framework/source-collector';
 import {
   GithubClient,
   GithubCommit,
@@ -38,6 +42,28 @@ function envBudget(name: string, fallback: number): number {
 
 /** Bounds how much work one scheduler tick does — large histories catch up over several ticks. */
 const PAGE_BUDGET_PER_TICK = envBudget('GITHUB_PAGE_BUDGET_PER_TICK', 3);
+/**
+ * Enrichment the whole **fleet** may spend in one sweep, divided across the
+ * connections of a tenant that are due in it. The per-connection ceilings below
+ * still apply — this only ever shrinks them.
+ *
+ * The ceilings alone were the org-scale bug: a constant per connection
+ * multiplies by fleet size, so 195 repos × 25 PRs × 4 calls demanded ~19,500
+ * requests against a 5,000/hour limit. The first ~30 connections drained the
+ * hour and the remaining 165 were rate-limited having collected nothing —
+ * every sweep, with no setting that fixed it (backfilling connections ignore
+ * the interval). Sized so one sweep costs roughly a third of an hour's quota
+ * for PRs (500 × 4 calls = 2,000) plus commits (500 × 1), leaving room for the
+ * reserve the reconcilers respect (§3.2).
+ */
+const PR_ENRICH_BUDGET_PER_SWEEP = envBudget(
+  'GITHUB_PR_ENRICH_BUDGET_PER_SWEEP',
+  500,
+);
+const COMMIT_ENRICH_BUDGET_PER_SWEEP = envBudget(
+  'GITHUB_COMMIT_ENRICH_BUDGET_PER_SWEEP',
+  500,
+);
 /**
  * Bounds the per-commit detail calls (for line-change stats) one tick makes,
  * per repo. Commits beyond this budget are left for a later tick rather than
@@ -83,6 +109,15 @@ interface GithubSyncCursors {
   commitsResumePage?: number;
   /** Index within `commitsResumePage` where the last tick stopped — see `prPageOffset`. */
   commitsPageOffset?: number;
+  /**
+   * How far back each walk has actually reached. GitHub pages newest-first, so
+   * these DESCEND as a backfill progresses and settle at the backfill floor
+   * once it completes. Tracked per entity because PRs and commits advance
+   * independently — the repo is only whole back to whichever has walked less
+   * far (see `collectedBackTo`).
+   */
+  prOldestSeenAt?: string;
+  commitsOldestSeenAt?: string;
 }
 
 /** The four per-PR calls that make up one unit of the enrich budget. */
@@ -225,14 +260,18 @@ export class GithubCollector extends BaseSourceCollector {
    * runs (bounded per tick) and reconciling incrementally thereafter. A
    * connection already cooling down from a rate limit is skipped entirely.
    */
-  async poll(connection: Connection): Promise<CanonicalEnvelope[]> {
+  async poll(
+    connection: Connection,
+    options: PollOptions = {},
+  ): Promise<PollResult> {
+    const budgets = enrichBudgets(options.peersDue);
     const config = (connection.config ?? {}) as {
       repoFullName?: string;
       backfillSince?: string;
     };
     const repoFullName = config.repoFullName;
     if (!repoFullName) {
-      return [];
+      return { envelopes: [], skipped: 'not-configured' };
     }
 
     const rateLimitState = (connection.rateLimitState ?? {}) as {
@@ -242,7 +281,9 @@ export class GithubCollector extends BaseSourceCollector {
       rateLimitState.resetAt &&
       new Date(rateLimitState.resetAt).getTime() > Date.now()
     ) {
-      return [];
+      // Reported as skipped, not as an empty success: this pass never called
+      // GitHub, so it is not evidence the connection is up to date.
+      return { envelopes: [], skipped: 'rate-limited' };
     }
 
     const token = await this.secrets.resolve(
@@ -256,7 +297,7 @@ export class GithubCollector extends BaseSourceCollector {
         connection.id,
         `No credential resolved for secret ref "${connection.secretRef ?? '(unset)'}" — set it in admin/configuration or as an environment variable.`,
       );
-      return [];
+      return { envelopes: [], skipped: 'no-credential' };
     }
 
     const cursors: GithubSyncCursors = {
@@ -270,6 +311,7 @@ export class GithubCollector extends BaseSourceCollector {
           repoFullName,
           token,
           cursors,
+          budgets.pr,
         )
       : await this.backfillPullRequests(
           connection,
@@ -277,6 +319,7 @@ export class GithubCollector extends BaseSourceCollector {
           token,
           cursors,
           backfillFloor,
+          budgets.pr,
         );
 
     const envelopes = [...prResult.envelopes];
@@ -290,6 +333,7 @@ export class GithubCollector extends BaseSourceCollector {
         token,
         cursors,
         backfillFloor,
+        budgets.commit,
       );
       envelopes.push(...commitResult.envelopes);
       rateLimitedUntil = commitResult.rateLimitedUntil;
@@ -324,7 +368,15 @@ export class GithubCollector extends BaseSourceCollector {
       await this.connections.setBackfillCompletedAt(connection.id);
     }
 
-    return envelopes;
+    return {
+      envelopes,
+      // Surfaced, not just logged onto the connection's health: without this
+      // the scheduler records a pass GitHub refused outright as a successful
+      // zero-event sync and stamps `lastSyncAt` (§12 #29).
+      failed: failed || undefined,
+      collectedThroughAt: completenessWatermark(cursors),
+      collectedBackTo: collectedBackTo(cursors, backfillFloor),
+    };
   }
 
   /** Historical pass: pages backward (newest-updated-first) until the backfill floor. */
@@ -334,13 +386,14 @@ export class GithubCollector extends BaseSourceCollector {
     token: string,
     cursors: GithubSyncCursors,
     backfillFloor: Date,
+    prBudget: number,
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
     let page = cursors.prPage ?? 1;
     // Where in the current page the previous tick stopped. Resuming mid-page
     // is what lets a page bigger than the enrich budget make progress at all.
     let offset = cursors.prPageOffset ?? 0;
-    let enrichBudget = PR_ENRICH_BUDGET_PER_TICK;
+    let enrichBudget = prBudget;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const result = await this.client.listPullRequestsPage(
@@ -370,14 +423,14 @@ export class GithubCollector extends BaseSourceCollector {
           result.items[0].updated_at ?? result.items[0].created_at;
       }
       if (result.items.length === 0) {
-        this.finishPrBackfill(cursors);
+        this.finishPrBackfill(cursors, backfillFloor);
         return { envelopes };
       }
       for (let i = offset; i < result.items.length; i++) {
         const pr = result.items[i];
         const updatedAt = pr.updated_at ?? pr.created_at;
         if (new Date(updatedAt) < backfillFloor) {
-          this.finishPrBackfill(cursors);
+          this.finishPrBackfill(cursors, backfillFloor);
           return { envelopes };
         }
         if (enrichBudget <= 0) {
@@ -386,6 +439,13 @@ export class GithubCollector extends BaseSourceCollector {
           this.suspendPrBackfill(cursors, page, i);
           return { envelopes };
         }
+        // Walked one item further back. Recorded per item rather than at the
+        // end of the pass, so a tick cut short by the budget or a rate limit
+        // still reports the ground it actually covered.
+        cursors.prOldestSeenAt = this.trackOldest(
+          cursors.prOldestSeenAt,
+          updatedAt,
+        );
         const enriched = await this.enrichPull(repoFullName, token, pr.number);
         enrichBudget--;
         envelopes.push(
@@ -408,7 +468,7 @@ export class GithubCollector extends BaseSourceCollector {
         }
       }
       if (!result.hasNextPage) {
-        this.finishPrBackfill(cursors);
+        this.finishPrBackfill(cursors, backfillFloor);
         return { envelopes };
       }
       page++;
@@ -460,10 +520,18 @@ export class GithubCollector extends BaseSourceCollector {
     cursors.prPageOffset = offset > 0 ? offset : undefined;
   }
 
-  private finishPrBackfill(cursors: GithubSyncCursors): void {
+  private finishPrBackfill(cursors: GithubSyncCursors, floor: Date): void {
     cursors.prBackfillDone = true;
     cursors.prPage = undefined;
     cursors.prPageOffset = undefined;
+    // The walk reached the floor (or ran out of history above it), so PR
+    // coverage now extends all the way back to it.
+    cursors.prOldestSeenAt = floor.toISOString();
+  }
+
+  /** Descends only — the oldest point a walk has reached never moves forward. */
+  private trackOldest(current: string | undefined, seen: string): string {
+    return current && current < seen ? current : seen;
   }
 
   /** Steady-state: only page 1, stop as soon as we hit the known watermark. */
@@ -472,6 +540,7 @@ export class GithubCollector extends BaseSourceCollector {
     repoFullName: string,
     token: string,
     cursors: GithubSyncCursors,
+    prBudget: number,
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
     const result = await this.client.listPullRequestsPage(
@@ -483,24 +552,51 @@ export class GithubCollector extends BaseSourceCollector {
       return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
     }
 
-    const watermark = cursors.prNewestSeenAt;
-    let enrichBudget = PR_ENRICH_BUDGET_PER_TICK;
-    // Only set if the enrichment budget runs out before every PR newer than
-    // the old watermark has been processed — in that case advancing the
-    // watermark at all would skip the un-enriched remainder forever.
-    let budgetExhausted = false;
+    if (result.failed) {
+      // An empty page here means the request was rejected, not that nothing
+      // changed — the same guard the backfill path carries.
+      this.logger.error(
+        `GitHub incremental PR sync failed for ${repoFullName} (connection ${connection.id}) — keeping the watermark and retrying next tick.`,
+      );
+      return { envelopes, failed: true };
+    }
 
+    const watermark = cursors.prNewestSeenAt;
+    // Everything on page 1 this connection has not synced yet, still in
+    // GitHub's newest-first order.
+    const unsynced: GithubPull[] = [];
     for (const pr of result.items) {
       const updatedAt = pr.updated_at ?? pr.created_at;
       if (watermark && updatedAt <= watermark) {
         break; // sorted desc — everything after this is already synced
       }
-      if (enrichBudget <= 0) {
-        budgetExhausted = true;
+      unsynced.push(pr);
+    }
+
+    // Did page 1 hold the WHOLE unsynced set? If every item on a full page is
+    // unsynced, older unsynced PRs sit on page 2+ that we never fetched, and
+    // moving the watermark over them would skip them permanently.
+    const sawWholeSet =
+      unsynced.length < result.items.length || !result.hasNextPage;
+
+    // OLDEST first — this is the fix, not a detail. The watermark can only
+    // move over a contiguous run starting at the oldest unsynced PR, so
+    // enriching newest-first meant it could never move at all once the budget
+    // ran out: every tick re-enriched the same newest N and the backlog only
+    // grew. Harmless while the budget was 25 per connection; near-certain once
+    // the fleet budget divides it to 2.
+    const ordered = [...unsynced].reverse();
+
+    // The newest PR enriched in an unbroken run from the oldest — the furthest
+    // the watermark may honestly advance.
+    let lastEnrichedAt: string | undefined;
+    let rateLimitedUntil: Date | undefined;
+
+    for (const pr of ordered) {
+      if (envelopes.length >= prBudget) {
         break;
       }
       const enriched = await this.enrichPull(repoFullName, token, pr.number);
-      enrichBudget--;
       envelopes.push(
         this.fromPolledPull(
           connection,
@@ -512,17 +608,19 @@ export class GithubCollector extends BaseSourceCollector {
           enriched.reviews,
         ),
       );
-      const rateLimitedUntil = this.enrichRateLimit(enriched);
+      // Counted as done: it is enriched and emitted before the rate-limit
+      // check below, so the watermark may include it.
+      lastEnrichedAt = pr.updated_at ?? pr.created_at;
+      rateLimitedUntil = this.enrichRateLimit(enriched);
       if (rateLimitedUntil) {
-        return { envelopes, rateLimitedUntil };
+        break;
       }
     }
 
-    if (!budgetExhausted && result.items[0]) {
-      cursors.prNewestSeenAt =
-        result.items[0].updated_at ?? result.items[0].created_at;
+    if (sawWholeSet && lastEnrichedAt) {
+      cursors.prNewestSeenAt = lastEnrichedAt;
     }
-    return { envelopes };
+    return { envelopes, rateLimitedUntil };
   }
 
   /** Commits support `since` natively, so backfill + incremental share one loop. */
@@ -532,6 +630,7 @@ export class GithubCollector extends BaseSourceCollector {
     token: string,
     cursors: GithubSyncCursors,
     backfillFloor: Date,
+    commitBudget: number,
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
     const since = cursors.commitsCursor ?? backfillFloor.toISOString();
@@ -541,7 +640,7 @@ export class GithubCollector extends BaseSourceCollector {
     let offset = cursors.commitsPageOffset ?? 0;
     // Captured at pass START (not completion) so nothing landing mid-pass is missed.
     const passStartedAt = this.nowIso();
-    let enrichBudget = COMMIT_ENRICH_BUDGET_PER_TICK;
+    let enrichBudget = commitBudget;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const result = await this.client.listCommitsPage(
@@ -571,6 +670,10 @@ export class GithubCollector extends BaseSourceCollector {
           this.suspendCommitsPass(cursors, page, i);
           return { envelopes };
         }
+        cursors.commitsOldestSeenAt = this.trackOldest(
+          cursors.commitsOldestSeenAt,
+          commit.commit.author?.date ?? passStartedAt,
+        );
         const detail = await this.client.getCommitDetail(
           repoFullName,
           token,
@@ -590,6 +693,12 @@ export class GithubCollector extends BaseSourceCollector {
         cursors.commitsResumePage = undefined;
         cursors.commitsPageOffset = undefined;
         cursors.commitsCursor = passStartedAt;
+        // The pass walked its whole `since` range, so commit coverage reaches
+        // the backfill floor.
+        cursors.commitsOldestSeenAt = this.trackOldest(
+          cursors.commitsOldestSeenAt,
+          backfillFloor.toISOString(),
+        );
         return { envelopes };
       }
       page++;
@@ -823,6 +932,96 @@ export class GithubCollector extends BaseSourceCollector {
       data: payload as unknown as Record<string, unknown>,
     };
   }
+}
+
+/** This connection's share of the sweep, for PR and commit enrichment. */
+interface EnrichBudgets {
+  pr: number;
+  commit: number;
+}
+
+/**
+ * Splits the fleet's sweep budget across the connections sharing a credential.
+ *
+ * Clamped at both ends, and both ends matter:
+ *  - never above the per-tick ceiling, so a small deployment behaves exactly as
+ *    it did before this existed (500 ÷ 2 connections is still capped at 25);
+ *  - never below 1, because integer division at extreme fleet sizes floors to
+ *    zero — a connection that enriches nothing makes no progress at all while
+ *    still spending its list-page calls every tick.
+ */
+function enrichBudgets(peersDue?: number): EnrichBudgets {
+  const peers = peersDue && peersDue > 0 ? peersDue : 1;
+  const share = (sweepBudget: number, ceiling: number) =>
+    Math.max(1, Math.min(ceiling, Math.floor(sweepBudget / peers)));
+  return {
+    pr: share(PR_ENRICH_BUDGET_PER_SWEEP, PR_ENRICH_BUDGET_PER_TICK),
+    commit: share(
+      COMMIT_ENRICH_BUDGET_PER_SWEEP,
+      COMMIT_ENRICH_BUDGET_PER_TICK,
+    ),
+  };
+}
+
+/**
+ * The point in source time this repo is genuinely complete through — the
+ * **older** of the two independent watermarks, because PRs and commits advance
+ * separately and the repo is only whole up to whichever lags.
+ *
+ * Undefined until BOTH backfills have finished. `prPage`/`commitsResumePage`
+ * mean a walk is still in flight, and `prNewestSeenAt` is captured from page 1
+ * at the very START of that walk — so during backfill it names a time whose
+ * history has demonstrably not been collected yet. Reporting it as completeness
+ * would invert the truth precisely when the connection is least complete.
+ */
+function completenessWatermark(cursors: GithubSyncCursors): Date | undefined {
+  if (!cursors.prBackfillDone || !cursors.commitsCursor) {
+    return undefined;
+  }
+  const candidates = [cursors.prNewestSeenAt, cursors.commitsCursor]
+    .filter((v): v is string => typeof v === 'string')
+    .map((v) => new Date(v))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  if (candidates.length < 2) {
+    return undefined;
+  }
+  return candidates.reduce((oldest, d) => (d < oldest ? d : oldest));
+}
+
+/**
+ * How far back this repo is actually collected — the **newer** of the two
+ * walks, because PRs and commits page independently and the repo is only whole
+ * back to whichever has covered less ground.
+ *
+ * Undefined until both have walked at all: a side that has not started has no
+ * coverage, and reporting the other side's depth would claim history for an
+ * entity nobody has fetched. Once both backfills finish, both settle at the
+ * floor and this is the floor.
+ */
+function collectedBackTo(
+  cursors: GithubSyncCursors,
+  floor: Date,
+): Date | undefined {
+  // Both walks finished: coverage reaches the floor by definition. Checked
+  // FIRST so this self-heals connections that completed their backfill before
+  // the per-walk cursors existed — they have neither, and would otherwise
+  // report no coverage at all despite being fully collected.
+  if (cursors.prBackfillDone && cursors.commitsCursor) {
+    return floor;
+  }
+  const ends = [cursors.prOldestSeenAt, cursors.commitsOldestSeenAt];
+  if (ends.some((v) => typeof v !== 'string')) {
+    return undefined;
+  }
+  const dates = (ends as string[])
+    .map((v) => new Date(v))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  if (dates.length < 2) {
+    return undefined;
+  }
+  const shallowest = dates.reduce((newest, d) => (d > newest ? d : newest));
+  // Never claim to reach further back than the window actually being collected.
+  return shallowest < floor ? floor : shallowest;
 }
 
 function mapAction(

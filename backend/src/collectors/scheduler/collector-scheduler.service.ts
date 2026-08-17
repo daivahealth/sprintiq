@@ -10,6 +10,7 @@ import {
 } from '../../modules/connections/connection.types';
 import { ConnectionsService } from '../../modules/connections/connections.service';
 import { CollectorRegistry } from '../framework/collector.registry';
+import { PollOptions, PollSkipReason } from '../framework/source-collector';
 import { IngestionService } from '../ingestion/ingestion.service';
 
 /**
@@ -38,6 +39,45 @@ import { IngestionService } from '../ingestion/ingestion.service';
  */
 const SWEEP_STALE_AFTER_MS = 45 * 60_000;
 
+/**
+ * The dashboards bucket on IST calendar days (DASHBOARDS.md §4.1.1), so the
+ * day the collection deadline refers to has to be the same one — hardcoded for
+ * the same reason `common/time.ts` hardcodes the offset.
+ */
+const IST_TIMEZONE = 'Asia/Kolkata';
+
+/**
+ * Hour (IST) at which the day-close pass runs. Default 22:00 — late enough to
+ * capture the working day, with roughly two hours of headroom for an org-scale
+ * sweep to actually finish before the date rolls over. Tunable per deployment,
+ * since how long a sweep takes depends on how many connections it runs.
+ */
+const DAY_CLOSE_HOUR_IST = (() => {
+  const raw = Number(process.env.DAY_CLOSE_HOUR_IST);
+  return Number.isInteger(raw) && raw >= 0 && raw <= 23 ? raw : 22;
+})();
+
+/**
+ * How many connections one sweep polls at once. Deliberately small: the point
+ * is to stop wall-clock being the binding constraint on a 195-connection
+ * fleet, not to maximise throughput — API spend is bounded by the collector's
+ * per-sweep budget, and every connection still writes its own rows.
+ */
+const SWEEP_CONCURRENCY = (() => {
+  const raw = Number(process.env.COLLECTOR_SWEEP_CONCURRENCY);
+  return Number.isInteger(raw) && raw > 0 ? raw : 4;
+})();
+
+/** Human-readable reason stored on the skipped `ConnectionSyncRun`. */
+const SKIP_REASONS: Record<PollSkipReason, string> = {
+  'rate-limited':
+    'Skipped — the connection was still in a rate-limit cooldown, so this pass never called the source.',
+  'no-credential':
+    'Skipped — no credential resolved for this connection, so this pass never called the source.',
+  'not-configured':
+    'Skipped — the connection is missing required config (repository / site), so this pass never called the source.',
+};
+
 @Injectable()
 export class CollectorSchedulerService {
   private readonly logger = new Logger(CollectorSchedulerService.name);
@@ -49,6 +89,34 @@ export class CollectorSchedulerService {
     private readonly tenantContext: TenantContextService,
     private readonly prisma: PrismaService,
   ) {}
+
+  /**
+   * The day-close pass: queue **every** active connection so the IST calendar
+   * day ends with its own work collected.
+   *
+   * Nothing else in this scheduler knows what a day is. `isDue` is a rolling
+   * interval, so a repo polled at 21:00 on the 4-hour default is not polled
+   * again until 01:00 — its entire evening lands in *tomorrow's* data, and a
+   * board asking "what shipped today?" answers wrong every night. No interval
+   * setting fixes that; only anchoring a pass to the boundary does.
+   *
+   * It queues (`syncRequestedAt`) rather than sweeping inline, for the same
+   * reason `sync-now` does: the ordinary 5-minute tick then collects them
+   * under the existing single-sweep guard, instead of a second concurrent pass
+   * spending the rate limit on connections the first is already walking.
+   *
+   * The honest bound: this makes the day complete **through the close hour**,
+   * not through midnight. Work after it is collected by the next day's first
+   * sweep. Closing at midnight itself would be worse — an org-scale sweep runs
+   * for tens of minutes, so it would finish inside the following day.
+   */
+  @Cron(`0 ${DAY_CLOSE_HOUR_IST} * * *`, { timeZone: IST_TIMEZONE })
+  async closeOutTheDay(): Promise<void> {
+    const queued = await this.connections.requestSyncForAllActive();
+    this.logger.log(
+      `IST day close (${DAY_CLOSE_HOUR_IST}:00): queued ${queued} active connection(s) so today's data is collected before the day ends.`,
+    );
+  }
 
   @Cron(CronExpression.EVERY_5_MINUTES)
   async tickGithub(): Promise<void> {
@@ -96,14 +164,34 @@ export class CollectorSchedulerService {
       },
     });
 
+    // How many due connections share a credential this sweep. The collector
+    // divides its fleet budget by this, so a 195-repo tenant spends the same
+    // quota per sweep as a 2-repo one instead of 100× more.
+    //
+    // Keyed on tenant AND secret ref, because the rate limit belongs to the
+    // TOKEN, not the tenant. Grouping on tenant alone under-divided whenever
+    // one tenant held several credentials — each group would claim a full
+    // budget against a limit it actually shares. The tenant stays in the key
+    // because `SecretsService` resolves a ref per tenant first, so the same
+    // ref name in two tenants is usually two different tokens.
+    const dueByCredential = new Map<string, number>();
+    const credentialKey = (c: Connection) =>
+      `${c.tenantId}:${c.secretRef ?? ''}`;
+    for (const connection of due) {
+      const key = credentialKey(connection);
+      dueByCredential.set(key, (dueByCredential.get(key) ?? 0) + 1);
+    }
+
     try {
-      for (const connection of due) {
-        await this.syncOne(connection);
+      await this.forEachBounded(due, SWEEP_CONCURRENCY, async (connection) => {
+        await this.syncOne(connection, {
+          peersDue: dueByCredential.get(credentialKey(connection)) ?? 1,
+        });
         await this.prisma.schedulerTick.update({
           where: { sourceSystem },
           data: { connectionsProcessed: { increment: 1 } },
         });
-      }
+      });
     } finally {
       // Always close the sweep out. `syncOne` swallows collector errors, but
       // anything escaping it (a DB blip mid-loop) would otherwise leave the
@@ -113,6 +201,53 @@ export class CollectorSchedulerService {
         where: { sourceSystem },
         data: { finishedAt: new Date() },
       });
+    }
+  }
+
+  /**
+   * Runs `fn` over `items` with at most `limit` in flight.
+   *
+   * A serial sweep of 195 connections runs for tens of minutes, so wall-clock —
+   * not the API budget — became what bounded how often any one connection was
+   * reached. Overlapping a few is safe *because* spend is now governed by the
+   * shared per-sweep budget rather than by how many run at once; doing this
+   * before that change would simply have hit the rate limit faster.
+   *
+   * `allSettled`, not `all`: `all` rejects on the first failure while the other
+   * workers are still running, so the caller's `finally` would stamp the sweep
+   * finished with connections still mid-flight. Every worker is drained first,
+   * then the first real error is rethrown so it still propagates.
+   */
+  private async forEachBounded<T>(
+    items: T[],
+    limit: number,
+    fn: (item: T) => Promise<void>,
+  ): Promise<void> {
+    let next = 0;
+    let firstError: unknown;
+    // Safe without a lock: the read-and-increment is synchronous, and JS runs
+    // it to completion before any other worker resumes.
+    const worker = async (): Promise<void> => {
+      while (next < items.length) {
+        try {
+          await fn(items[next++]);
+        } catch (err) {
+          // Caught per ITEM, not per worker. Letting it escape the loop would
+          // stop this worker consuming at all, so a handful of transient DB
+          // errors would silently abandon every remaining connection while the
+          // caller's `finally` still stamped the sweep finished. One bad item
+          // must cost one item.
+          firstError ??= err;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, worker),
+    );
+    // Every worker has drained before this point, so the caller's `finally`
+    // can close the sweep out knowing nothing is still in flight.
+    if (firstError !== undefined) {
+      throw firstError;
     }
   }
 
@@ -143,6 +278,11 @@ export class CollectorSchedulerService {
    * (§3) was designed for.
    */
   private isDue(connection: Connection, now: number): boolean {
+    // An admin asked for this one explicitly. Honouring the interval here
+    // would turn "sync now" into "within four hours".
+    if (connection.syncRequestedAt) {
+      return true;
+    }
     if (!connection.lastSyncAt || !connection.backfillCompletedAt) {
       return true;
     }
@@ -154,11 +294,18 @@ export class CollectorSchedulerService {
     return connection.lastSyncAt.getTime() + intervalMs <= now;
   }
 
-  private async syncOne(connection: Connection): Promise<void> {
+  private async syncOne(
+    connection: Connection,
+    options: PollOptions,
+  ): Promise<void> {
     const collector = this.registry.get(connection.sourceSystem);
     if (!collector) {
       return;
     }
+    // Entered PER CONNECTION, never once around the sweep. With connections
+    // running concurrently this is what keeps one tenant's events from being
+    // ingested under another's id — `runWithTenant` is async-local storage, so
+    // each in-flight branch carries its own.
     await this.tenantContext.runWithTenant(connection.tenantId, async () => {
       const run = await this.prisma.connectionSyncRun.create({
         data: {
@@ -171,7 +318,31 @@ export class CollectorSchedulerService {
         },
       });
       try {
-        const envelopes = await collector.poll(connection);
+        const {
+          envelopes,
+          skipped,
+          failed,
+          collectedThroughAt,
+          collectedBackTo,
+        } = await collector.poll(connection, options);
+
+        // A pass that never reached the source did not sync this connection.
+        // Recording it as one would stamp `lastSyncAt` — reporting the
+        // connection as fresh on every dashboard while its data stood still,
+        // and dropping it to the back of the neediest-first sweep queue at
+        // precisely the moment it needs to be at the front.
+        if (skipped) {
+          await this.prisma.connectionSyncRun.update({
+            where: { id: run.id },
+            data: {
+              finishedAt: new Date(),
+              status: 'skipped',
+              errorMessage: SKIP_REASONS[skipped],
+            },
+          });
+          return;
+        }
+
         let ingested = 0;
         for (const envelope of envelopes) {
           const result = await this.ingestion.ingest(
@@ -182,14 +353,37 @@ export class CollectorSchedulerService {
             ingested++;
           }
         }
-        await this.connections.touchSync(connection.id);
+        // A pass the source REFUSED is not a sync, even though it reached the
+        // source and may have collected something before the refusal. Its
+        // envelopes are kept (above — real data), but `touchSync` is withheld:
+        // stamping `lastSyncAt` here would report the connection freshly
+        // synced on every dashboard and sink it in the neediest-first queue,
+        // which is the same defect the `skipped` path exists to prevent.
+        if (!failed) {
+          await this.connections.touchSync(connection.id);
+          // Only what the pass actually established. A mid-backfill pass may
+          // report one bound and not the other, and inventing the missing one
+          // would claim coverage the collector never reached.
+          if (collectedThroughAt || collectedBackTo) {
+            await this.connections.setCollectedRange(connection.id, {
+              throughAt: collectedThroughAt,
+              backTo: collectedBackTo,
+            });
+          }
+        }
         await this.prisma.connectionSyncRun.update({
           where: { id: run.id },
           data: {
             finishedAt: new Date(),
             eventsFetched: envelopes.length,
             eventsIngested: ingested,
-            status: 'success',
+            status: failed ? 'error' : 'success',
+            ...(failed
+              ? {
+                  errorMessage:
+                    'The source rejected this pass — see the connection health for the specific reason.',
+                }
+              : {}),
           },
         });
         if (envelopes.length > 0) {

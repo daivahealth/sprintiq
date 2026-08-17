@@ -330,12 +330,34 @@ function scopeParams(scope: Scope, from?: string): URLSearchParams {
  * facts is the misreading this exists to prevent.
  */
 export interface FreshnessView {
-  /** Oldest successful sync across active connections — the bound on the whole screen. */
+  /**
+   * Source time everything on screen is COMPLETE through — the real bound.
+   * Null while any connection is still backfilling (`incomplete`).
+   */
+  collectedThroughAt: string | null;
+  /**
+   * Oldest point collected back to. A board's window `[from, now]` is complete
+   * iff `collectedBackTo <= from` — which is how a "last 7 days" board can be
+   * complete while a 12-month backfill is still walking.
+   */
+  collectedBackTo: string | null;
+  behindSeconds: number | null;
+  /** Active connections still backfilling — complete through nothing yet. */
+  incomplete: number;
+  /**
+   * Oldest time we last REACHED a source. Not a completeness measure: a
+   * connection can poll every 5 minutes while far behind in its backfill.
+   * Kept to distinguish "running and behind" from "stopped".
+   */
   lastSyncAt: string | null;
   staleSeconds: number | null;
   neverSynced: number;
   failing: { sourceSystem: string; name: string; error: string }[];
-  sources: { sourceSystem: string; lastSyncAt: string | null }[];
+  sources: {
+    sourceSystem: string;
+    lastSyncAt: string | null;
+    collectedThroughAt: string | null;
+  }[];
 }
 
 export function useFreshness() {

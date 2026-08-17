@@ -503,8 +503,13 @@ export function AdminConfigurationsPage() {
                       {error ? (
                         <p className="text-xs text-danger-fg">{error}</p>
                       ) : isSecretRef ? (
+                        // A field-specific helper wins over the generic
+                        // secret-ref hint. Without this a secret-ref field
+                        // could never say anything about ITSELF — which is how
+                        // "Webhook secret ref" sat here looking operational
+                        // while nothing consumed it (api/README.md §12 #3).
                         <p className="text-xs text-fg-faint">
-                          {catalog.data?.secretRefHint}
+                          {field.helper ?? catalog.data?.secretRefHint}
                         </p>
                       ) : field.patternHint ? (
                         <p className="text-xs text-fg-faint">{field.patternHint}</p>

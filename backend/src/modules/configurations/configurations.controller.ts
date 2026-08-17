@@ -25,6 +25,7 @@ import { GithubOrgSyncService } from '../../collectors/sources/github/github-org
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../../collectors/sources/github/github-review-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../../collectors/sources/jira/jira-story-date-reconciler.service';
+import { CollectionProgressService } from '../../collectors/scheduler/collection-progress.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
@@ -108,6 +109,7 @@ export class ConfigurationsController {
     private readonly correlation: CorrelationService,
     private readonly identities: DeveloperIdentityService,
     private readonly connections: ConnectionsService,
+    private readonly progress: CollectionProgressService,
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
@@ -215,6 +217,23 @@ export class ConfigurationsController {
    * `GithubCommitReconcilerService` for why this can't happen via normal
    * re-ingestion). Updates `code_commit` rows directly.
    */
+  /**
+   * "Is this tenant converging, and roughly when?" — the question Sync Status
+   * could not answer. It reported what had *happened* (runs, event counts,
+   * badges) but nothing said whether the outstanding backfill work was going
+   * to finish, which is exactly what an admin needs before the end of the day.
+   *
+   * Read-only and cheap (one COUNT per reconciler); it starts no work. Lives
+   * here rather than on `/admin/connections/sync-status` because the backlog
+   * is collector state (BC-1) and BC-0's `ConnectionsService` must not depend
+   * on the context that already depends on it.
+   */
+  @Roles(Role.ADMIN)
+  @Get('collection-progress')
+  async collectionProgress(@CurrentUser() user: AuthUser) {
+    return this.progress.getBacklog(user.tenantId);
+  }
+
   @Roles(Role.ADMIN)
   @Post('github/reconcile-commit-stats')
   async reconcileCommitStats(@CurrentUser() user: AuthUser) {

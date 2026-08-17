@@ -54,23 +54,17 @@ export class GithubCommitMessageReconcilerService {
     private readonly client: GithubClient,
   ) {}
 
+  /** How many PRs still need their commit messages — without fetching any. */
+  async countRemaining(tenantId: string): Promise<number> {
+    return this.prisma.pullRequest.count({ where: candidateWhere(tenantId) });
+  }
+
   async reconcile(
     tenantId: string,
     limit = DEFAULT_LIMIT,
   ): Promise<CommitMessageReconcileResult> {
-    const candidateWhere = {
-      tenantId,
-      // Only rows never asked about — a PR from a since-deleted repo can
-      // never be answered, and without the stamp a scheduled sweep would
-      // re-fetch it every tick forever.
-      commitsFetchedAt: null,
-      // PRs enriched by the live collector already carry their messages —
-      // re-fetching them recovers nothing.
-      commitMessages: { isEmpty: true },
-    };
-
     const candidates = await this.prisma.pullRequest.findMany({
-      where: candidateWhere,
+      where: candidateWhere(tenantId),
       // Newest first: recent PRs are the ones dashboards actually window on.
       orderBy: { openedAt: 'desc' },
       take: limit,
@@ -145,9 +139,7 @@ export class GithubCommitMessageReconcilerService {
       }
     }
 
-    const remaining = await this.prisma.pullRequest.count({
-      where: candidateWhere,
-    });
+    const remaining = await this.countRemaining(tenantId);
 
     this.logger.log(
       `Reconciled PR commit messages: ${updated} updated, ${skipped} skipped, ${remaining} remaining` +
@@ -166,4 +158,22 @@ export class GithubCommitMessageReconcilerService {
       resumeAt,
     };
   }
+}
+
+/**
+ * Rows this reconciler considers outstanding — one definition shared by the
+ * work loop and `countRemaining`, so the Sync Status backlog can never
+ * disagree with what the reconciler actually picks up.
+ */
+function candidateWhere(tenantId: string) {
+  return {
+    tenantId,
+    // Only rows never asked about — a PR from a since-deleted repo can
+    // never be answered, and without the stamp a scheduled sweep would
+    // re-fetch it every tick forever.
+    commitsFetchedAt: null,
+    // PRs enriched by the live collector already carry their messages —
+    // re-fetching them recovers nothing.
+    commitMessages: { isEmpty: true },
+  };
 }

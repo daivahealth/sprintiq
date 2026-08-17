@@ -12,7 +12,7 @@ Canonical frontend/dashboard spec for SprintIQ at real scale: **~200 repositorie
 2. **Role-based assignment.** Each dashboard carries a role list; `GET /api/dashboards/assignments` returns the dashboards for the current user's roles and drives the nav. Default: all dashboards → all roles; per-tenant admin-configurable assignment is the follow-up (admin UI over the same registry).
 3. **Bi-directional Jira↔GitHub tracking everywhere.** Every dashboard exposes both directions of the correlation graph: work items → their linked PRs (Jira→GitHub) and PRs → their work items (GitHub→Jira), with coverage percentages and orphans surfaced.
 4. **Detailing at every granularity** — the backend read models answer story-wise, sub-task-wise, bug-wise, epic-wise, developer-wise, release-wise, sprint-wise questions (see §3).
-5. Numbers are computed server-side from persisted facts + correlation links; missing data renders as missing (never fabricated), with sample size/freshness shown. **Freshness is rendered on every board** (`FreshnessNote` → `GET /api/dashboards/freshness`): with poll-only ingestion on a 4-hour default interval, the page being a second old says nothing about the data in it. It shows the oldest sync across active connections, and calls out never-synced and failing connections separately. It rides in the shared Scope Bar; boards with their own `FilterBar` mount it directly (§8).
+5. Numbers are computed server-side from persisted facts + correlation links; missing data renders as missing (never fabricated), with sample size/freshness shown. **Freshness is rendered on every board** (`FreshnessNote` → `GET /api/dashboards/freshness`): with poll-only ingestion on a 4-hour default interval, the page being a second old says nothing about the data in it. It shows the oldest **completeness watermark** (`collectedThroughAt` — how much of the source is collected, not when the API was last called) across active connections, and calls out still-backfilling, never-synced and failing connections separately. It rides in the shared Scope Bar; boards with their own `FilterBar` mount it directly (§8).
 
 ---
 
@@ -141,9 +141,12 @@ All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cros
 
 | Board | Sends | Axes shown |
 |---|---|---|
-| Delivery Explorer, Productivity, Efficiency | full scope | all |
+| Delivery Explorer | full scope incl. `groupBy` | all |
+| **Productivity, Efficiency** | projects, repos, `from` — **not `groupBy`** | repos + time |
 | Top Repos, Team Capacity | scope, `groupBy` forced | repos + time |
 | **Velocity, Forecasting, Flow** | `projects` **only** | projects only |
+
+`groupBy` is sent by exactly one hook, `useBatchMetrics`. Productivity and Efficiency go through `scopeParams`, which drops it — so their Group-by toggle changed the URL and nothing else until 2026-08-17 (api/README.md §12 #33). Neither has rows for the axis to split even in principle: Productivity is bucketed by **week** by construction, and Efficiency reports scope-wide percentiles and coverage ratios.
 
 The last row is the substantive one: those three are **Jira-only** metrics. Forecasting is `avg velocity of recent closed sprints ÷ remaining backlog` — sprints, points and backlog items, with no repository dimension to filter by at all; narrowing it by repo would require mapping stories through `pr_implements_story` and would silently drop every unlinked story, making the forecast *wrong* rather than narrower. Time range is equally meaningless there: the forecast samples the **last 3 closed sprints**, not a rolling day window, so a `30d` selector implies control over a sampling decision it doesn't have.
 
@@ -176,9 +179,11 @@ There are **two distinct freshness signals and every board carries both**, which
 | Signal | Question it answers | Source |
 |---|---|---|
 | `Computed {timeAgo}` | When did this *query* run? | the view's own `computedAt` |
-| `Data as of {timeAgo}` | How old is the *collected data* underneath it? | `GET /api/dashboards/freshness` (api/README.md §9) |
+| `Data complete through {timeAgo}` | Is the range THIS board shows actually collected? | `GET /api/dashboards/freshness` → `collectedBackTo` / `collectedThroughAt` (api/README.md §9) |
 
-The second is the one that matters with poll-only ingestion on a 4-hour default: a page rendered a second ago can be sitting on hours-old facts. It is mounted in the shared `ScopeBar`, so the four boards that build their own `FilterBar` instead — Sprint Health, Sprint Risk, Project Activity, Developer Activity — mount `FreshnessNote` explicitly. Sprint Health, Sprint Risk and Developer Activity previously showed **neither** signal.
+The second is the one that matters with poll-only ingestion on a 4-hour default: a page rendered a second ago can be sitting on hours-old facts. It reports **completeness, not contact** — it previously read `Data as of {lastSyncAt}`, which is when the collector last called the API, and a connection deep in a backfill calls the API every five minutes while being eighty pages behind. The note renders distinct states rather than one timestamp: complete through T, *still backfilling* (no completeness yet), and failing/never-synced (frozen at an unknown age).
+
+**It judges the window on screen, not the whole dataset.** Collection is a range — `[collectedBackTo, collectedThroughAt]` — and a board showing `[from, now]` is complete iff `collectedBackTo <= from`. So a "last 7 days" board over a complete last 7 days says nothing at all, even mid-way through a 12-month backfill; only a board whose window genuinely reaches past the collected history reports a shortfall, and it names the date that history starts. `ScopeBar` passes its `from` (and none when `showTime={false}`); Project and Developer Activity pass their own window toggle's start; Sprint Health and Sprint Risk have no time range and get the plain statement. This matters beyond tidiness: a warning that fires on correct numbers for days teaches people to ignore the warnings that aren't. It is mounted in the shared `ScopeBar`, so the four boards that build their own `FilterBar` instead — Sprint Health, Sprint Risk, Project Activity, Developer Activity — mount `FreshnessNote` explicitly. Sprint Health, Sprint Risk and Developer Activity previously showed **neither** signal.
 
 ## 9. Next increments (ordered)
 

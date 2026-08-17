@@ -24,6 +24,11 @@ describe('ConnectionsService.reopenBackfill', () => {
     return { service: new ConnectionsService(prisma), updates };
   }
 
+  /** The net effect of the call's writes, in order. */
+  function merged(updates: Record<string, unknown>[]): Record<string, unknown> {
+    return Object.assign({}, ...updates) as Record<string, unknown>;
+  }
+
   const since = new Date('2025-08-14T00:00:00.000Z');
 
   it('moves the floor back AND clears the cursors', async () => {
@@ -37,10 +42,14 @@ describe('ConnectionsService.reopenBackfill', () => {
 
     await service.reopenBackfill('c1', since);
 
-    expect(updates[0].syncCursors).toEqual({});
-    expect((updates[0].config as { backfillSince: string }).backfillSince).toBe(
-      since.toISOString(),
-    );
+    // Asserted across the writes rather than on one of them: the floor and the
+    // progress reset are two updates (the reset is shared with the
+    // Configuration-save path via `clearSyncProgress`), and which one lands
+    // first is not behaviour this test should pin.
+    expect(merged(updates).syncCursors).toEqual({});
+    expect(
+      (merged(updates).config as { backfillSince: string }).backfillSince,
+    ).toBe(since.toISOString());
   });
 
   it('preserves the rest of the connection config', async () => {
@@ -55,7 +64,7 @@ describe('ConnectionsService.reopenBackfill', () => {
 
     await service.reopenBackfill('c1', since);
 
-    expect(updates[0].config).toMatchObject({
+    expect(merged(updates).config).toMatchObject({
       repoFullName: 'acme/app',
       syncIntervalMinutes: 60,
     });
@@ -68,7 +77,18 @@ describe('ConnectionsService.reopenBackfill', () => {
 
     await service.reopenBackfill('c1', since);
 
-    expect(updates[0].backfillCompletedAt).toBeNull();
+    expect(merged(updates).backfillCompletedAt).toBeNull();
+  });
+
+  it('clears the completeness watermark too, so the connection stops claiming today is collected', async () => {
+    // `collectedThroughAt` is what every dashboard reads for "is today's data
+    // in?". A connection that has just been told to start over has not
+    // collected through anything.
+    const { service, updates } = setup({ repoFullName: 'acme/app' });
+
+    await service.reopenBackfill('c1', since);
+
+    expect(merged(updates).collectedThroughAt).toBeNull();
   });
 
   it('does nothing for a connection that no longer exists', async () => {

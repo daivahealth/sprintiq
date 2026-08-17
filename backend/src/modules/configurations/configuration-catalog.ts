@@ -68,9 +68,17 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         required: true,
       },
       {
+        // Kept, but honestly labelled. Collection is poll-only (api/README.md
+        // §12 #2): the receiver exists and verifies signatures, but cannot be
+        // reached from a real provider, so a value here changes nothing today.
+        // Presented as an inactive field rather than removed — admins who have
+        // already set one shouldn't have it silently dropped, and the value is
+        // what webhook delivery will use once routing lands.
         key: 'webhookSecretRef',
-        label: 'Webhook secret ref',
+        label: 'Webhook secret ref (not yet active)',
         kind: 'secret-ref',
+        helper:
+          'Stored for future use. Ingestion is poll-only today — setting this does not enable real-time updates. Env var name only.',
       },
       {
         key: 'backfillDays',
@@ -110,9 +118,17 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         required: true,
       },
       {
+        // Kept, but honestly labelled. Collection is poll-only (api/README.md
+        // §12 #2): the receiver exists and verifies signatures, but cannot be
+        // reached from a real provider, so a value here changes nothing today.
+        // Presented as an inactive field rather than removed — admins who have
+        // already set one shouldn't have it silently dropped, and the value is
+        // what webhook delivery will use once routing lands.
         key: 'webhookSecretRef',
-        label: 'Webhook secret ref',
+        label: 'Webhook secret ref (not yet active)',
         kind: 'secret-ref',
+        helper:
+          'Stored for future use. Ingestion is poll-only today — setting this does not enable real-time updates. Env var name only.',
       },
       {
         key: 'backfillDays',

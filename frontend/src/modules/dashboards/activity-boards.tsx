@@ -35,6 +35,19 @@ const WINDOW_DAYS: Record<ActivityWindow, number> = {
   month: 30,
 };
 
+/**
+ * The start of the selected window, so `FreshnessNote` can judge THIS board's
+ * range rather than the whole dataset. These boards carry their own window
+ * toggle instead of the shared Scope Bar, so they have to hand it over
+ * explicitly — otherwise they would warn "incomplete" during any deep backfill
+ * even when the days actually on screen are fully collected.
+ */
+function windowFrom(window: ActivityWindow): string {
+  return new Date(
+    Date.now() - WINDOW_DAYS[window] * 24 * 60 * 60 * 1000,
+  ).toISOString();
+}
+
 function WindowToggle({
   value,
   onChange,
@@ -76,7 +89,7 @@ export function ProjectActivityBoard() {
         {/* These boards build their own FilterBar instead of the shared
             ScopeBar, so freshness has to be mounted explicitly — otherwise
             they render numbers with no staleness signal at all. */}
-        <FreshnessNote />
+        <FreshnessNote windowFrom={windowFrom(window)} />
       </FilterBar>
 
       {query.isLoading && <LoadingCard />}
@@ -362,7 +375,7 @@ export function DeveloperActivityBoard() {
         {/* These boards build their own FilterBar instead of the shared
             ScopeBar, so freshness has to be mounted explicitly — otherwise
             they render numbers with no staleness signal at all. */}
-        <FreshnessNote />
+        <FreshnessNote windowFrom={windowFrom(window)} />
       </FilterBar>
 
       <DailyActivitySection window={window} />

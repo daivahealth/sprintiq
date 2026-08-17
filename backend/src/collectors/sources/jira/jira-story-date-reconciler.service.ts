@@ -48,6 +48,16 @@ export class JiraStoryDateReconcilerService {
     private readonly client: JiraClient,
   ) {}
 
+  /**
+   * How many stories still lack Jira's own `created` date — without asking
+   * Jira. Read by `CollectionProgressService` for the Sync Status backlog.
+   */
+  async countRemaining(tenantId: string): Promise<number> {
+    return this.prisma.story.count({
+      where: { tenantId, sourceCreatedAt: null },
+    });
+  }
+
   async reconcile(tenantId: string): Promise<StoryDateReconcileResult> {
     const candidates = await this.prisma.story.findMany({
       where: { tenantId, sourceCreatedAt: null },

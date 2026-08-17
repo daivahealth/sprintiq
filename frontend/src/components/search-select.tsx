@@ -34,8 +34,22 @@ function optionLabel(option: SearchSelectOption): string {
 }
 
 /**
- * Single-select searchable combobox: one input doubles as the filter box and
- * the selected-value display. Typing debounces into onSearch so the server
+ * Single-select searchable combobox.
+ *
+ * The input has ONE job at a time, which is the whole point of the design:
+ * closed it displays the selection, open it is an empty search field. It used
+ * to do both at once — permanently pre-filled with the selected name — and
+ * that overload caused every problem this component has had. The placeholder
+ * was dead text nobody could ever see; the box read as a search you had
+ * already typed into; and typing appended to a full login, turning a search
+ * for "san" into "Animesh-Khatua_athmasan", which matched nothing. That was
+ * patched with a select-all-on-focus and a `dirty` flag to keep programmatic
+ * writes out of the search — both of which exist only to contain the overload,
+ * and both of which go away once the input stops doing two jobs.
+ *
+ * Opening clears the box so the placeholder shows and the full list is
+ * available; the current selection stays visible as the highlighted row rather
+ * than as text in the field. Typing debounces into onSearch so the server
  * query fires once per pause, not once per keystroke.
  */
 export function SearchSelect({
@@ -49,35 +63,37 @@ export function SearchSelect({
   emptyText = 'No matches',
 }: SearchSelectProps) {
   const [open, setOpen] = useState(false);
-  const selectedLabel =
-    options.map(optionLabel).find((_, i) => optionValue(options[i]) === value) ??
-    value ??
-    '';
-  const [query, setQuery] = useState(selectedLabel);
+  const [query, setQuery] = useState('');
   /**
-   * True only once the USER has edited the input since opening it. The input
-   * doubles as the selected-value display, so `query` also changes
-   * programmatically (auto-select, closing without picking) — and letting
-   * those changes reach `onSearch` silently narrowed the server-side catalog
-   * to the one selected person: opening the picker listed a single option,
-   * and typing appended to the pre-filled label, producing a query like
-   * "Animesh-Khatua_athmasan" that matches nothing. Only deliberate edits
-   * may drive the search.
+   * The selected option's human label, remembered from whenever it was last
+   * resolvable. `options` holds only the CURRENT search's results, so while a
+   * filter is active — or in the moment after closing, before the unfiltered
+   * refetch lands — the selected option may be absent from it entirely. Without
+   * this the closed display would fall back to the raw stored value and show a
+   * git login where a name belongs.
    */
-  const [dirty, setDirty] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Closing (picked or clicked away): reflect the selected value in the input
-  // again, and clear any server-side filter so the next open shows the full
-  // list rather than staying pinned to the last search's results.
+  // Keep the remembered label in step whenever the current value IS resolvable.
   useEffect(() => {
+    const match = options.find((o) => optionValue(o) === value);
+    if (match) {
+      setSelectedLabel(optionLabel(match));
+    } else if (!value) {
+      setSelectedLabel('');
+    }
+  }, [options, value]);
+
+  // Opening starts a fresh search; closing clears the server-side filter so the
+  // next open sees the full list rather than the last search's results.
+  useEffect(() => {
+    setQuery('');
     if (!open) {
-      setQuery(selectedLabel);
-      setDirty(false);
       onSearch('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedLabel, open]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -93,19 +109,22 @@ export function SearchSelect({
   }, [open]);
 
   // Debounced server-side search — fast typing collapses to one request.
-  // Gated on `dirty`: programmatic query changes must never fire a search.
+  // Gated on `open` rather than on a `dirty` flag: the box only ever holds a
+  // search term while open, so there is no programmatic write left to exclude.
   useEffect(() => {
-    if (!dirty) {
+    if (!open) {
       return;
     }
     const t = setTimeout(() => onSearch(query), 250);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, dirty]);
+  }, [query, open]);
 
   const handleSelect = (option: SearchSelectOption) => {
     onSelect(optionValue(option));
-    setQuery(optionLabel(option));
+    // Remembered immediately: the unfiltered list has not refetched yet, so
+    // resolving this label from `options` on the next render is not reliable.
+    setSelectedLabel(optionLabel(option));
     setOpen(false);
   };
 
@@ -121,21 +140,15 @@ export function SearchSelect({
         )}
       >
         <input
-          value={query}
-          onFocus={(e) => {
-            setOpen(true);
-            // The input arrives pre-filled with the selected value (the board
-            // auto-selects a developer on load). Select it so typing REPLACES
-            // it, combobox-style — appending to a full login was how a search
-            // for "san" became "Animesh-Khatua_athmasan" and matched nothing.
-            e.target.select();
-          }}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setDirty(true);
-            setOpen(true);
-          }}
-          placeholder={placeholder}
+          // Closed, this shows the selection; open, it is an empty search box.
+          // Never both — see the note on the component.
+          value={open ? query : selectedLabel}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => setQuery(e.target.value)}
+          // Only meaningful while open, which is exactly when the box is empty.
+          placeholder={open ? placeholder : ''}
+          aria-expanded={open}
+          role="combobox"
           className="w-full text-sm text-fg outline-none"
         />
         {loading && <Spinner />}

@@ -63,7 +63,33 @@ model Connection {
   syncCursors       Json
   rateLimitState    Json
   status            String    @default("pending")
+  // When this connection last *reached* its source. NOT a completeness measure:
+  // a connection can talk to GitHub successfully every 5 minutes while still
+  // being 80 pages behind in its backfill. Use collectedThroughAt for "is
+  // today's data in?" — see METRICS.md §9 data_freshness.
   lastSyncAt        DateTime?
+  // The two ends of what this connection has actually collected. Together they
+  // answer "is the range this board is showing complete?", which one watermark
+  // alone cannot: a board showing the last 7 days over a complete last 7 days
+  // is complete, however far a 12-month historical walk still has to go.
+  //
+  // collectedThroughAt = newest point collected up to (upper bound).
+  // collectedBackTo    = oldest point walked to so far (lower bound).
+  // A window [from, now] is complete iff collectedBackTo <= from.
+  //
+  // The sources walk in opposite directions, and both cases are covered:
+  // GitHub goes newest-first, so recent data is complete almost immediately
+  // and collectedBackTo descends over days; Jira goes oldest-first
+  // (ORDER BY updated ASC), so collectedBackTo is the floor at once and
+  // collectedThroughAt climbs. Derived from each collector's own cursors,
+  // which only it can interpret.
+  collectedThroughAt DateTime?
+  collectedBackTo    DateTime?
+  // Set by an admin "sync now" and cleared the moment the connection actually
+  // syncs. A pending flag, not a timestamp comparison: a connection carrying one
+  // is due regardless of its interval AND sorts to the head of the sweep, so on
+  // a 195-connection tenant "sync now" means next rather than eventually.
+  syncRequestedAt   DateTime?
   syncLagSeconds    Int       @default(0)
   // Set once, the first tick the historical backfill (all entity types) fully completes.
   backfillCompletedAt DateTime?
@@ -78,6 +104,11 @@ model Connection {
   updatedAt         DateTime  @updatedAt
 
   @@index([tenantId, sourceSystem])
+  // The sweep's query: filter on sourceSystem+status, then order
+  // requested-first, then neediest. Declared with the sort directions the
+  // query actually uses — see the migration for why a direction-less index
+  // cannot serve this ORDER BY.
+  @@index([sourceSystem, status, syncRequestedAt(sort: Desc), lastSyncAt])
   @@map("connections_connection")
 }
 

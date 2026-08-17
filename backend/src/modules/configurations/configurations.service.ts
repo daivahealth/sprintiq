@@ -372,7 +372,12 @@ export class ConfigurationsService {
         status: connectionStatus,
       });
       if (rescoped) {
-        await this.connections.setSyncCursors(existing.id, {});
+        // Not just the cursors: `backfillCompletedAt` has to go too, or the
+        // scheduler's due-check leaves this re-walk interval-gated for up to
+        // four hours while the Sync Status screen reports it as complete.
+        // Same reset `/rebackfill` performs — one definition, in
+        // `ConnectionsService.clearSyncProgress`.
+        await this.connections.clearSyncProgress(existing.id);
       }
     } else if (status === 'active') {
       const backfillSince = resolveBackfillSince(
