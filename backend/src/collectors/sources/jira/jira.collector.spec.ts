@@ -90,6 +90,40 @@ describe('JiraCollector.poll', () => {
     expect(client.searchIssues).not.toHaveBeenCalled();
   });
 
+  it('reports coverage back to the floor and through the last issue seen, even mid-pass', async () => {
+    // Jira walks ASCENDING from the floor, so everything between the floor and
+    // wherever it has paged to is genuinely collected — reportable now. The
+    // resume cursor (`updatedCursor`) still may not move until the pass
+    // completes, because it keys the page token; the reported watermark is a
+    // separate value precisely so honesty here does not break resumption.
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('PAY-1', { updated: '2026-06-01T00:00:00.000Z' }),
+        issue('PAY-2', { updated: '2026-06-02T00:00:00.000Z' }),
+      ],
+      nextPageToken: 'more',
+    });
+    const floor = '2025-08-17T00:00:00.000Z';
+
+    const result = await collector.poll(
+      baseConnection({
+        config: {
+          siteUrl: 'https://acme.atlassian.net',
+          email: 'admin@acme.com',
+          sprintFieldId: null,
+          storyPointsFieldIds: [],
+          statusCategories: {},
+          backfillSince: floor,
+        },
+      }),
+    );
+
+    expect(result.collectedBackTo).toEqual(new Date(floor));
+    expect(result.collectedThroughAt).toEqual(
+      new Date('2026-06-02T00:00:00.000Z'),
+    );
+  });
+
   it('reports missing siteUrl/email as skipped, not as an empty success', async () => {
     const result = await collector.poll(baseConnection({ config: {} }));
     expect(result).toEqual({ envelopes: [], skipped: 'not-configured' });

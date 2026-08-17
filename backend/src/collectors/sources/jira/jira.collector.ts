@@ -340,7 +340,18 @@ export class JiraCollector extends BaseSourceCollector {
       // Same reason as the GitHub collector: a search Jira rejected must not
       // be recorded as a successful sync (§12 #29).
       failed: passFailure ? true : undefined,
-      collectedThroughAt: parseDate(cursors.updatedCursor),
+      // Reported from the last issue actually seen, NOT from `updatedCursor`.
+      // Jira walks `ORDER BY updated ASC`, so everything between the floor and
+      // wherever it has paged to is collected and can be claimed right away —
+      // but `updatedCursor` may only advance on a completed pass, because it
+      // keys the resume token and moving it mid-pass changes the JQL and
+      // invalidates that token. Keeping the reported watermark separate from
+      // the resume cursor is what lets a long backfill be honest as it goes
+      // instead of silent until it finishes.
+      collectedThroughAt:
+        parseDate(lastSeenUpdatedAt) ?? parseDate(cursors.updatedCursor),
+      // Ascending walk, so coverage starts at the floor from the first pass.
+      collectedBackTo: floor,
     };
   }
 

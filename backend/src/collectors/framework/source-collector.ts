@@ -41,16 +41,32 @@ export interface PollResult {
    */
   failed?: boolean;
   /**
-   * Source time this connection is now known **complete** through — every
-   * change at the source at or before this instant has been collected.
+   * The **upper** bound of what this connection has collected: every change at
+   * the source at or before this instant is in.
    *
-   * Undefined while a backfill is still walking: the pass made progress but
-   * established no completeness, and claiming one would be a stronger promise
-   * than the collector can keep. Only the collector can compute this, because
-   * only it knows which of its cursors are watermarks and which are resume
-   * points (see `GithubSyncCursors` / `JiraSyncCursors`).
+   * Only the collector can compute this, because only it knows which of its
+   * cursors are watermarks and which are resume points (see
+   * `GithubSyncCursors` / `JiraSyncCursors`) — and note the reported watermark
+   * need not be the same field as the resume cursor. Jira's is not: its
+   * `updatedCursor` may only move on a completed pass (it keys the resume
+   * token), but because Jira walks ascending, everything from the floor to
+   * wherever it has paged to is genuinely collected and can be reported now.
    */
   collectedThroughAt?: Date;
+  /**
+   * The **lower** bound: the oldest point this connection has walked back to.
+   *
+   * The pair is what lets a board judge its OWN window rather than the whole
+   * dataset — `[from, now]` is complete iff `collectedBackTo <= from`. With
+   * only the upper bound, a tenant part-way through a 12-month walk could
+   * report nothing but "incomplete" for days, even on a board showing the last
+   * seven days over data that is entirely collected.
+   *
+   * The two sources reach it from opposite ends: GitHub walks newest-first so
+   * this descends over days, while Jira walks oldest-first so it is the
+   * backfill floor from the first pass.
+   */
+  collectedBackTo?: Date;
 }
 
 /** What the scheduler knows about this sweep that one connection cannot. */

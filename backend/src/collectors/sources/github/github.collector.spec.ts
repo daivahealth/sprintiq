@@ -240,6 +240,50 @@ describe('GithubCollector.poll', () => {
     expect(envelopes).toHaveLength(1);
   });
 
+  it('reports how far back it has walked while still backfilling, so recent windows can be judged complete', async () => {
+    // GitHub walks newest-first, so a backfilling connection is genuinely
+    // complete over the recent end long before the whole window is in. Without
+    // the lower bound the dashboards can only say "incomplete" for days, even
+    // for a board showing the last 7 days over data that is fully collected.
+    const at = (day: number) => new Date(Date.UTC(2026, 7, day)).toISOString();
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [17, 16, 15].map((d) => pull({ number: d, updated_at: at(d) })),
+      hasNextPage: true,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const result = await collector.poll(baseConnection());
+
+    // Walked back to the oldest PR it actually enriched — not to the floor it
+    // is aiming at, which it has not reached.
+    expect(result.collectedBackTo).toEqual(new Date(at(15)));
+  });
+
+  it('reports the backfill floor as the lower bound once the walk is finished', async () => {
+    const floor = new Date(Date.UTC(2025, 7, 17));
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const result = await collector.poll(
+      baseConnection({
+        config: {
+          repoFullName: 'acme/payments',
+          backfillSince: floor.toISOString(),
+        },
+        syncCursors: {
+          prBackfillDone: true,
+          prNewestSeenAt: '2026-08-17T00:00:00.000Z',
+          commitsCursor: '2026-08-17T00:00:00.000Z',
+        },
+      }),
+    );
+
+    expect(result.collectedBackTo).toEqual(floor);
+  });
+
   it('converges in incremental mode when more PRs changed than the budget covers', async () => {
     // The divided budget made this the normal case, not an edge one: at 195
     // peers a connection gets 2 PRs per tick, so any repo with 3+ PRs touched

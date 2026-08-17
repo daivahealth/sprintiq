@@ -335,6 +335,12 @@ export interface FreshnessView {
    * Null while any connection is still backfilling (`incomplete`).
    */
   collectedThroughAt: string | null;
+  /**
+   * Oldest point collected back to. A board's window `[from, now]` is complete
+   * iff `collectedBackTo <= from` — which is how a "last 7 days" board can be
+   * complete while a 12-month backfill is still walking.
+   */
+  collectedBackTo: string | null;
   behindSeconds: number | null;
   /** Active connections still backfilling — complete through nothing yet. */
   incomplete: number;

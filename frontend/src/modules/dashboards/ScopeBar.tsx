@@ -24,7 +24,7 @@ export function ScopeBar({
   showTime?: boolean;
   showGroupBy?: boolean;
 }) {
-  const { scope, setScope } = useScope();
+  const { scope, setScope, from } = useScope();
   const [projectSearch, setProjectSearch] = useState("");
   const [repoSearch, setRepoSearch] = useState("");
 
@@ -96,8 +96,13 @@ export function ScopeBar({
       )}
 
       {/* Every board renders the Scope Bar, so freshness lands on all of them
-          from one place rather than being threaded through each read model. */}
-      <FreshnessNote />
+          from one place rather than being threaded through each read model.
+          `from` is handed over so the note judges THIS board's window rather
+          than the whole dataset — a 7-day board over a complete 7 days is
+          complete, whatever a 12-month backfill is still doing. Boards that
+          send no time range (`showTime={false}`) pass none, and get the plain
+          statement. */}
+      <FreshnessNote windowFrom={showTime ? from : undefined} />
     </FilterBar>
   );
 }

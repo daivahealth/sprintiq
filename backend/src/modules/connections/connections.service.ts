@@ -129,6 +129,18 @@ export interface DataFreshness {
    * would report a coverage half the data predates.
    */
   collectedThroughAt: Date | null;
+  /**
+   * The **lower** bound: the newest `collectedBackTo` across active
+   * connections — i.e. the shallowest, because the tenant's history is only
+   * uniformly covered as deep as its least-walked connection.
+   *
+   * This is what lets a board judge its OWN window instead of the whole
+   * dataset: a range `[from, now]` is complete iff `collectedBackTo <= from`.
+   * Without it, a tenant part-way through a 12-month walk can only ever be
+   * described as "incomplete", including on a board showing the last seven
+   * days over data that is entirely collected.
+   */
+  collectedBackTo: Date | null;
   /** Seconds between `collectedThroughAt` and now — the real lag behind the source. */
   behindSeconds: number | null;
   /** Active connections still backfilling, i.e. complete through nothing yet. */
@@ -272,14 +284,38 @@ export class ConnectionsService {
   }
 
   /**
-   * Advances the point in SOURCE time this connection is complete through.
-   * Distinct from `lastSyncAt` (when we last called the API) — this is the one
-   * that answers "is today's data in?".
+   * Records the two ends of what this connection has collected. Distinct from
+   * `lastSyncAt` (when we last called the API) — this pair is what answers
+   * "is the range this board shows complete?".
+   *
+   * `backTo` only ever moves backward. A pass reports what IT walked, and an
+   * incremental pass walks only the recent end — so taking its value at face
+   * value would repeatedly forget history already collected and make a fully
+   * backfilled connection look shallow again on every tick.
    */
-  async setCollectedThroughAt(id: string, at: Date): Promise<void> {
+  async setCollectedRange(
+    id: string,
+    range: { throughAt?: Date; backTo?: Date },
+  ): Promise<void> {
+    const current = await this.prisma.connection.findUnique({
+      where: { id },
+      select: { collectedBackTo: true },
+    });
+    const backTo =
+      range.backTo &&
+      (!current?.collectedBackTo || range.backTo < current.collectedBackTo)
+        ? range.backTo
+        : undefined;
+
+    if (!range.throughAt && !backTo) {
+      return;
+    }
     await this.prisma.connection.update({
       where: { id },
-      data: { collectedThroughAt: at },
+      data: {
+        ...(range.throughAt ? { collectedThroughAt: range.throughAt } : {}),
+        ...(backTo ? { collectedBackTo: backTo } : {}),
+      },
     });
   }
 
@@ -360,6 +396,7 @@ export class ConnectionsService {
         sourceSystem: true,
         name: true,
         lastSyncAt: true,
+        collectedBackTo: true,
         collectedThroughAt: true,
         lastError: true,
       },
@@ -391,6 +428,22 @@ export class ConnectionsService {
                 ? (c.collectedThroughAt as Date)
                 : oldest,
             connections[0].collectedThroughAt as Date,
+          )
+        : null;
+
+    // The SHALLOWEST lower bound (the newest `collectedBackTo`): history is
+    // only uniformly covered as deep as the least-walked connection, so the
+    // newest of them is the honest floor for the tenant. Null if any active
+    // connection has walked nowhere, for the same all-or-nothing reason.
+    const withoutFloor = connections.filter((c) => !c.collectedBackTo).length;
+    const collectedBackTo =
+      connections.length > 0 && withoutFloor === 0
+        ? connections.reduce<Date>(
+            (shallowest, c) =>
+              (c.collectedBackTo as Date) > shallowest
+                ? (c.collectedBackTo as Date)
+                : shallowest,
+            connections[0].collectedBackTo as Date,
           )
         : null;
 
@@ -429,6 +482,7 @@ export class ConnectionsService {
 
     return {
       collectedThroughAt,
+      collectedBackTo,
       behindSeconds: collectedThroughAt
         ? Math.max(
             0,

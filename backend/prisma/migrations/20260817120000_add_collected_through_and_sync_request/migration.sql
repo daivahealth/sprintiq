@@ -5,6 +5,13 @@
 -- completeness, and their collectors set it on the next pass that completes.
 ALTER TABLE "connections_connection" ADD COLUMN "collectedThroughAt" TIMESTAMP(3);
 
+-- The other end of the collected range: the oldest point walked to so far.
+-- Both are needed to answer "is the range this board shows complete?" — a
+-- board showing the last 7 days over a complete last 7 days is complete
+-- however far a 12-month historical walk still has to go. A window
+-- [from, now] is complete iff collectedBackTo <= from.
+ALTER TABLE "connections_connection" ADD COLUMN "collectedBackTo" TIMESTAMP(3);
+
 -- Pending out-of-band sync request ("sync now"). Cleared the moment the
 -- connection actually syncs, so a request cannot camp at the head of the sweep.
 ALTER TABLE "connections_connection" ADD COLUMN "syncRequestedAt" TIMESTAMP(3);

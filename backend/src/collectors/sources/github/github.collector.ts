@@ -109,6 +109,15 @@ interface GithubSyncCursors {
   commitsResumePage?: number;
   /** Index within `commitsResumePage` where the last tick stopped — see `prPageOffset`. */
   commitsPageOffset?: number;
+  /**
+   * How far back each walk has actually reached. GitHub pages newest-first, so
+   * these DESCEND as a backfill progresses and settle at the backfill floor
+   * once it completes. Tracked per entity because PRs and commits advance
+   * independently — the repo is only whole back to whichever has walked less
+   * far (see `collectedBackTo`).
+   */
+  prOldestSeenAt?: string;
+  commitsOldestSeenAt?: string;
 }
 
 /** The four per-PR calls that make up one unit of the enrich budget. */
@@ -366,6 +375,7 @@ export class GithubCollector extends BaseSourceCollector {
       // zero-event sync and stamps `lastSyncAt` (§12 #29).
       failed: failed || undefined,
       collectedThroughAt: completenessWatermark(cursors),
+      collectedBackTo: collectedBackTo(cursors, backfillFloor),
     };
   }
 
@@ -413,14 +423,14 @@ export class GithubCollector extends BaseSourceCollector {
           result.items[0].updated_at ?? result.items[0].created_at;
       }
       if (result.items.length === 0) {
-        this.finishPrBackfill(cursors);
+        this.finishPrBackfill(cursors, backfillFloor);
         return { envelopes };
       }
       for (let i = offset; i < result.items.length; i++) {
         const pr = result.items[i];
         const updatedAt = pr.updated_at ?? pr.created_at;
         if (new Date(updatedAt) < backfillFloor) {
-          this.finishPrBackfill(cursors);
+          this.finishPrBackfill(cursors, backfillFloor);
           return { envelopes };
         }
         if (enrichBudget <= 0) {
@@ -429,6 +439,13 @@ export class GithubCollector extends BaseSourceCollector {
           this.suspendPrBackfill(cursors, page, i);
           return { envelopes };
         }
+        // Walked one item further back. Recorded per item rather than at the
+        // end of the pass, so a tick cut short by the budget or a rate limit
+        // still reports the ground it actually covered.
+        cursors.prOldestSeenAt = this.trackOldest(
+          cursors.prOldestSeenAt,
+          updatedAt,
+        );
         const enriched = await this.enrichPull(repoFullName, token, pr.number);
         enrichBudget--;
         envelopes.push(
@@ -451,7 +468,7 @@ export class GithubCollector extends BaseSourceCollector {
         }
       }
       if (!result.hasNextPage) {
-        this.finishPrBackfill(cursors);
+        this.finishPrBackfill(cursors, backfillFloor);
         return { envelopes };
       }
       page++;
@@ -503,10 +520,18 @@ export class GithubCollector extends BaseSourceCollector {
     cursors.prPageOffset = offset > 0 ? offset : undefined;
   }
 
-  private finishPrBackfill(cursors: GithubSyncCursors): void {
+  private finishPrBackfill(cursors: GithubSyncCursors, floor: Date): void {
     cursors.prBackfillDone = true;
     cursors.prPage = undefined;
     cursors.prPageOffset = undefined;
+    // The walk reached the floor (or ran out of history above it), so PR
+    // coverage now extends all the way back to it.
+    cursors.prOldestSeenAt = floor.toISOString();
+  }
+
+  /** Descends only — the oldest point a walk has reached never moves forward. */
+  private trackOldest(current: string | undefined, seen: string): string {
+    return current && current < seen ? current : seen;
   }
 
   /** Steady-state: only page 1, stop as soon as we hit the known watermark. */
@@ -645,6 +670,10 @@ export class GithubCollector extends BaseSourceCollector {
           this.suspendCommitsPass(cursors, page, i);
           return { envelopes };
         }
+        cursors.commitsOldestSeenAt = this.trackOldest(
+          cursors.commitsOldestSeenAt,
+          commit.commit.author?.date ?? passStartedAt,
+        );
         const detail = await this.client.getCommitDetail(
           repoFullName,
           token,
@@ -664,6 +693,12 @@ export class GithubCollector extends BaseSourceCollector {
         cursors.commitsResumePage = undefined;
         cursors.commitsPageOffset = undefined;
         cursors.commitsCursor = passStartedAt;
+        // The pass walked its whole `since` range, so commit coverage reaches
+        // the backfill floor.
+        cursors.commitsOldestSeenAt = this.trackOldest(
+          cursors.commitsOldestSeenAt,
+          backfillFloor.toISOString(),
+        );
         return { envelopes };
       }
       page++;
@@ -951,6 +986,42 @@ function completenessWatermark(cursors: GithubSyncCursors): Date | undefined {
     return undefined;
   }
   return candidates.reduce((oldest, d) => (d < oldest ? d : oldest));
+}
+
+/**
+ * How far back this repo is actually collected — the **newer** of the two
+ * walks, because PRs and commits page independently and the repo is only whole
+ * back to whichever has covered less ground.
+ *
+ * Undefined until both have walked at all: a side that has not started has no
+ * coverage, and reporting the other side's depth would claim history for an
+ * entity nobody has fetched. Once both backfills finish, both settle at the
+ * floor and this is the floor.
+ */
+function collectedBackTo(
+  cursors: GithubSyncCursors,
+  floor: Date,
+): Date | undefined {
+  // Both walks finished: coverage reaches the floor by definition. Checked
+  // FIRST so this self-heals connections that completed their backfill before
+  // the per-walk cursors existed — they have neither, and would otherwise
+  // report no coverage at all despite being fully collected.
+  if (cursors.prBackfillDone && cursors.commitsCursor) {
+    return floor;
+  }
+  const ends = [cursors.prOldestSeenAt, cursors.commitsOldestSeenAt];
+  if (ends.some((v) => typeof v !== 'string')) {
+    return undefined;
+  }
+  const dates = (ends as string[])
+    .map((v) => new Date(v))
+    .filter((d) => !Number.isNaN(d.getTime()));
+  if (dates.length < 2) {
+    return undefined;
+  }
+  const shallowest = dates.reduce((newest, d) => (d > newest ? d : newest));
+  // Never claim to reach further back than the window actually being collected.
+  return shallowest < floor ? floor : shallowest;
 }
 
 function mapAction(

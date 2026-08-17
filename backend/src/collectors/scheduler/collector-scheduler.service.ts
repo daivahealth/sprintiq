@@ -318,8 +318,13 @@ export class CollectorSchedulerService {
         },
       });
       try {
-        const { envelopes, skipped, failed, collectedThroughAt } =
-          await collector.poll(connection, options);
+        const {
+          envelopes,
+          skipped,
+          failed,
+          collectedThroughAt,
+          collectedBackTo,
+        } = await collector.poll(connection, options);
 
         // A pass that never reached the source did not sync this connection.
         // Recording it as one would stamp `lastSyncAt` — reporting the
@@ -356,14 +361,14 @@ export class CollectorSchedulerService {
         // which is the same defect the `skipped` path exists to prevent.
         if (!failed) {
           await this.connections.touchSync(connection.id);
-          // Only when the pass actually established one. Mid-backfill passes
-          // report none, and writing "now" for them would claim a completeness
-          // the collector never reached.
-          if (collectedThroughAt) {
-            await this.connections.setCollectedThroughAt(
-              connection.id,
-              collectedThroughAt,
-            );
+          // Only what the pass actually established. A mid-backfill pass may
+          // report one bound and not the other, and inventing the missing one
+          // would claim coverage the collector never reached.
+          if (collectedThroughAt || collectedBackTo) {
+            await this.connections.setCollectedRange(connection.id, {
+              throughAt: collectedThroughAt,
+              backTo: collectedBackTo,
+            });
           }
         }
         await this.prisma.connectionSyncRun.update({

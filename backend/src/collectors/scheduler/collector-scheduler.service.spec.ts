@@ -54,7 +54,7 @@ describe('CollectorSchedulerService', () => {
     connections = {
       findActiveBySource: jest.fn().mockResolvedValue([]),
       touchSync: jest.fn().mockResolvedValue(undefined),
-      setCollectedThroughAt: jest.fn().mockResolvedValue(undefined),
+      setCollectedRange: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     registry = {
       get: jest.fn().mockReturnValue(collector),
@@ -450,10 +450,30 @@ describe('CollectorSchedulerService', () => {
 
     await service.tickGithub();
 
-    expect(connections.setCollectedThroughAt).toHaveBeenCalledWith(
-      'conn_1',
-      through,
-    );
+    expect(connections.setCollectedRange).toHaveBeenCalledWith('conn_1', {
+      throughAt: through,
+      backTo: undefined,
+    });
+  });
+
+  it('persists a lower bound reported without an upper one', async () => {
+    // The mid-backfill shape for GitHub: it has walked back to a point but has
+    // not finished, so it can state how deep it has got without yet claiming
+    // to be complete through anything. Requiring both would discard the half
+    // that makes a recent-window board judgeable.
+    const backTo = new Date('2026-05-01T00:00:00.000Z');
+    connections.findActiveBySource.mockResolvedValue([connection()]);
+    collector.poll.mockResolvedValue({
+      envelopes: [],
+      collectedBackTo: backTo,
+    });
+
+    await service.tickGithub();
+
+    expect(connections.setCollectedRange).toHaveBeenCalledWith('conn_1', {
+      throughAt: undefined,
+      backTo,
+    });
   });
 
   it('leaves the completeness watermark alone when a pass reports none', async () => {
@@ -465,7 +485,7 @@ describe('CollectorSchedulerService', () => {
 
     await service.tickGithub();
 
-    expect(connections.setCollectedThroughAt).not.toHaveBeenCalled();
+    expect(connections.setCollectedRange).not.toHaveBeenCalled();
   });
 
   it('tells each collector how many peers share its credential, since the rate limit is per token', async () => {
@@ -585,7 +605,7 @@ describe('CollectorSchedulerService — bounded concurrency', () => {
     const connections = {
       findActiveBySource: jest.fn().mockResolvedValue(connectionList),
       touchSync: jest.fn().mockResolvedValue(undefined),
-      setCollectedThroughAt: jest.fn().mockResolvedValue(undefined),
+      setCollectedRange: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<ConnectionsService>;
     const ingestion = {
       ingest: jest.fn().mockResolvedValue({ status: 'accepted', eventId: 'e' }),
@@ -697,7 +717,7 @@ describe('CollectorSchedulerService — IST day close', () => {
     connections = {
       findActiveBySource: jest.fn().mockResolvedValue([]),
       touchSync: jest.fn().mockResolvedValue(undefined),
-      setCollectedThroughAt: jest.fn().mockResolvedValue(undefined),
+      setCollectedRange: jest.fn().mockResolvedValue(undefined),
       requestSyncForAllActive: jest.fn().mockResolvedValue(3),
     } as unknown as jest.Mocked<ConnectionsService>;
     service = new CollectorSchedulerService(
