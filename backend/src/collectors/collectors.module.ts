@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConnectionsModule } from '../modules/connections/connections.module';
 import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
+import { CollectionProgressService } from './scheduler/collection-progress.service';
 import { BackfillSchedulerService } from './scheduler/backfill-scheduler.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
 import { GithubCommitMessageReconcilerService } from './sources/github/github-commit-message-reconciler.service';
@@ -43,6 +44,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     JiraStoryDateReconcilerService,
     CollectorSchedulerService,
     BackfillSchedulerService,
+    CollectionProgressService,
   ],
   exports: [
     IngestionService,
@@ -52,6 +54,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubPrReconcilerService,
     GithubReviewReconcilerService,
     JiraStoryDateReconcilerService,
+    CollectionProgressService,
   ],
 })
 export class CollectorsModule {}

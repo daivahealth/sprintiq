@@ -63,7 +63,21 @@ model Connection {
   syncCursors       Json
   rateLimitState    Json
   status            String    @default("pending")
+  // When this connection last *reached* its source. NOT a completeness measure:
+  // a connection can talk to GitHub successfully every 5 minutes while still
+  // being 80 pages behind in its backfill. Use collectedThroughAt for "is
+  // today's data in?" — see METRICS.md §9 data_freshness.
   lastSyncAt        DateTime?
+  // Source time this connection is known COMPLETE through: every change at the
+  // source at or before this instant has been collected. Null while a backfill
+  // is still walking (progress, but no completeness established yet). Derived
+  // from the collector's own watermark cursors, which only it can interpret.
+  collectedThroughAt DateTime?
+  // Set by an admin "sync now" and cleared the moment the connection actually
+  // syncs. A pending flag, not a timestamp comparison: a connection carrying one
+  // is due regardless of its interval AND sorts to the head of the sweep, so on
+  // a 195-connection tenant "sync now" means next rather than eventually.
+  syncRequestedAt   DateTime?
   syncLagSeconds    Int       @default(0)
   // Set once, the first tick the historical backfill (all entity types) fully completes.
   backfillCompletedAt DateTime?
@@ -78,6 +92,11 @@ model Connection {
   updatedAt         DateTime  @updatedAt
 
   @@index([tenantId, sourceSystem])
+  // The sweep's query: filter on sourceSystem+status, then order
+  // requested-first, then neediest. Declared with the sort directions the
+  // query actually uses — see the migration for why a direction-less index
+  // cannot serve this ORDER BY.
+  @@index([sourceSystem, status, syncRequestedAt(sort: Desc), lastSyncAt])
   @@map("connections_connection")
 }
 

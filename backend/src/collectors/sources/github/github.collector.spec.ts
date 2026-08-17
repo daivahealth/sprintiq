@@ -84,21 +84,28 @@ describe('GithubCollector.poll', () => {
     jest.clearAllMocks();
   });
 
-  it('returns [] without any API calls when still cooling down from a rate limit', async () => {
+  it('reports a rate-limit cooldown as skipped, not as an empty success', async () => {
+    // The distinction is what stops the scheduler stamping lastSyncAt on a
+    // connection this pass never called GitHub for.
     const connection = baseConnection({
       rateLimitState: { resetAt: new Date(Date.now() + 60_000).toISOString() },
     });
 
     const result = await collector.poll(connection);
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ envelopes: [], skipped: 'rate-limited' });
     expect(client.listPullRequestsPage).not.toHaveBeenCalled();
   });
 
-  it('returns [] when no token resolves from secretRef', async () => {
+  it('reports a missing credential as skipped, not as an empty success', async () => {
     secrets.resolve.mockResolvedValue('');
     const result = await collector.poll(baseConnection());
-    expect(result).toEqual([]);
+    expect(result).toEqual({ envelopes: [], skipped: 'no-credential' });
+  });
+
+  it('reports an unconfigured connection as skipped, not as an empty success', async () => {
+    const result = await collector.poll(baseConnection({ config: {} }));
+    expect(result).toEqual({ envelopes: [], skipped: 'not-configured' });
   });
 
   it('backfills PRs newer than the floor and stops at the floor, tagging mode=backfill', async () => {
@@ -117,7 +124,7 @@ describe('GithubCollector.poll', () => {
     });
     client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0].collectionMode).toBe('backfill');
@@ -152,7 +159,7 @@ describe('GithubCollector.poll', () => {
     });
     client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(25);
     expect(client.getPullRequestDetail).toHaveBeenCalledTimes(25);
@@ -168,6 +175,139 @@ describe('GithubCollector.poll', () => {
     expect(cursors.prBackfillDone).toBeUndefined();
   });
 
+  it('divides the enrich budget across a tenant peers, so every repo advances each sweep', async () => {
+    // The per-connection budget was a constant, so it MULTIPLIED by fleet
+    // size: 195 repos × 25 PRs × 4 calls ≈ 19,500 requests against a 5,000/hr
+    // limit. The first ~30 connections spent the whole hour's quota and the
+    // remaining 165 were rate-limited having collected nothing — every sweep,
+    // forever. A fleet budget divided across peers is what makes the tail
+    // reachable at all.
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({ number: i + 1, updated_at: new Date().toISOString() }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const { envelopes } = await collector.poll(baseConnection(), {
+      peersDue: 195,
+    });
+
+    // 500-PR sweep budget ÷ 195 due connections ≈ 2 each.
+    expect(envelopes.length).toBeGreaterThan(0);
+    expect(envelopes.length).toBeLessThanOrEqual(3);
+  });
+
+  it('leaves a small tenant at the full per-connection budget', async () => {
+    // Dividing must not penalise the deployment the constant was tuned for:
+    // with few connections the fleet budget exceeds the per-tick ceiling and
+    // the ceiling still governs.
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({ number: i + 1, updated_at: new Date().toISOString() }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const { envelopes } = await collector.poll(baseConnection(), {
+      peersDue: 2,
+    });
+
+    expect(envelopes).toHaveLength(25);
+  });
+
+  it('never divides the budget below one PR, so no connection can stall completely', async () => {
+    // Integer division at extreme fleet sizes floors to 0, which would make a
+    // connection poll forever without ever enriching anything — progress would
+    // stop while every tick still spent its list-page calls.
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({ number: i + 1, updated_at: new Date().toISOString() }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    const { envelopes } = await collector.poll(baseConnection(), {
+      peersDue: 100_000,
+    });
+
+    expect(envelopes).toHaveLength(1);
+  });
+
+  it('converges in incremental mode when more PRs changed than the budget covers', async () => {
+    // The divided budget made this the normal case, not an edge one: at 195
+    // peers a connection gets 2 PRs per tick, so any repo with 3+ PRs touched
+    // between ticks used to enrich the same newest 2 forever and never advance
+    // — burning its whole share on work the idempotency key then discarded.
+    const updatedAt = (n: number) =>
+      new Date(Date.UTC(2026, 7, 17, n)).toISOString();
+    // Sorted desc, as GitHub returns them. All five are newer than the watermark.
+    const pulls = [5, 4, 3, 2, 1].map((n) =>
+      pull({ number: n, updated_at: updatedAt(n) }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    const connection = baseConnection({
+      syncCursors: {
+        prBackfillDone: true,
+        commitsCursor: updatedAt(0),
+        prNewestSeenAt: updatedAt(0),
+      },
+    });
+
+    const { envelopes } = await collector.poll(connection, { peersDue: 195 });
+
+    // Works the OLDEST unsynced PRs first, so the watermark can move.
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes.map((e) => e.externalRefs.pr_number)).toEqual(['1', '2']);
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.prNewestSeenAt).toBe(updatedAt(2));
+  });
+
+  it('never advances the incremental watermark past a PR it did not enrich', async () => {
+    // The other half of the same rule: advancing to the newest item would skip
+    // everything the budget did not reach, permanently.
+    const updatedAt = (n: number) =>
+      new Date(Date.UTC(2026, 7, 17, n)).toISOString();
+    const pulls = [5, 4, 3, 2, 1].map((n) =>
+      pull({ number: n, updated_at: updatedAt(n) }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: {
+          prBackfillDone: true,
+          commitsCursor: updatedAt(0),
+          prNewestSeenAt: updatedAt(0),
+        },
+      }),
+      { peersDue: 195 },
+    );
+
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.prNewestSeenAt).not.toBe(updatedAt(5));
+  });
+
   it('resumes mid-page from prPageOffset so a page larger than the enrich budget eventually completes', async () => {
     const pulls = Array.from({ length: 30 }, (_, i) =>
       pull({ number: i + 1, updated_at: new Date().toISOString() }),
@@ -179,7 +319,7 @@ describe('GithubCollector.poll', () => {
     client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
 
     // Second tick: the first one stopped at index 25 of this same page.
-    const envelopes = await collector.poll(
+    const { envelopes } = await collector.poll(
       baseConnection({
         syncCursors: { prPage: 1, prPageOffset: 25 },
         config: {
@@ -248,7 +388,7 @@ describe('GithubCollector.poll', () => {
     const connection = baseConnection({
       syncCursors: { prPage: 3, prPageOffset: 10 },
     });
-    const envelopes = await collector.poll(connection);
+    const { envelopes } = await collector.poll(connection);
 
     expect(envelopes).toEqual([]);
     const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
@@ -339,7 +479,7 @@ describe('GithubCollector.poll', () => {
       rateLimitedUntil: resetAt,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(1);
     expect(client.getPullRequestDetail).toHaveBeenCalledTimes(1);
@@ -358,7 +498,7 @@ describe('GithubCollector.poll', () => {
       messages: ['PAY-2231 guard duplicate capture', 'fix typo'],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(client.listPullRequestCommits).toHaveBeenCalledWith(
       'acme/payments',
@@ -406,7 +546,7 @@ describe('GithubCollector.poll', () => {
       rateLimitedUntil: resetAt,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     // The first PR is already enriched and emitted; the second waits.
     expect(envelopes).toHaveLength(1);
@@ -452,7 +592,7 @@ describe('GithubCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes[0].data).toMatchObject({
       firstReviewAt: '2026-06-01T09:00:00.000Z',
@@ -474,7 +614,7 @@ describe('GithubCollector.poll', () => {
       failed: true,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     // "Merged with no review" is a real finding (review_coverage,
     // self_merge_rate). Manufacturing it from a failed request would be worse
@@ -495,7 +635,7 @@ describe('GithubCollector.poll', () => {
     client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
     client.listPullRequestReviews.mockResolvedValue({ reviews: [] });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     const data = envelopes[0].data as { reviews?: unknown[] };
     expect(data.reviews).toEqual([]);
@@ -513,7 +653,7 @@ describe('GithubCollector.poll', () => {
       rateLimitedUntil: resetAt,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(1);
     expect(connections.setRateLimitState).toHaveBeenCalledWith('conn_1', {
@@ -521,7 +661,7 @@ describe('GithubCollector.poll', () => {
     });
   });
 
-  it('incremental sync does NOT advance the watermark when the enrichment budget runs out before reaching it — would otherwise skip the un-enriched remainder forever', async () => {
+  it('incremental sync works oldest-first so a budget smaller than the backlog still converges', async () => {
     // 30 PRs, all newer than the existing watermark — exceeds the 25-per-tick budget.
     const pulls = Array.from({ length: 30 }, (_, i) =>
       pull({
@@ -543,18 +683,25 @@ describe('GithubCollector.poll', () => {
       },
     });
 
-    const envelopes = await collector.poll(connection);
+    const { envelopes } = await collector.poll(connection);
 
     expect(envelopes).toHaveLength(25);
     expect(client.getPullRequestDetail).toHaveBeenCalledTimes(25);
+    // The 25 OLDEST unsynced PRs (numbers 71–95), not the newest 25.
+    expect(envelopes[0].externalRefs.pr_number).toBe('71');
+    expect(envelopes[24].externalRefs.pr_number).toBe('95');
+
     const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
       string,
       unknown
     >;
-    // untouched — NOT advanced to pulls[0]'s date, so the 5 un-enriched PRs
-    // (and the 25 already-ingested ones, as harmless idempotent duplicates)
-    // get retried in full next tick.
-    expect(cursors.prNewestSeenAt).toBe('2026-06-01T00:00:00.000Z');
+    // Advanced to the newest PR actually enriched — so next tick starts at the
+    // 5 that were missed instead of redoing these 25. Working newest-first and
+    // refusing to advance (the previous behaviour) meant the same 25 were
+    // re-enriched every tick and the 5 oldest were never reached at all.
+    expect(cursors.prNewestSeenAt).toBe('2026-06-09T23:55:00.000Z');
+    // And never past the un-enriched remainder.
+    expect(cursors.prNewestSeenAt).not.toBe('2026-06-10T00:00:00.000Z');
   });
 
   it('resumes a still-in-progress backfill from the saved page across ticks', async () => {
@@ -588,7 +735,7 @@ describe('GithubCollector.poll', () => {
     const connection = baseConnection({
       syncCursors: { prBackfillDone: true, prNewestSeenAt: watermark },
     });
-    const envelopes = await collector.poll(connection);
+    const { envelopes } = await collector.poll(connection);
 
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0].collectionMode).toBe('poll');
@@ -608,7 +755,7 @@ describe('GithubCollector.poll', () => {
       rateLimitedUntil: resetAt,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toEqual([]);
     expect(client.listCommitsPage).not.toHaveBeenCalled();
@@ -646,7 +793,7 @@ describe('GithubCollector.poll', () => {
       hasNextPage: false,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0].eventType).toBe('code.commit.pushed');
@@ -696,7 +843,7 @@ describe('GithubCollector.poll', () => {
       hasNextPage: false,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(25);
     expect(client.getCommitDetail).toHaveBeenCalledTimes(25);
@@ -753,7 +900,7 @@ describe('GithubCollector.poll', () => {
       rateLimitedUntil: resetAt,
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     // the first commit's already-fetched detail is kept; the second is never attempted
     expect(envelopes).toHaveLength(1);

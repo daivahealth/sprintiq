@@ -3,22 +3,29 @@ import { timeAgo } from '../../lib/utils';
 import { useFreshness } from './useInsights';
 
 /**
- * "Data as of …" beside the scope, on every board (DASHBOARDS.md §1.5,
- * METRICS.md §9).
+ * "Data complete through …" beside the scope, on every board (DASHBOARDS.md
+ * §1.5, METRICS.md §9).
  *
- * Ingestion is poll-only on a 4-hour default interval, so every number on
- * screen can be hours old while the page itself was rendered a second ago.
- * Without this the UI implies live data it does not have — and a failing
- * connection is worse than merely stale, because its slice is frozen at an
- * age nothing on the page would otherwise reveal.
+ * Reports COMPLETENESS, not contact. The distinction is the whole point: a
+ * connection can reach GitHub every five minutes while eighty pages behind in
+ * its backfill, so "synced 2 minutes ago" was true and useless — it described
+ * the collector's health, not the data's coverage. `collectedThroughAt` is the
+ * point in source time every change has actually been collected up to, which
+ * is what a number on this screen is really claiming.
  *
- * Reports the OLDEST sync across active connections, not the newest: a board
- * mixes Jira and GitHub facts, so the freshest source says nothing about the
- * number next to it.
+ * Three states, deliberately distinct rather than folded into one timestamp:
+ *  - complete through T — the honest, ordinary case.
+ *  - still backfilling — no completeness exists yet at all. Reporting the
+ *    finished connections' watermark here would claim a coverage the rest of
+ *    the data predates.
+ *  - failing / never synced — that slice is frozen at an unknown age.
+ *
+ * The bound is the OLDEST across active connections: a board mixes Jira and
+ * GitHub facts, so the freshest source says nothing about the number beside it.
  */
 
-/** Beyond this, "a while ago" is worth flagging rather than just stating. */
-const STALE_WARN_SECONDS = 6 * 60 * 60;
+/** Beyond this, being behind is worth flagging rather than just stating. */
+const BEHIND_WARN_SECONDS = 6 * 60 * 60;
 
 export function FreshnessNote() {
   const { data } = useFreshness();
@@ -26,32 +33,46 @@ export function FreshnessNote() {
     return null;
   }
 
-  const { lastSyncAt, staleSeconds, neverSynced, failing } = data;
+  const { collectedThroughAt, behindSeconds, incomplete, neverSynced, failing } =
+    data;
   const hasProblem = failing.length > 0 || neverSynced > 0;
-  const stale = staleSeconds !== null && staleSeconds > STALE_WARN_SECONDS;
+  const behind = behindSeconds !== null && behindSeconds > BEHIND_WARN_SECONDS;
 
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-fg-faint">
       <StatusDot
-        tone={hasProblem ? 'bad' : stale ? 'warn' : 'good'}
+        tone={hasProblem ? 'bad' : incomplete > 0 || behind ? 'warn' : 'good'}
         aria-hidden
       />
       <span>
-        {lastSyncAt
-          ? `Data as of ${timeAgo(lastSyncAt)}`
-          : 'No source has synced yet'}
+        {collectedThroughAt
+          ? `Data complete through ${timeAgo(collectedThroughAt)}`
+          : incomplete > 0
+            ? 'Still collecting history — coverage is incomplete'
+            : 'No source has synced yet'}
       </span>
 
-      {data.sources.length > 1 && lastSyncAt && (
+      {data.sources.length > 1 && (
         <span className="text-fg-faint">
           (
           {data.sources
             .map(
               (s) =>
-                `${s.sourceSystem} ${s.lastSyncAt ? timeAgo(s.lastSyncAt) : 'never'}`,
+                `${s.sourceSystem} ${
+                  s.collectedThroughAt
+                    ? timeAgo(s.collectedThroughAt)
+                    : 'backfilling'
+                }`,
             )
             .join(' · ')}
           )
+        </span>
+      )}
+
+      {incomplete > 0 && (
+        <span className="text-warning-fg">
+          {incomplete} connection{incomplete === 1 ? '' : 's'} still backfilling
+          — history before their window is not in yet
         </span>
       )}
 

@@ -15,7 +15,10 @@ import {
   CollectionMode,
   EnvelopeActor,
 } from '../../ingestion/canonical-envelope';
-import { BaseSourceCollector } from '../../framework/source-collector';
+import {
+  BaseSourceCollector,
+  PollResult,
+} from '../../framework/source-collector';
 import {
   BASE_SEARCH_FIELDS,
   JiraChangelogEntry,
@@ -159,7 +162,14 @@ export class JiraCollector extends BaseSourceCollector {
    * (cursor = the last-synced watermark) — no separate code paths needed,
    * since Jira's search API (unlike GitHub's PR list) filters by date natively.
    */
-  async poll(connection: Connection): Promise<CanonicalEnvelope[]> {
+  /**
+   * `PollOptions.peersDue` is accepted and ignored: Jira's cost profile does
+   * not multiply by fleet size the way GitHub's does. A Jira tenant has one
+   * connection per site (not per repo), and a search page returns whole issues
+   * with no per-issue detail call — so a tick is ~20 requests regardless, and
+   * there is no fleet budget to divide.
+   */
+  async poll(connection: Connection): Promise<PollResult> {
     const config = (connection.config ?? {}) as {
       siteUrl?: string;
       email?: string;
@@ -173,7 +183,7 @@ export class JiraCollector extends BaseSourceCollector {
       statusCategories?: Record<string, string>;
     };
     if (!config.siteUrl || !config.email) {
-      return [];
+      return { envelopes: [], skipped: 'not-configured' };
     }
 
     const rateLimitState = (connection.rateLimitState ?? {}) as {
@@ -183,7 +193,9 @@ export class JiraCollector extends BaseSourceCollector {
       rateLimitState.resetAt &&
       new Date(rateLimitState.resetAt).getTime() > Date.now()
     ) {
-      return [];
+      // Reported as skipped, not as an empty success: this pass never called
+      // Jira, so it is not evidence the connection is up to date.
+      return { envelopes: [], skipped: 'rate-limited' };
     }
 
     const apiToken = await this.secrets.resolve(
@@ -197,7 +209,7 @@ export class JiraCollector extends BaseSourceCollector {
         connection.id,
         `No credential resolved for secret ref "${connection.secretRef ?? '(unset)'}" — set it in admin/configuration or as an environment variable.`,
       );
-      return [];
+      return { envelopes: [], skipped: 'no-credential' };
     }
 
     const { sprintFieldId, storyPointsFieldIds } =
@@ -319,7 +331,17 @@ export class JiraCollector extends BaseSourceCollector {
       await this.connections.setBackfillCompletedAt(connection.id);
     }
 
-    return envelopes;
+    // `updatedCursor` is only ever advanced by a pass that ran to completion
+    // (`passComplete`) — a budget-exhausted or rate-limited tick leaves it at
+    // the previous value. That is exactly the "complete through" guarantee, so
+    // it can be reported as one directly.
+    return {
+      envelopes,
+      // Same reason as the GitHub collector: a search Jira rejected must not
+      // be recorded as a successful sync (§12 #29).
+      failed: passFailure ? true : undefined,
+      collectedThroughAt: parseDate(cursors.updatedCursor),
+    };
   }
 
   /**
@@ -752,6 +774,15 @@ function parseSprintChanges(
     });
   }
   return changes.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/** ISO string → Date, or undefined when absent/unparseable. */
+function parseDate(value: string | undefined): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
 /** Comma-separated id list ("5, 7") → trimmed non-empty ids. */

@@ -36,30 +36,17 @@ export class GithubPrReconcilerService {
     private readonly client: GithubClient,
   ) {}
 
+  /** How many PRs still need their detail call — without making any. */
+  async countRemaining(tenantId: string): Promise<number> {
+    return this.prisma.pullRequest.count({ where: candidateWhere(tenantId) });
+  }
+
   async reconcile(
     tenantId: string,
     limit = 200,
   ): Promise<PrStatsReconcileResult> {
-    const candidateWhere = {
-      tenantId,
-      // Asked once, never again. Some rows can never be satisfied — a PR with a
-      // genuinely empty diff stays at 0/0/0, and one merged by a since-deleted
-      // account has `merged_by: null` forever. Without this guard they remain
-      // candidates permanently, which is harmless for a hand-run endpoint and
-      // an unbounded API drain once this runs on a schedule.
-      detailFetchedAt: null,
-      OR: [
-        // Never enriched for line-change stats.
-        { additions: 0, deletions: 0, changedFiles: 0 },
-        // Merged but we don't know who merged it. `merged_by` lives only on
-        // this same detail response, and `self_merge_rate` is uncomputable
-        // without it — a PR backfilled for reviews alone never got it.
-        { state: 'merged', mergedBy: null },
-      ],
-    };
-
     const candidates = await this.prisma.pullRequest.findMany({
-      where: candidateWhere,
+      where: candidateWhere(tenantId),
       take: limit,
     });
 
@@ -135,9 +122,7 @@ export class GithubPrReconcilerService {
       updated++;
     }
 
-    const remaining = await this.prisma.pullRequest.count({
-      where: candidateWhere,
-    });
+    const remaining = await this.countRemaining(tenantId);
 
     this.logger.log(
       `Reconciled PR stats: ${updated} updated, ${skipped} skipped, ${remaining} remaining` +
@@ -156,4 +141,29 @@ export class GithubPrReconcilerService {
       resumeAt,
     };
   }
+}
+
+/**
+ * Rows this reconciler considers outstanding. One definition, used by both the
+ * work loop and `countRemaining` — a drifting pair would have the Sync Status
+ * backlog disagree with what the reconciler actually does.
+ */
+function candidateWhere(tenantId: string) {
+  return {
+    tenantId,
+    // Asked once, never again. Some rows can never be satisfied — a PR with a
+    // genuinely empty diff stays at 0/0/0, and one merged by a since-deleted
+    // account has `merged_by: null` forever. Without this guard they remain
+    // candidates permanently, which is harmless for a hand-run endpoint and
+    // an unbounded API drain once this runs on a schedule.
+    detailFetchedAt: null,
+    OR: [
+      // Never enriched for line-change stats.
+      { additions: 0, deletions: 0, changedFiles: 0 },
+      // Merged but we don't know who merged it. `merged_by` lives only on
+      // this same detail response, and `self_merge_rate` is uncomputable
+      // without it — a PR backfilled for reviews alone never got it.
+      { state: 'merged', mergedBy: null },
+    ],
+  };
 }

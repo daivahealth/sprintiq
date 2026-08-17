@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Badge,
+  Button,
   Card,
   Spinner,
   TableBodyRow,
@@ -10,6 +11,7 @@ import {
 import { api } from "../../lib/api/client";
 import { cn } from "../../lib/utils";
 import type {
+  CollectionProgressResponse,
   ConnectionSyncStatus,
   SourceSyncStatus,
   SyncRunHistoryEntry,
@@ -23,6 +25,43 @@ function useSyncStatus() {
     queryFn: () => api.get<SyncStatusResponse>("/api/admin/connections/sync-status"),
     // Live view — refresh often enough to feel real-time without hammering the API.
     refetchInterval: 5_000,
+  });
+}
+
+/**
+ * The convergence backlog — what is still outstanding and roughly how long it
+ * needs. Separate endpoint from sync-status because the backlog is collector
+ * state (BC-1) while sync-status is connection state (BC-0).
+ */
+function useCollectionProgress() {
+  return useQuery({
+    queryKey: ["admin", "collection-progress"],
+    queryFn: () =>
+      api.get<CollectionProgressResponse>(
+        "/api/admin/configurations/collection-progress",
+      ),
+    // Slower than the 5s sync-status poll: this is four COUNTs over large
+    // tables, and a backlog of thousands does not move perceptibly in 5s.
+    refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Queues one connection for the next sweep, ahead of the regular queue.
+ *
+ * Deliberately a queue rather than an inline sync: a pass is a paginated,
+ * rate-limited walk that can take minutes, and the sweep serialises per source
+ * so two passes can't fight over the same rate limit. Refetching sync-status
+ * immediately is what turns the button into "queued…" — the only feedback
+ * available until the sweep actually picks it up.
+ */
+function useSyncNow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (connectionId: string) =>
+      api.post(`/api/admin/connections/${connectionId}/sync-now`, {}),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["admin", "sync-status"] }),
   });
 }
 
@@ -84,6 +123,7 @@ function sourceLabel(sourceSystem: string): string {
 
 function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
   const isRateLimited = Boolean(c.rateLimitedUntil);
+  const syncNow = useSyncNow();
   return (
     <TableBodyRow hoverable={false}>
       <td className="py-2.5 pr-4 font-medium text-fg-secondary">
@@ -103,16 +143,26 @@ function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
       <td className="py-2.5 pr-4 text-fg-muted">
         {dateRange(c.earliestEventAt, c.latestEventAt)}
       </td>
+      {/* Coverage, not contact — the column that answers "is today's data in?".
+          `lastSyncAt` beside it is deliberately kept but demoted: a connection
+          can reach the source every 5 minutes while far behind its backfill,
+          and showing only that read as freshness it had not earned. */}
+      <td className="py-2.5 pr-4 text-fg-muted">
+        {c.collectedThroughAt ? (
+          timeAgo(c.collectedThroughAt)
+        ) : (
+          <span className="text-fg-faint">still backfilling</span>
+        )}
+      </td>
       <td className="py-2.5 pr-4 text-fg-subtle">
         {c.lastSyncAt ? timeAgo(c.lastSyncAt) : "never"}
       </td>
       <td className="py-2.5 pr-4 text-fg-subtle">
         every {formatInterval(c.syncIntervalMinutes)}
       </td>
-      <td className="py-2.5">
+      <td className="py-2.5 pr-4">
         {/* Failure outranks progress: a connection that can't reach the source
-            isn't "backfilling", it's stuck, and a rejected pass still advances
-            lastSyncAt so the timestamp alone won't reveal it. */}
+            isn't "backfilling", it's stuck. */}
         {c.lastError ? (
           <Badge tone="bad">failing</Badge>
         ) : isRateLimited ? (
@@ -121,6 +171,20 @@ function ConnectionRow({ c }: { c: ConnectionSyncStatus }) {
           <Badge tone="good">complete</Badge>
         ) : (
           <Badge tone="warn">backfilling</Badge>
+        )}
+      </td>
+      <td className="py-2.5">
+        {c.syncRequestedAt ? (
+          <span className="text-xs text-fg-faint">queued…</span>
+        ) : (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={syncNow.isPending}
+            onClick={() => syncNow.mutate(c.id)}
+          >
+            Sync now
+          </Button>
         )}
       </td>
     </TableBodyRow>
@@ -148,10 +212,19 @@ function HistoryRow({ run }: { run: SyncRunHistoryEntry }) {
           : ""}
       </td>
       <td className="py-2.5">
+        {/* `skipped` is its own outcome, not a zero-event success: the pass
+            never reached the source (rate-limit cooldown, missing credential),
+            so it is not evidence the connection is up to date. Collapsing it
+            into "success" is exactly what let a stalled connection look
+            healthy. */}
         {run.status === "success" ? (
           <Badge tone="good">success</Badge>
         ) : run.status === "error" ? (
           <Badge tone="bad">{run.errorMessage ? `error: ${run.errorMessage}` : "error"}</Badge>
+        ) : run.status === "skipped" ? (
+          <span title={run.errorMessage ?? undefined}>
+            <Badge tone="neutral">skipped</Badge>
+          </span>
         ) : (
           <Badge tone="warn">running</Badge>
         )}
@@ -233,9 +306,11 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
                   <th className="py-2 pr-4 font-medium">Name</th>
                   <th className="py-2 pr-4 font-medium">Ingested</th>
                   <th className="py-2 pr-4 font-medium">Date coverage</th>
-                  <th className="py-2 pr-4 font-medium">Last synced</th>
+                  <th className="py-2 pr-4 font-medium">Complete through</th>
+                  <th className="py-2 pr-4 font-medium">Last contact</th>
                   <th className="py-2 pr-4 font-medium">Interval</th>
-                  <th className="py-2 font-medium">Status</th>
+                  <th className="py-2 pr-4 font-medium">Status</th>
+                  <th className="py-2 font-medium">Action</th>
                 </TableHeadRow>
               </thead>
               <tbody>
@@ -264,9 +339,11 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
                   <th className="py-2 pr-4 font-medium">Name</th>
                   <th className="py-2 pr-4 font-medium">Ingested</th>
                   <th className="py-2 pr-4 font-medium">Date coverage</th>
-                  <th className="py-2 pr-4 font-medium">Last synced</th>
+                  <th className="py-2 pr-4 font-medium">Complete through</th>
+                  <th className="py-2 pr-4 font-medium">Last contact</th>
                   <th className="py-2 pr-4 font-medium">Interval</th>
-                  <th className="py-2 font-medium">Status</th>
+                  <th className="py-2 pr-4 font-medium">Status</th>
+                  <th className="py-2 font-medium">Action</th>
                 </TableHeadRow>
               </thead>
               <tbody>
@@ -314,6 +391,100 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
   );
 }
 
+/**
+ * "Will this tenant be caught up, and roughly when?"
+ *
+ * The screen could already say what had *happened* — runs, event counts,
+ * badges — but nothing said whether collection was converging, so an admin
+ * deciding whether tonight's numbers would be complete had to infer it from
+ * log lines. Per-source completeness answers "how far behind is each side"
+ * (GitHub backfills far slower than Jira polls, and a blended number hides
+ * which one is the problem); the reconciler backlog answers "how much is left".
+ *
+ * The projection is stated as a floor, not an estimate: the reconcilers stop
+ * at a quota reserve and a rate-limited tenant sits idle, so the batch
+ * ceilings it derives from can only be beaten by luck, never by less.
+ */
+function ConvergenceCard({
+  sources,
+  progress,
+}: {
+  sources: SourceSyncStatus[];
+  progress: CollectionProgressResponse | undefined;
+}) {
+  const outstanding = progress?.reconcilers.filter((r) => r.remaining > 0) ?? [];
+
+  return (
+    <Card className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-fg">Convergence</h3>
+        <p className="text-xs text-fg-subtle">
+          How complete each source is, and what is still queued to collect.
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {sources.map((s) => (
+          <div
+            key={s.sourceSystem}
+            className="rounded-md border border-border bg-subtle p-3"
+          >
+            <p className="text-xs uppercase tracking-wide text-fg-subtle">
+              {sourceLabel(s.sourceSystem)}
+            </p>
+            {s.collectedThroughAt ? (
+              <p className="text-sm font-medium text-fg">
+                Complete through {timeAgo(s.collectedThroughAt)}
+              </p>
+            ) : (
+              <p className="text-sm font-medium text-warning-fg">
+                {s.incomplete > 0
+                  ? `${s.incomplete} connection${s.incomplete === 1 ? "" : "s"} still backfilling`
+                  : "Nothing collected yet"}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {progress && (
+        <div className="space-y-2">
+          {progress.caughtUp ? (
+            <p className="text-sm text-success-fg">
+              No outstanding backfill work — every reconciler queue is empty.
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-fg-muted">
+                <span className="font-medium text-fg">
+                  ~{formatDuration((progress.estimatedMinutesRemaining ?? 0) * 60)}
+                </span>{" "}
+                until the last queue drains —{" "}
+                <span className="text-fg-subtle">
+                  best case, since rate-limit pauses only make it longer
+                </span>
+                .
+              </p>
+              <ul className="space-y-0.5 text-xs text-fg-subtle">
+                {outstanding.map((r) => (
+                  <li key={r.key}>
+                    {r.label}:{" "}
+                    <span className="tabular-nums text-fg-muted">
+                      {r.remaining.toLocaleString()}
+                    </span>{" "}
+                    remaining ({r.ticksRemaining} tick
+                    {r.ticksRemaining === 1 ? "" : "s"} at {r.perTick}/tick)
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function SourceTabs({
   sources,
   active,
@@ -354,6 +525,7 @@ function SourceTabs({
 
 export function SyncStatusPage() {
   const query = useSyncStatus();
+  const progress = useCollectionProgress();
   const [activeSource, setActiveSource] = useState<string>("github");
 
   const selected = query.data?.sources.find((s) => s.sourceSystem === activeSource);
@@ -392,6 +564,11 @@ export function SyncStatusPage() {
               value={query.data.summary.totalEventsIngested.toLocaleString()}
             />
           </div>
+
+          <ConvergenceCard
+            sources={query.data.sources}
+            progress={progress.data}
+          />
 
           {/* Failure outranks everything on this screen — name the stuck
               connections up top instead of making the admin open each source

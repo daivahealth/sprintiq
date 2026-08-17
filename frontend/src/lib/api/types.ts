@@ -177,7 +177,12 @@ export interface ConnectionSyncStatus {
   syncIntervalMinutes: number;
   backfillSince: string | null;
   backfillCompletedAt: string | null;
+  /** When this connection last REACHED its source — liveness, not coverage. */
   lastSyncAt: string | null;
+  /** Source time this connection is complete through — coverage. Null while backfilling. */
+  collectedThroughAt: string | null;
+  /** Queued for the next sweep by an admin, ahead of the regular queue. */
+  syncRequestedAt: string | null;
   nextSyncDueAt: string;
   eventsIngested: number;
   earliestEventAt: string | null;
@@ -200,6 +205,10 @@ export interface SyncRunHistoryEntry {
 }
 export interface SourceSyncStatus {
   sourceSystem: string;
+  /** Oldest completeness across this source's active connections; null while any is backfilling. */
+  collectedThroughAt: string | null;
+  /** Active connections of this source still backfilling. */
+  incomplete: number;
   tick: {
     running: boolean;
     startedAt: string | null;
@@ -212,6 +221,22 @@ export interface SourceSyncStatus {
   completedRuns: ConnectionSyncStatus[];
   history: SyncRunHistoryEntry[];
 }
+/** `GET /api/admin/configurations/collection-progress` — the convergence answer. */
+export interface CollectionProgressResponse {
+  reconcilers: {
+    key: string;
+    label: string;
+    remaining: number;
+    perTick: number;
+    ticksRemaining: number;
+  }[];
+  caughtUp: boolean;
+  /** Best-case minutes until the last queue drains; null when caught up. */
+  estimatedMinutesRemaining: number | null;
+  /** Always true — rate limits mean the projection is a floor, not a prediction. */
+  estimateIsBestCase: boolean;
+}
+
 export interface SyncStatusResponse {
   summary: {
     totalConnections: number;

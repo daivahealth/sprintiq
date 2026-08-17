@@ -60,6 +60,27 @@ export class GithubReviewReconcilerService {
     private readonly client: GithubClient,
   ) {}
 
+  /**
+   * How many PRs still need a review fetch or a comment count — without doing
+   * any of the work. Read by `CollectionProgressService` to answer "is this
+   * tenant converging?" on the Sync Status screen; also the value `reconcile`
+   * reports as `remaining`, so the two can never disagree.
+   */
+  async countRemaining(tenantId: string): Promise<number> {
+    const [neverFetched, uncounted] = await Promise.all([
+      this.prisma.pullRequest.count({
+        where: { tenantId, reviewsFetchedAt: null },
+      }),
+      // Distinct PRs, not distinct reviews: one PR is one unit of work here.
+      this.prisma.prReview.findMany({
+        where: { tenantId, commentsCounted: false },
+        select: { repoFullName: true, externalNumber: true },
+        distinct: ['repoFullName', 'externalNumber'],
+      }),
+    ]);
+    return neverFetched + uncounted.length;
+  }
+
   async reconcile(
     tenantId: string,
     limit = DEFAULT_LIMIT,
@@ -224,17 +245,7 @@ export class GithubReviewReconcilerService {
       updated++;
     }
 
-    const remaining =
-      (await this.prisma.pullRequest.count({
-        where: { tenantId, reviewsFetchedAt: null },
-      })) +
-      (
-        await this.prisma.prReview.findMany({
-          where: { tenantId, commentsCounted: false },
-          select: { repoFullName: true, externalNumber: true },
-          distinct: ['repoFullName', 'externalNumber'],
-        })
-      ).length;
+    const remaining = await this.countRemaining(tenantId);
 
     this.logger.log(
       `Reconciled PR reviews: ${updated} PRs updated, ${reviewsWritten} reviews written, ${skipped} skipped, ${remaining} remaining` +

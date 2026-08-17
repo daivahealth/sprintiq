@@ -79,18 +79,20 @@ describe('JiraCollector.poll', () => {
     jest.clearAllMocks();
   });
 
-  it('returns [] without any API calls when still cooling down from a rate limit', async () => {
+  it('reports a rate-limit cooldown as skipped, not as an empty success', async () => {
+    // The distinction is what stops the scheduler stamping lastSyncAt on a
+    // connection this pass never called Jira for.
     const connection = baseConnection({
       rateLimitState: { resetAt: new Date(Date.now() + 60_000).toISOString() },
     });
     const result = await collector.poll(connection);
-    expect(result).toEqual([]);
+    expect(result).toEqual({ envelopes: [], skipped: 'rate-limited' });
     expect(client.searchIssues).not.toHaveBeenCalled();
   });
 
-  it('returns [] when siteUrl/email are missing from config', async () => {
+  it('reports missing siteUrl/email as skipped, not as an empty success', async () => {
     const result = await collector.poll(baseConnection({ config: {} }));
-    expect(result).toEqual([]);
+    expect(result).toEqual({ envelopes: [], skipped: 'not-configured' });
   });
 
   it('backfills all issues in one pass and advances the cursor to the last-seen updated time', async () => {
@@ -101,7 +103,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toHaveLength(2);
     expect(envelopes.every((e) => e.collectionMode === 'backfill')).toBe(true);
@@ -218,7 +220,7 @@ describe('JiraCollector.poll', () => {
   it('records a missing credential rather than returning silently', async () => {
     secrets.resolve.mockResolvedValue('');
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes).toEqual([]);
     expect(connections.setSyncHealth).toHaveBeenCalledWith(
@@ -241,7 +243,7 @@ describe('JiraCollector.poll', () => {
     const connection = baseConnection({
       syncCursors: { resumePageToken: 'tok_stale' },
     });
-    const envelopes = await collector.poll(connection);
+    const { envelopes } = await collector.poll(connection);
 
     expect(envelopes).toEqual([]);
     expect(connections.setBackfillCompletedAt).not.toHaveBeenCalled();
@@ -274,7 +276,7 @@ describe('JiraCollector.poll', () => {
       rateLimitedUntil: resetAt,
     });
 
-    const envelopes = await collector.poll(
+    const { envelopes } = await collector.poll(
       baseConnection({ syncCursors: { resumePageToken: 'tok_50' } }),
     );
 
@@ -315,7 +317,7 @@ describe('JiraCollector.poll', () => {
         // sprintFieldId omitted — forces resolution via getFields
       },
     });
-    const envelopes = await collector.poll(connection);
+    const { envelopes } = await collector.poll(connection);
 
     expect(client.getFields).toHaveBeenCalledWith(
       'https://acme.atlassian.net',
@@ -375,7 +377,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     expect(envelopes[0].data).toMatchObject({
       externalKey: 'PAY-1',
@@ -411,7 +413,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(
+    const { envelopes } = await collector.poll(
       baseConnection({
         config: {
           siteUrl: 'https://acme.atlassian.net',
@@ -471,7 +473,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(
+    const { envelopes } = await collector.poll(
       baseConnection({
         config: {
           siteUrl: 'https://acme.atlassian.net',
@@ -537,7 +539,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     const data = envelopes[0].data as unknown as {
       statusCategory?: string;
@@ -640,7 +642,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     const data = envelopes[0].data as unknown as {
       sprintChanges?: {
@@ -696,7 +698,7 @@ describe('JiraCollector.poll', () => {
       ],
     });
 
-    const envelopes = await collector.poll(baseConnection());
+    const { envelopes } = await collector.poll(baseConnection());
 
     // v1 keys (`jira:{key}:{type}:{updated}`) drop a re-collected-but-unchanged
     // issue before the projector — which made sprint scope history unreachable
@@ -753,7 +755,7 @@ describe('JiraCollector.poll', () => {
       },
     ]);
 
-    let envelopes = await collector.poll(baseConnection());
+    let { envelopes } = await collector.poll(baseConnection());
     expect(client.getIssueChangelog).toHaveBeenCalledWith(
       'https://acme.atlassian.net',
       'admin@acme.com',
@@ -769,7 +771,7 @@ describe('JiraCollector.poll', () => {
     client.searchIssues.mockResolvedValue({ issues: [truncated] });
     client.getIssueChangelog.mockResolvedValue(null);
 
-    envelopes = await collector.poll(baseConnection());
+    ({ envelopes } = await collector.poll(baseConnection()));
     data = envelopes[0].data as unknown as { transitions?: unknown[] };
     expect(data.transitions).toHaveLength(1);
   });

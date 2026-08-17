@@ -16,7 +16,12 @@ export interface ConnectionSyncStatus {
   syncIntervalMinutes: number;
   backfillSince: string | null;
   backfillCompletedAt: Date | null;
+  /** When this connection last REACHED its source — liveness, not coverage. */
   lastSyncAt: Date | null;
+  /** Source time this connection is complete through — coverage. Null while backfilling. */
+  collectedThroughAt: Date | null;
+  /** An admin has queued this connection for the next sweep, ahead of the queue. */
+  syncRequestedAt: Date | null;
   /** Computed from lastSyncAt + this connection's own syncIntervalMinutes. */
   nextSyncDueAt: Date;
   eventsIngested: number;
@@ -46,6 +51,17 @@ export interface SyncRunHistoryEntry {
 
 export interface SourceSyncStatus {
   sourceSystem: string;
+  /**
+   * Oldest completeness across this source's ACTIVE connections; null while
+   * any of them is still backfilling (`incomplete`).
+   *
+   * Split per source rather than blended because GitHub backfills far slower
+   * than Jira polls — an admin asking "will today's data be in tonight?" needs
+   * to see which side is behind, which a single tenant-wide number hides.
+   */
+  collectedThroughAt: Date | null;
+  /** Active connections of this source still backfilling. */
+  incomplete: number;
   tick: {
     running: boolean;
     startedAt: Date | null;
@@ -101,7 +117,29 @@ export interface SyncStatusView {
  * would still look recent.
  */
 export interface DataFreshness {
-  /** Oldest successful sync across active connections; null if none has ever synced. */
+  /**
+   * **The completeness bound.** Oldest `collectedThroughAt` across active
+   * connections: every change at every source at or before this instant has
+   * been collected. This — not `lastSyncAt` — is what answers "is today's
+   * data in?", and it is the number the boards render.
+   *
+   * Null whenever ANY active connection has no completeness yet (see
+   * `incomplete`): the tenant is only complete through a point if all of it
+   * is, and letting a finished connection speak for a backfilling sibling
+   * would report a coverage half the data predates.
+   */
+  collectedThroughAt: Date | null;
+  /** Seconds between `collectedThroughAt` and now — the real lag behind the source. */
+  behindSeconds: number | null;
+  /** Active connections still backfilling, i.e. complete through nothing yet. */
+  incomplete: number;
+  /**
+   * Oldest time we last REACHED a source across active connections. Kept
+   * because it is the only thing that distinguishes "the collector is running
+   * and behind" from "the collector stopped" — but it is not a completeness
+   * measure: a connection can reach GitHub every 5 minutes while 80 pages
+   * behind in its backfill.
+   */
   lastSyncAt: Date | null;
   /** Seconds since `lastSyncAt`; null when nothing has synced yet. */
   staleSeconds: number | null;
@@ -109,8 +147,12 @@ export interface DataFreshness {
   neverSynced: number;
   /** Active connections whose last pass failed, so their slice is frozen at an unknown age. */
   failing: { sourceSystem: string; name: string; error: string }[];
-  /** Per-source newest sync, so the UI can say which side is behind. */
-  sources: { sourceSystem: string; lastSyncAt: Date | null }[];
+  /** Per-source newest sync and oldest completeness, so the UI can say which side is behind. */
+  sources: {
+    sourceSystem: string;
+    lastSyncAt: Date | null;
+    collectedThroughAt: Date | null;
+  }[];
 }
 
 const HISTORY_PAGE_SIZE = 20;
@@ -172,7 +214,15 @@ export class ConnectionsService {
   findActiveBySource(source: SourceSystem): Promise<Connection[]> {
     return this.prisma.connection.findMany({
       where: { sourceSystem: source, status: 'active' },
-      orderBy: { lastSyncAt: { sort: 'asc', nulls: 'first' } },
+      // Explicitly requested connections first, then neediest. Without the
+      // first key, an admin's "sync now" on a 195-connection tenant lands
+      // wherever staleness happens to put it — which is the same "eventually"
+      // the button exists to escape. `touchSync` nulls the request the moment
+      // it is honoured, so a connection cannot camp at the head.
+      orderBy: [
+        { syncRequestedAt: { sort: 'desc', nulls: 'last' } },
+        { lastSyncAt: { sort: 'asc', nulls: 'first' } },
+      ],
     });
   }
 
@@ -201,11 +251,60 @@ export class ConnectionsService {
     return this.prisma.connection.findMany({ where: { status: 'active' } });
   }
 
+  /**
+   * Records that this connection reached its source. Called ONLY for a pass
+   * that actually ran — never for one skipped in a rate-limit cooldown or for
+   * want of a credential, which would report an untouched connection as fresh.
+   *
+   * Clears any pending `syncRequestedAt`: the admin's "sync now" has been
+   * honoured. Leaving it set would pin the connection to the head of the sweep
+   * forever, re-creating the starvation the neediest-first ordering fixed.
+   */
   async touchSync(id: string, lagSeconds = 0): Promise<void> {
     await this.prisma.connection.update({
       where: { id },
-      data: { lastSyncAt: new Date(), syncLagSeconds: lagSeconds },
+      data: {
+        lastSyncAt: new Date(),
+        syncLagSeconds: lagSeconds,
+        syncRequestedAt: null,
+      },
     });
+  }
+
+  /**
+   * Advances the point in SOURCE time this connection is complete through.
+   * Distinct from `lastSyncAt` (when we last called the API) — this is the one
+   * that answers "is today's data in?".
+   */
+  async setCollectedThroughAt(id: string, at: Date): Promise<void> {
+    await this.prisma.connection.update({
+      where: { id },
+      data: { collectedThroughAt: at },
+    });
+  }
+
+  /** Queues an out-of-band sync for the next sweep, ahead of the regular queue. */
+  async requestSync(id: string): Promise<void> {
+    await this.prisma.connection.update({
+      where: { id },
+      data: { syncRequestedAt: new Date() },
+    });
+  }
+
+  /**
+   * Queues every active connection, across all tenants — the IST day-close
+   * pass (`CollectorSchedulerService.closeOutTheDay`). Returns how many.
+   *
+   * One timestamp for the whole fleet is deliberate: the sweep's secondary
+   * sort (`lastSyncAt ASC`) then orders *within* the queued set, so the day
+   * close still collects neediest-first rather than in arbitrary order.
+   */
+  async requestSyncForAllActive(): Promise<number> {
+    const { count } = await this.prisma.connection.updateMany({
+      where: { status: 'active' },
+      data: { syncRequestedAt: new Date() },
+    });
+    return count;
   }
 
   /**
@@ -261,6 +360,7 @@ export class ConnectionsService {
         sourceSystem: true,
         name: true,
         lastSyncAt: true,
+        collectedThroughAt: true,
         lastError: true,
       },
     });
@@ -278,22 +378,64 @@ export class ConnectionsService {
         )
       : null;
 
-    // Per source: the NEWEST sync among its connections. A never-synced
-    // connection must not pin its source to null once a sibling has synced —
-    // it is already counted in `neverSynced`.
-    const bySource = new Map<string, Date | null>();
+    // Completeness is all-or-nothing across the tenant. One connection with no
+    // watermark means the tenant is complete through nothing, however current
+    // its siblings are — the alternative reports a coverage that part of the
+    // data demonstrably predates.
+    const incomplete = connections.filter((c) => !c.collectedThroughAt).length;
+    const collectedThroughAt =
+      connections.length > 0 && incomplete === 0
+        ? connections.reduce<Date>(
+            (oldest, c) =>
+              (c.collectedThroughAt as Date) < oldest
+                ? (c.collectedThroughAt as Date)
+                : oldest,
+            connections[0].collectedThroughAt as Date,
+          )
+        : null;
+
+    // Per source: the NEWEST sync among its connections, and the OLDEST
+    // completeness. A never-synced connection must not pin its source's
+    // lastSyncAt to null once a sibling has synced — it is already counted in
+    // `neverSynced` — but a connection with no completeness DOES pin its
+    // source's watermark to null, for the same all-or-nothing reason above.
+    const bySource = new Map<
+      string,
+      { lastSyncAt: Date | null; collectedThroughAt: Date | null }
+    >();
     for (const c of connections) {
-      if (!bySource.has(c.sourceSystem)) {
-        bySource.set(c.sourceSystem, c.lastSyncAt);
+      const current = bySource.get(c.sourceSystem);
+      if (!current) {
+        bySource.set(c.sourceSystem, {
+          lastSyncAt: c.lastSyncAt,
+          collectedThroughAt: c.collectedThroughAt,
+        });
         continue;
       }
-      const current = bySource.get(c.sourceSystem) ?? null;
-      if (c.lastSyncAt && (current === null || c.lastSyncAt > current)) {
-        bySource.set(c.sourceSystem, c.lastSyncAt);
+      if (
+        c.lastSyncAt &&
+        (current.lastSyncAt === null || c.lastSyncAt > current.lastSyncAt)
+      ) {
+        current.lastSyncAt = c.lastSyncAt;
+      }
+      if (
+        !c.collectedThroughAt ||
+        (current.collectedThroughAt !== null &&
+          c.collectedThroughAt < current.collectedThroughAt)
+      ) {
+        current.collectedThroughAt = c.collectedThroughAt;
       }
     }
 
     return {
+      collectedThroughAt,
+      behindSeconds: collectedThroughAt
+        ? Math.max(
+            0,
+            Math.round((Date.now() - collectedThroughAt.getTime()) / 1000),
+          )
+        : null,
+      incomplete,
       lastSyncAt,
       staleSeconds: lastSyncAt
         ? Math.max(0, Math.round((Date.now() - lastSyncAt.getTime()) / 1000))
@@ -307,7 +449,7 @@ export class ConnectionsService {
           error: c.lastError as string,
         })),
       sources: [...bySource.entries()]
-        .map(([sourceSystem, at]) => ({ sourceSystem, lastSyncAt: at }))
+        .map(([sourceSystem, v]) => ({ sourceSystem, ...v }))
         .sort((a, b) => a.sourceSystem.localeCompare(b.sourceSystem)),
     };
   }
@@ -383,6 +525,8 @@ export class ConnectionsService {
         backfillSince: config.backfillSince ?? null,
         backfillCompletedAt: c.backfillCompletedAt,
         lastSyncAt: c.lastSyncAt,
+        collectedThroughAt: c.collectedThroughAt,
+        syncRequestedAt: c.syncRequestedAt,
         nextSyncDueAt: c.lastSyncAt
           ? new Date(c.lastSyncAt.getTime() + syncIntervalMinutes * 60_000)
           : new Date(now),
@@ -450,8 +594,28 @@ export class ConnectionsService {
           }),
         );
 
+        // Same all-or-nothing rule as tenant-wide freshness: one connection
+        // mid-backfill means this source is complete through nothing, however
+        // current its siblings are.
+        const activeItems = sourceItems.filter((i) => i.status === 'active');
+        const incomplete = activeItems.filter(
+          (i) => !i.collectedThroughAt,
+        ).length;
+        const collectedThroughAt =
+          activeItems.length > 0 && incomplete === 0
+            ? activeItems.reduce<Date>(
+                (oldest, i) =>
+                  (i.collectedThroughAt as Date) < oldest
+                    ? (i.collectedThroughAt as Date)
+                    : oldest,
+                activeItems[0].collectedThroughAt as Date,
+              )
+            : null;
+
         return {
           sourceSystem,
+          collectedThroughAt,
+          incomplete,
           tick: {
             running: tickRunning,
             startedAt: tick?.startedAt ?? null,
@@ -535,11 +699,37 @@ export class ConnectionsService {
           ...((connection.config as Record<string, unknown> | null) ?? {}),
           backfillSince: since.toISOString(),
         } as Prisma.InputJsonValue,
+      },
+    });
+    await this.clearSyncProgress(id);
+  }
+
+  /**
+   * Resets everything that records how far collection has got, so the next
+   * poll re-walks from the connection's current floor.
+   *
+   * The three fields move together and separating them is a bug every time:
+   *
+   *  - `syncCursors` alone leaves the connection reporting a completeness
+   *    (`collectedThroughAt`) inherited from the scope it no longer collects.
+   *  - `backfillCompletedAt` left set tells the scheduler's due-check this
+   *    connection needs no priority at exactly the moment it needs the most
+   *    (it becomes interval-gated again, up to 4 hours idle), and tells the
+   *    Sync Status screen the backfill is finished while it re-walks history.
+   *  - `collectedThroughAt` left set claims today's data is in when the
+   *    connection has just been told to start over.
+   *
+   * Called by both paths that re-open a connection's history: an admin
+   * `/rebackfill`, and a Configuration save that changes the repo, site,
+   * project or window (`ConfigurationsService.syncConnection`).
+   */
+  async clearSyncProgress(id: string): Promise<void> {
+    await this.prisma.connection.update({
+      where: { id },
+      data: {
         syncCursors: {} as Prisma.InputJsonValue,
-        // The connection is walking history again, so it is no longer "fully
-        // backfilled" — leaving this set would tell the sweep scheduler this
-        // connection needs no priority, exactly when it needs the most.
         backfillCompletedAt: null,
+        collectedThroughAt: null,
       },
     });
   }
