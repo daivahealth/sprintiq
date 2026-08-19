@@ -34,12 +34,25 @@ export class BackfillSchedulerService {
   private readonly logger = new Logger(BackfillSchedulerService.name);
 
   /**
-   * Per-tenant cooldowns, in memory: when a reconciler reported it had run out
-   * of quota, there is nothing to gain by asking again before the reset. Held
-   * in memory rather than persisted because losing it on restart only costs
-   * one wasted probe, and the reconciler stops immediately anyway.
+   * Cooldowns keyed on tenant **and source**: when a reconciler reported it had
+   * run out of quota, there is nothing to gain by asking again before the
+   * reset. Held in memory rather than persisted because losing it on restart
+   * only costs one wasted probe, and the reconciler stops immediately anyway.
+   *
+   * Keyed per source because the quota is per source. Keyed per tenant because
+   * each tenant holds its own credential. Only GitHub can populate this — Jira
+   * has no `resumeAt` to report — and under the old tenant-only key that meant
+   * GitHub exhausting its limit skipped the whole tenant, stalling Jira's
+   * gap-filling for a limit Jira can never hit. During a 195-repo backfill
+   * GitHub is in cooldown most of the time, so that was days of Jira standing
+   * still for no reason.
    */
   private readonly cooldowns = new Map<string, Date>();
+
+  private cooling(tenantId: string, source: 'github' | 'jira'): boolean {
+    const until = this.cooldowns.get(`${tenantId}:${source}`);
+    return Boolean(until && until.getTime() > Date.now());
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -54,10 +67,9 @@ export class BackfillSchedulerService {
     const tenants = await this.prisma.tenant.findMany({ select: { id: true } });
 
     for (const tenant of tenants) {
-      const until = this.cooldowns.get(tenant.id);
-      if (until && until.getTime() > Date.now()) {
-        continue;
-      }
+      // No tenant-wide skip: the cooldown belongs to one source, so it is
+      // checked per source inside `runTenant`. Skipping here is what let
+      // GitHub's exhausted quota silence Jira as well.
       try {
         await this.runTenant(tenant.id);
       } catch (error) {
@@ -78,11 +90,22 @@ export class BackfillSchedulerService {
    * heroic pass.
    */
   private async runTenant(tenantId: string): Promise<void> {
-    const jira = await this.storyDates.reconcile(tenantId);
-    if (jira.updated > 0) {
-      this.logger.log(
-        `Backfill (tenant ${tenantId}): ${jira.updated} Jira story dates filled.`,
-      );
+    // Jira first, and independent of GitHub's quota entirely — different
+    // credential, different limit, and no way for this reconciler to report a
+    // cooldown of its own.
+    if (!this.cooling(tenantId, 'jira')) {
+      const jira = await this.storyDates.reconcile(tenantId);
+      if (jira.updated > 0) {
+        this.logger.log(
+          `Backfill (tenant ${tenantId}): ${jira.updated} Jira story dates filled.`,
+        );
+      }
+    }
+
+    // The three GitHub reconcilers share one token and therefore one quota, so
+    // they share one cooldown and short-circuit in sequence.
+    if (this.cooling(tenantId, 'github')) {
+      return;
     }
 
     const reviews = await this.reviews.reconcile(tenantId);
@@ -92,7 +115,7 @@ export class BackfillSchedulerService {
       );
     }
     if (reviews.resumeAt) {
-      this.cooldowns.set(tenantId, reviews.resumeAt);
+      this.cooldowns.set(`${tenantId}:github`, reviews.resumeAt);
       return; // no quota left for the next reconciler either
     }
 
@@ -103,7 +126,7 @@ export class BackfillSchedulerService {
       );
     }
     if (stats.resumeAt) {
-      this.cooldowns.set(tenantId, stats.resumeAt);
+      this.cooldowns.set(`${tenantId}:github`, stats.resumeAt);
       return;
     }
 
@@ -114,7 +137,7 @@ export class BackfillSchedulerService {
       );
     }
     if (messages.resumeAt) {
-      this.cooldowns.set(tenantId, messages.resumeAt);
+      this.cooldowns.set(`${tenantId}:github`, messages.resumeAt);
     }
   }
 }
