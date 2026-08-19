@@ -28,6 +28,7 @@ Each ADR follows: **Status · Context · Decision · Consequences · Alternative
 | [0005](0005-prisma-single-schema.md) | Prisma ORM, single schema with table-prefix context boundaries | Accepted |
 | [0006](0006-identity-and-tenant-resolution.md) | Global-unique email identity; tenant resolved from the JWT | Accepted |
 | [0007](0007-vite-spa-over-nextjs.md) | Frontend stays a Vite SPA (Next.js evaluated and declined) | Accepted |
+| [0008](0008-github-graphql-over-webhooks.md) | GitHub collection moves to GraphQL; webhooks stay deferred | Accepted |
 
 ## Conventions
 
