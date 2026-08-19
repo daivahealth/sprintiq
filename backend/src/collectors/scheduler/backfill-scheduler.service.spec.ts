@@ -101,6 +101,50 @@ describe('BackfillSchedulerService', () => {
     expect(reviews.reconcile).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps filling Jira gaps while GitHub sits out its cooldown', async () => {
+    // The cooldown was keyed per TENANT and checked before any reconciler ran,
+    // so GitHub exhausting its quota skipped the whole tenant — Jira's
+    // story-date reconciler included. The two sources hold different
+    // credentials against different rate limits, and Jira cannot report a
+    // cooldown at all (`StoryDateReconcileResult` has no `resumeAt`), so it
+    // was being punished for a limit it can never hit. During a 195-repo
+    // backfill GitHub is in cooldown most of the time, which would have
+    // stalled Jira gap-filling for days.
+    reviews.reconcile.mockResolvedValue({
+      ...idle,
+      reviewsWritten: 0,
+      remaining: 500,
+      rateLimited: true,
+      resumeAt: new Date(Date.now() + 600_000),
+    });
+
+    await service.tick();
+    await service.tick();
+
+    expect(storyDates.reconcile).toHaveBeenCalledTimes(2);
+    // GitHub still correctly sits out — the protection it needs is intact.
+    expect(reviews.reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds one tenant cooldown without silencing another tenant', async () => {
+    prisma.tenant.findMany.mockResolvedValue([
+      { id: 'tenant-a' },
+      { id: 'tenant-b' },
+    ]);
+    reviews.reconcile.mockResolvedValueOnce({
+      ...idle,
+      reviewsWritten: 0,
+      remaining: 500,
+      rateLimited: true,
+      resumeAt: new Date(Date.now() + 600_000),
+    });
+
+    await service.tick();
+
+    // tenant-a exhausted its own token; tenant-b's is untouched.
+    expect(reviews.reconcile).toHaveBeenCalledTimes(2);
+  });
+
   it('resumes once the cooldown has passed', async () => {
     reviews.reconcile.mockResolvedValueOnce({
       ...idle,
