@@ -769,6 +769,27 @@ describe('GithubGraphqlClient', () => {
     expect(page.failed).toBe(true);
   });
 
+  it('reports an unreadable response body as failed instead of throwing', async () => {
+    // Seen live as "Unexpected end of JSON input": the status line arrived,
+    // the body was truncated. res.json() rejects, and an exception escapes
+    // the clean/skipped/failed contract the collector is built on.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+    }) as unknown as typeof fetch;
+
+    const page = await client.listPullRequestsPage('acme/payments', 'tok', {
+      page: 1,
+    });
+
+    expect(page.failed).toBe(true);
+    expect(page.items).toEqual([]);
+  });
+
   it('reports a dropped connection as failed instead of throwing', async () => {
     // Found against a live corporate egress path: fetch rejects rather than
     // returning a response. An exception escapes the collector's three-state

@@ -750,9 +750,22 @@ export class GithubGraphqlClient implements GithubSourceClient {
       return { erroredPaths: new Set(), failed: true };
     }
 
-    const body = (await res.json()) as GraphqlResponse<
-      T & { rateLimit?: RateLimitField }
-    >;
+    // A 200 whose body is truncated or empty throws here rather than parsing.
+    // Seen live as "Unexpected end of JSON input" — the status line arrived,
+    // the body did not. Same reasoning as the fetch guard above: an exception
+    // is outside the collector's three-state contract and aborts the tick
+    // before its cursors are written, so this becomes `failed`.
+    let body: GraphqlResponse<T & { rateLimit?: RateLimitField }>;
+    try {
+      body = (await res.json()) as GraphqlResponse<
+        T & { rateLimit?: RateLimitField }
+      >;
+    } catch (err) {
+      this.logger.warn(
+        `GitHub GraphQL returned an unreadable body: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { erroredPaths: new Set(), failed: true };
+    }
     const rateLimit = this.readRateLimit(body.data?.rateLimit);
 
     // The partial-error hazard: HTTP 200, an `errors` array, and `data` with
