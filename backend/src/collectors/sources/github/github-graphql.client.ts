@@ -218,8 +218,35 @@ export class GithubGraphqlClient implements GithubSourceClient {
         rateLimit: result.rateLimit,
       };
     }
-    const history = result.data?.repository?.defaultBranchRef?.target?.history;
-    if (result.failed || !history || this.isErrored(result, 'repository')) {
+    const repository = result.data?.repository;
+    if (result.failed || !repository || this.isErrored(result, 'repository')) {
+      return {
+        items: [],
+        hasNextPage: false,
+        failed: true,
+        rateLimit: result.rateLimit,
+      };
+    }
+
+    // A repository that resolved cleanly but has no default branch is an
+    // EMPTY repo — initialised and never pushed to. That is genuinely no
+    // commits, not a refused request, and the distinction runs the opposite
+    // way to the usual one: reporting empty as `failed` cannot fabricate data,
+    // but it badges a healthy connection as failing with a misleading
+    // token-scope message, never lets its backfill complete, and so leaves it
+    // permanently "due" — burning a sweep slot every tick, forever. Found on
+    // four such repos in the reference org.
+    if (!repository.defaultBranchRef) {
+      this.logger.debug(
+        `${repoFullName} has no default branch (empty repository) — reporting no commits, not a failure.`,
+      );
+      return { items: [], hasNextPage: false, rateLimit: result.rateLimit };
+    }
+
+    const history = repository.defaultBranchRef.target?.history;
+    if (!history) {
+      // A default branch whose target carries no history is not a shape GitHub
+      // should return; treat it as refused rather than inventing emptiness.
       return {
         items: [],
         hasNextPage: false,

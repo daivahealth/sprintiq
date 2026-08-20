@@ -723,6 +723,52 @@ describe('GithubGraphqlClient', () => {
 
   // ------------------------------------------------------------ blank token
 
+  it('reads an empty repo (no default branch) as no commits, not as a failure', async () => {
+    // Found live on four repos in the reference org: initialised, never
+    // pushed to. Calling that `failed` badges a healthy connection as broken,
+    // never completes its backfill, and leaves it permanently due.
+    global.fetch = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: {
+          data: {
+            rateLimit: RATE_LIMIT,
+            repository: { defaultBranchRef: null },
+          },
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const page = await client.listCommitsPage(
+      'acme/empty',
+      'tok',
+      { page: 1 },
+      '2026-01-01T00:00:00.000Z',
+    );
+
+    expect(page.failed).toBeUndefined();
+    expect(page.items).toEqual([]);
+    expect(page.hasNextPage).toBe(false);
+  });
+
+  it('still fails when the repository itself could not be read', async () => {
+    // The distinction the test above depends on: a null *repository* is a
+    // refusal, only a null defaultBranchRef under a real repository is empty.
+    global.fetch = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: { data: { rateLimit: RATE_LIMIT, repository: null } },
+      }),
+    ) as unknown as typeof fetch;
+
+    const page = await client.listCommitsPage(
+      'acme/gone',
+      'tok',
+      { page: 1 },
+      '2026-01-01T00:00:00.000Z',
+    );
+
+    expect(page.failed).toBe(true);
+  });
+
   it('reports a dropped connection as failed instead of throwing', async () => {
     // Found against a live corporate egress path: fetch rejects rather than
     // returning a response. An exception escapes the collector's three-state
