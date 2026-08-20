@@ -102,6 +102,14 @@ export interface GithubReviewComments {
  * GitHub renders App-based bots with a `name[bot]` login. `user.type` is the
  * authoritative signal, but it is absent from some payload shapes, so the
  * suffix is the documented fallback rather than the primary test.
+ *
+ * NOTE the fallback is effectively inert under GraphQL, and measured to be so:
+ * the same account REST calls `dependabot[bot]` GraphQL calls `dependabot`,
+ * and REST's `Copilot` is GraphQL's `copilot-swe-agent` (same numeric id in
+ * both cases). GraphQL bot detection therefore rests entirely on `__typename`,
+ * which every query in `GithubGraphqlClient` requests explicitly for exactly
+ * this reason — drop it from a query and bots silently become people, with no
+ * suffix left to catch them.
  */
 export function isBotAccount(
   login: string | undefined,

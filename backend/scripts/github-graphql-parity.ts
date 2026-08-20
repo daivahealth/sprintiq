@@ -35,6 +35,22 @@ interface Diff {
   critical: boolean;
 }
 
+/**
+ * What this run actually managed to compare.
+ *
+ * Load-bearing, and for the same reason the collectors distinguish `failed`
+ * from empty: a comparison that never ran produces zero differences, which is
+ * byte-identical to a comparison that ran and found none. Reporting the first
+ * as "safe to cut over" is the worst version of that mistake, because it is
+ * the check standing between a silent metric regression and production.
+ */
+interface Coverage {
+  /** Sections that completed: "<repo> pulls" / "<repo> commits". */
+  compared: string[];
+  /** Sections that could not run, with why. */
+  skipped: { section: string; reason: string }[];
+}
+
 function record(
   diffs: Diff[],
   entity: string,
@@ -59,20 +75,22 @@ async function comparePulls(
   rest: GithubClient,
   graphql: GithubGraphqlClient,
   diffs: Diff[],
+  coverage: Coverage,
 ): Promise<void> {
   const restPage = await rest.listPullRequestsPage(repo, token, { page: 1 });
   const gqlPage = await graphql.listPullRequestsPage(repo, token, { page: 1 });
 
   if (restPage.failed || gqlPage.failed) {
-    console.error(
-      `  ! ${repo}: PR page failed (rest=${!!restPage.failed} graphql=${!!gqlPage.failed}) — cannot compare`,
-    );
+    const reason = `PR page failed (rest=${!!restPage.failed} graphql=${!!gqlPage.failed})`;
+    console.error(`  ! ${repo}: ${reason} — cannot compare`);
+    coverage.skipped.push({ section: `${repo} pulls`, reason });
     return;
   }
 
   const gqlByNumber = new Map(gqlPage.items.map((p) => [p.number, p]));
   const sample = restPage.items.slice(0, SAMPLE);
   console.log(`  PRs: comparing ${sample.length}`);
+  coverage.compared.push(`${repo} pulls (${sample.length})`);
 
   for (const restPr of sample) {
     const gqlPr = gqlByNumber.get(restPr.number);
@@ -99,8 +117,11 @@ async function comparePulls(
       restPr.updated_at,
       gqlPr.updated_at,
     );
-    record(diffs, 'pull', key, 'additions', restPr.additions, gqlPr.additions);
-    record(diffs, 'pull', key, 'deletions', restPr.deletions, gqlPr.deletions);
+    // additions/deletions/changed_files are deliberately NOT compared here:
+    // REST's PR *list* endpoint never carries them (api/README.md §3, which is
+    // the whole reason a per-PR detail call exists), while GraphQL returns them
+    // inline. null -> 31 is that documented difference, not a defect — the
+    // meaningful comparison is against REST's detail response, below.
     record(diffs, 'pull', key, 'baseRef', restPr.base?.ref, gqlPr.base?.ref);
     // The PR author drives every people metric; a mismatch mis-attributes work.
     record(
@@ -125,6 +146,23 @@ async function comparePulls(
       'changedFiles',
       restDetail.changedFiles,
       gqlDetail.changedFiles,
+    );
+    // Against the DETAIL response, where REST does carry them.
+    record(
+      diffs,
+      'pull',
+      key,
+      'additions',
+      restDetail.additions,
+      gqlDetail.additions,
+    );
+    record(
+      diffs,
+      'pull',
+      key,
+      'deletions',
+      restDetail.deletions,
+      gqlDetail.deletions,
     );
     // `merged_by` drives self_merge_rate — a governance metric.
     record(
@@ -196,6 +234,7 @@ async function compareCommits(
   rest: GithubClient,
   graphql: GithubGraphqlClient,
   diffs: Diff[],
+  coverage: Coverage,
 ): Promise<void> {
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const restPage = await rest.listCommitsPage(repo, token, { page: 1 }, since);
@@ -207,15 +246,16 @@ async function compareCommits(
   );
 
   if (restPage.failed || gqlPage.failed) {
-    console.error(
-      `  ! ${repo}: commit page failed (rest=${!!restPage.failed} graphql=${!!gqlPage.failed}) — cannot compare`,
-    );
+    const reason = `commit page failed (rest=${!!restPage.failed} graphql=${!!gqlPage.failed})`;
+    console.error(`  ! ${repo}: ${reason} — cannot compare`);
+    coverage.skipped.push({ section: `${repo} commits`, reason });
     return;
   }
 
   const gqlBySha = new Map(gqlPage.items.map((c) => [c.sha, c]));
   const sample = restPage.items.slice(0, SAMPLE);
   console.log(`  commits: comparing ${sample.length}`);
+  coverage.compared.push(`${repo} commits (${sample.length})`);
 
   for (const restCommit of sample) {
     const gqlCommit = gqlBySha.get(restCommit.sha);
@@ -318,18 +358,27 @@ async function main(): Promise<void> {
   const rest = new GithubClient();
   const graphql = new GithubGraphqlClient();
   const diffs: Diff[] = [];
+  const coverage: Coverage = { compared: [], skipped: [] };
 
   for (const repo of repos) {
     console.log(`\n== ${repo}`);
-    await comparePulls(repo, token, rest, graphql, diffs);
-    await compareCommits(repo, token, rest, graphql, diffs);
+    await comparePulls(repo, token, rest, graphql, diffs, coverage);
+    await compareCommits(repo, token, rest, graphql, diffs, coverage);
   }
 
   const critical = diffs.filter((d) => d.critical);
+  const expected = repos.length * 2; // pulls + commits per repo
   console.log(`\n${'='.repeat(70)}`);
   console.log(
-    `${diffs.length} difference(s), ${critical.length} critical, across ${repos.length} repo(s).`,
+    `Compared ${coverage.compared.length}/${expected} sections across ${repos.length} repo(s).`,
   );
+  for (const section of coverage.compared) {
+    console.log(`  ok      ${section}`);
+  }
+  for (const s of coverage.skipped) {
+    console.log(`  SKIPPED ${s.section} — ${s.reason}`);
+  }
+  console.log(`${diffs.length} difference(s), ${critical.length} critical.`);
 
   if (diffs.length > 0) {
     console.log('\nDifferences (REST -> GraphQL):');
@@ -346,8 +395,19 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
+
+  // Zero differences from a comparison that never ran looks exactly like zero
+  // differences from one that did. Only the second is evidence, so an
+  // incomplete run is never allowed to read as a pass.
+  if (coverage.skipped.length > 0 || coverage.compared.length === 0) {
+    console.error(
+      `\nNOT VERIFIED. ${coverage.skipped.length} section(s) could not be compared, so "no differences" here is absence of evidence, not evidence of parity. Re-run until every section reports ok.`,
+    );
+    process.exit(1);
+  }
+
   console.log(
-    '\nNo critical differences — safe to enable GITHUB_COLLECTION_MODE=graphql.',
+    '\nEvery section compared, no critical differences — safe to enable GITHUB_COLLECTION_MODE=graphql.',
   );
 }
 

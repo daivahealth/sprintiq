@@ -73,7 +73,26 @@ What shipped, and the two places it departs from what this ADR assumed:
 
 All three hazards named under Consequences have explicit handling and tests: partial errors (`errors[].path`, including errored ancestors and unlocalisable errors), silent nested truncation, and complexity 502s (halve-and-retry, then `failed` — never an empty page). Bot classification moved to `__typename` through the same shared helper.
 
-**The parity harness is the remaining gate.** `backend/scripts/github-graphql-parity.ts` diffs both transports over the same repos and exits non-zero on any critical difference — `authorLogin` on commits above all, since REST populates it only for verified commit emails and §12 #22's identity resolution is built on exactly that. The default does not flip until it runs clean against the reference org.
+**The parity harness is the remaining gate.** `backend/scripts/github-graphql-parity.ts` diffs both transports over the same repos and exits non-zero on any critical difference — `authorLogin` on commits above all, since REST populates it only for verified commit emails and §12 #22's identity resolution is built on exactly that. It also refuses to pass on an *incomplete* run: a section that could not be compared produces zero differences, which is indistinguishable from a section that compared cleanly, so skipped sections are reported and exit non-zero rather than reading as parity.
+
+### First parity result (2026-08-20, `athmahealth/dms` + `athmahealth/abdm`)
+
+4/4 sections, 50 PRs and 22 commits. **Everything the metrics consume matched exactly** — commit `authorLogin` *including its nulls*, author email, `authoredDate` vs `committedDate`, message, `additions`/`deletions` against REST's detail response, `mergedBy`, `changedFiles`, review counts, review ids, bot flags and per-review comment counts.
+
+Two differences, both the same class, both bots:
+
+| REST | GraphQL | Same account? |
+|---|---|---|
+| `Copilot` | `copilot-swe-agent` | yes — id 198982749 both sides |
+| `dependabot[bot]` | `dependabot` | yes |
+
+For **GitHub App** accounts REST returns the display login and GraphQL the app slug. Consequences, in order of importance:
+
+1. **Bot classification is unaffected** — `__typename: "Bot"` carries it, and both transports classify these correctly. Since every people metric counts humans only (METRICS.md §0), no people metric moves.
+2. **The `name[bot]` suffix fallback in `isBotAccount` is inert under GraphQL**, because GraphQL never produces that suffix. Detection rests entirely on `__typename`, which is why every query requests it explicitly. Removing it from a query would silently reclassify bots as people.
+3. **`code_pull_request.authorLogin` holds a different string per transport** for bot-authored PRs. A mode switch rewrites those rows (idempotent — an update, not a duplicate). Any board grouping raw PR author logins would show the bot under its other name after a switch.
+
+None of these block cutover; all three are properties to know rather than defects. Recorded as §12 #42.
 
 ## Alternatives considered
 

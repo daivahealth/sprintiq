@@ -741,8 +741,11 @@ export class GithubGraphqlClient implements GithubSourceClient {
       );
       return { erroredPaths: new Set(), rateLimitedUntil: resetAt };
     }
-    // 502/503 is GitHub's answer to a query that was too expensive to serve.
-    if (res.status === 502 || res.status === 503) {
+    // 502/503/504 are GitHub's answers to a query it could not serve in time.
+    // 504 in particular is the latency ceiling ADR-0008 predicted would become
+    // binding once points stopped being scarce — seen live on a 25-PR page
+    // with 20 nested commits and reviews.
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
       return { erroredPaths: new Set(), tooComplex: true };
     }
     if (!res.ok) {
