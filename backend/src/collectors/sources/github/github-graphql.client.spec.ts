@@ -723,6 +723,25 @@ describe('GithubGraphqlClient', () => {
 
   // ------------------------------------------------------------ blank token
 
+  it('reports a dropped connection as failed instead of throwing', async () => {
+    // Found against a live corporate egress path: fetch rejects rather than
+    // returning a response. An exception escapes the collector's three-state
+    // contract and aborts the tick before its cursors are persisted.
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(
+        new TypeError('terminated'),
+      ) as unknown as typeof fetch;
+
+    const page = await client.listPullRequestsPage('acme/payments', 'tok', {
+      page: 1,
+    });
+
+    expect(page.failed).toBe(true);
+    expect(page.items).toEqual([]);
+    expect(page.hasNextPage).toBe(false);
+  });
+
   it('makes no request at all without a token', async () => {
     const fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;

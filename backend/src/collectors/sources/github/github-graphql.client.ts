@@ -678,15 +678,32 @@ export class GithubGraphqlClient implements GithubSourceClient {
     query: string,
     variables: Record<string, unknown>,
   ): Promise<GraphqlResult<T>> {
-    const res = await fetch(this.endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/vnd.github+json',
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    let res: Awaited<ReturnType<typeof fetch>>;
+    try {
+      res = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/vnd.github+json',
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (err) {
+      // A transport-level failure — connection reset, DNS, TLS, proxy timeout —
+      // throws rather than returning a response. Observed for real against a
+      // corporate egress path ("SocketError: other side closed").
+      //
+      // It must become `failed`, not an exception: an exception escapes the
+      // collector's three-state contract entirely (clean / skipped / failed),
+      // aborting the tick before the cursors it was about to preserve are
+      // written. `failed` keeps them and retries next tick, which is exactly
+      // what a dropped connection deserves.
+      this.logger.warn(
+        `GitHub GraphQL request did not complete: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { erroredPaths: new Set(), failed: true };
+    }
 
     if (res.status === 403 || res.status === 429) {
       const resetAt = this.parseResetHeader(
