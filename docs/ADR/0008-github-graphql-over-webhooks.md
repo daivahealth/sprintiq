@@ -1,6 +1,6 @@
 # ADR-0008: GitHub collection moves to GraphQL; webhooks stay deferred
 
-- **Status:** Accepted
+- **Status:** Accepted — implemented behind a flag 2026-08-20, pending the parity check below
 - **Date:** 2026-08-19
 - **Deciders:** Product owner, Chief Software Architect
 - **Related:** [ADR-0003](0003-native-collectors-replace-n8n.md) (collectors own all source I/O), [api/README.md §3](../api/README.md) (poller contract), [api/README.md §12 #2](../api/README.md) (webhooks deferred), [METRICS.md §9](../features/METRICS.md)
@@ -61,6 +61,19 @@ Jira is untouched: one `/search/jql` returns 100 whole issues with `expand=chang
 **Field semantics must be verified, not assumed.** Specifically `author { user { login } }` versus REST's verified-email linkage, on which the identity resolution of §12 #22 depends — it recovered 15 of 19 identities on real data, and a silent semantic difference would regress that. Bot classification also moves from `user.type == "Bot"` to `__typename`. A parity harness diffing GraphQL against REST-collected data is required before cutover; the reference tenant's existing REST data is what makes that check possible.
 
 **Near-realtime, not realtime.** ~5 minutes, not seconds.
+
+## Implementation status (2026-08-20)
+
+Built and merged behind `GITHUB_COLLECTION_MODE` (`rest` | `graphql`), **default `rest`**. See [api/README.md §3](../api/README.md) for the operating contract and §12 #40/#41 for the register entries.
+
+What shipped, and the two places it departs from what this ADR assumed:
+
+- **The GraphQL client keeps REST's method signatures** rather than exposing a "fetch one enriched page" API. Reshaping the interface around GraphQL would have meant rewriting the collector's mid-page resume offset, backfill-floor comparison and per-item rate-limit suspension — the logic §12 #37 and #29 exist to protect, and which took live bugs to get right. Instead `listPullRequestsPage` fetches every per-PR field inline and answers the four follow-up calls from a short-lived per-repo prefetch cache. Same cost saving, no change to the loop it feeds. A cache miss falls through to a real single-PR query and never returns an empty-but-successful result.
+- **Cross-repo batching is deferred to a Phase 2** (§12 #41). Batching cuts across `SourceCollector.poll(connection)`, which is per-connection by contract while org sync registers one connection per repo — so the 5-repos-per-query figure needs a new contract *and* scheduler grouping. Phase 1 issues one query per repo: ~195 points per fleet pass, ~47% of quota at 5-minute cadence rather than the ~9% quoted above. Still ~100× cheaper than REST, and it leaves the contract redesign to be validated separately from the transport.
+
+All three hazards named under Consequences have explicit handling and tests: partial errors (`errors[].path`, including errored ancestors and unlocalisable errors), silent nested truncation, and complexity 502s (halve-and-retry, then `failed` — never an empty page). Bot classification moved to `__typename` through the same shared helper.
+
+**The parity harness is the remaining gate.** `backend/scripts/github-graphql-parity.ts` diffs both transports over the same repos and exits non-zero on any critical difference — `authorLogin` on commits above all, since REST populates it only for verified commit emails and §12 #22's identity resolution is built on exactly that. The default does not flip until it runs clean against the reference org.
 
 ## Alternatives considered
 

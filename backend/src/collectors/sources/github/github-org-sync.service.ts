@@ -1,6 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConnectionsService } from '../../../modules/connections/connections.service';
-import { GithubClient } from './github.client';
+import {
+  GITHUB_SOURCE_CLIENT,
+  GithubSourceClient,
+} from './github-source-client';
 
 export interface OrgSyncResult {
   reposFound: number;
@@ -29,7 +32,8 @@ export class GithubOrgSyncService {
   private readonly logger = new Logger(GithubOrgSyncService.name);
 
   constructor(
-    private readonly client: GithubClient,
+    @Inject(GITHUB_SOURCE_CLIENT)
+    private readonly client: GithubSourceClient,
     private readonly connections: ConnectionsService,
   ) {}
 
@@ -52,11 +56,15 @@ export class GithubOrgSyncService {
     ).toISOString();
 
     let page = 1;
+    let cursor: string | undefined;
     for (let fetched = 0; fetched < PAGE_BUDGET; fetched++) {
       const pageResult = await this.client.listOrgReposPage(
         organization,
         token,
-        page,
+        {
+          page,
+          cursor,
+        },
       );
       if (pageResult.rateLimitedUntil) {
         result.rateLimited = true;
@@ -103,6 +111,7 @@ export class GithubOrgSyncService {
         break;
       }
       page++;
+      cursor = pageResult.endCursor; // undefined under REST, which pages by number
     }
 
     return result;

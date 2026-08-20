@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Connection } from '@prisma/client';
 import {
   CodeCommitPayload,
@@ -18,7 +18,6 @@ import {
   PollResult,
 } from '../../framework/source-collector';
 import {
-  GithubClient,
   GithubCommit,
   GithubCommitDetail,
   GithubPull,
@@ -27,6 +26,11 @@ import {
   GithubPullReviews,
   GithubReviewComments,
 } from './github.client';
+import {
+  GITHUB_SOURCE_CLIENT,
+  GithubPageRef,
+  GithubSourceClient,
+} from './github-source-client';
 
 /**
  * Reads a positive integer from the environment, falling back to the default.
@@ -118,6 +122,24 @@ interface GithubSyncCursors {
    */
   prOldestSeenAt?: string;
   commitsOldestSeenAt?: string;
+  /**
+   * Opaque GraphQL resume cursors, written only in `graphql` mode.
+   *
+   * Deliberately separate keys rather than a reinterpretation of `prPage` /
+   * `commitsResumePage`: the two transports paginate incompatibly, and a
+   * connection can switch mode mid-backfill with only the other kind
+   * persisted. Note `commitsCursor` above is NOT one of these — it is the
+   * commits *watermark* (a timestamp feeding `since`), and overloading it
+   * would silently conflate a resume point with a completeness claim.
+   */
+  prGraphqlCursor?: string;
+  commitsGraphqlCursor?: string;
+  /**
+   * Which transport wrote the resume cursors above. When this disagrees with
+   * the live mode, the walk restarts from the floor rather than resuming on a
+   * cursor the other transport cannot read — see `pageRef`.
+   */
+  cursorMode?: 'rest' | 'graphql';
 }
 
 /** The four per-PR calls that make up one unit of the enrich budget. */
@@ -147,7 +169,8 @@ export class GithubCollector extends BaseSourceCollector {
   private readonly logger = new Logger(GithubCollector.name);
 
   constructor(
-    private readonly client: GithubClient,
+    @Inject(GITHUB_SOURCE_CLIENT)
+    private readonly client: GithubSourceClient,
     private readonly connections: ConnectionsService,
     private readonly secrets: SecretsService,
   ) {
@@ -264,7 +287,7 @@ export class GithubCollector extends BaseSourceCollector {
     connection: Connection,
     options: PollOptions = {},
   ): Promise<PollResult> {
-    const budgets = enrichBudgets(options.peersDue);
+    const budgets = enrichBudgets(options.peersDue, this.client.mode);
     const config = (connection.config ?? {}) as {
       repoFullName?: string;
       backfillSince?: string;
@@ -389,20 +412,24 @@ export class GithubCollector extends BaseSourceCollector {
     prBudget: number,
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
-    let page = cursors.prPage ?? 1;
+    const startRef = this.pageRef(cursors, 'pr', cursors.prPage ?? 1);
+    let page = startRef.page;
+    let cursor = startRef.cursor;
     // Where in the current page the previous tick stopped. Resuming mid-page
     // is what lets a page bigger than the enrich budget make progress at all.
-    let offset = cursors.prPageOffset ?? 0;
+    // A mode switch restarts the page, so the offset into it is void too.
+    let offset =
+      page === (cursors.prPage ?? 1) ? (cursors.prPageOffset ?? 0) : 0;
     let enrichBudget = prBudget;
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const result = await this.client.listPullRequestsPage(
         repoFullName,
         token,
-        page,
+        { page, cursor },
       );
       if (result.rateLimitedUntil) {
-        this.suspendPrBackfill(cursors, page, offset);
+        this.suspendPrBackfill(cursors, page, offset, cursor);
         return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
       }
       if (result.failed) {
@@ -413,7 +440,7 @@ export class GithubCollector extends BaseSourceCollector {
         this.logger.error(
           `GitHub PR backfill request failed for ${repoFullName} (connection ${connection.id}) — keeping cursors and retrying next tick instead of concluding the backfill is complete.`,
         );
-        this.suspendPrBackfill(cursors, page, offset);
+        this.suspendPrBackfill(cursors, page, offset, cursor);
         return { envelopes, failed: true };
       }
       // Anchor the incremental watermark to the true newest PR, captured once
@@ -436,7 +463,9 @@ export class GithubCollector extends BaseSourceCollector {
         if (enrichBudget <= 0) {
           // Resume at this exact item next tick — never ingest a PR with
           // permanently-missing stats, and never re-do the items above it.
-          this.suspendPrBackfill(cursors, page, i);
+          // The cursor stays on the CURRENT page, since that is where the
+          // offset points.
+          this.suspendPrBackfill(cursors, page, i, cursor);
           return { envelopes };
         }
         // Walked one item further back. Recorded per item rather than at the
@@ -463,7 +492,7 @@ export class GithubCollector extends BaseSourceCollector {
         const rateLimitedUntil = this.enrichRateLimit(enriched);
         if (rateLimitedUntil) {
           // This PR is already enriched and emitted — resume after it.
-          this.suspendPrBackfill(cursors, page, i + 1);
+          this.suspendPrBackfill(cursors, page, i + 1, cursor);
           return { envelopes, rateLimitedUntil };
         }
       }
@@ -473,9 +502,10 @@ export class GithubCollector extends BaseSourceCollector {
       }
       page++;
       offset = 0; // moved to a fresh page — start at its first item
+      cursor = result.endCursor; // undefined under REST, which pages by number
     }
 
-    this.suspendPrBackfill(cursors, page, offset); // budget exhausted
+    this.suspendPrBackfill(cursors, page, offset, cursor); // budget exhausted
     return { envelopes };
   }
 
@@ -510,20 +540,70 @@ export class GithubCollector extends BaseSourceCollector {
     return floor;
   }
 
+  /**
+   * Resolves where a paged walk resumes, reconciling the persisted cursors
+   * with the transport that is actually live.
+   *
+   * A connection that backfilled under REST holds a page number and no
+   * GraphQL cursor (and vice versa). Guessing an equivalent is not possible —
+   * a GraphQL cursor is opaque — so a mode change **restarts that entity's
+   * walk** from the top instead. That is safe and cheap rather than
+   * destructive: every envelope keys idempotently
+   * (`github:{repo}:commit:{sha}`, api/README.md §5), so a re-walk converges
+   * on the rows already stored instead of duplicating them.
+   *
+   * It is logged loudly because the one unacceptable outcome is for it to
+   * pass for a *completed* backfill.
+   */
+  private pageRef(
+    cursors: GithubSyncCursors,
+    entity: 'pr' | 'commits',
+    page: number,
+  ): GithubPageRef {
+    const liveMode = this.client.mode;
+    const writtenBy = cursors.cursorMode ?? 'rest';
+    const cursor =
+      entity === 'pr' ? cursors.prGraphqlCursor : cursors.commitsGraphqlCursor;
+
+    if (writtenBy === liveMode) {
+      return { page, cursor };
+    }
+    if (page > 1 || cursor) {
+      this.logger.warn(
+        `GitHub collection mode changed to "${liveMode}" for a ${entity} walk resumed from "${writtenBy}" cursors — restarting this walk from the first page. Already-collected events de-duplicate on their idempotency keys; this is NOT a completed backfill.`,
+      );
+    }
+    return { page: 1 };
+  }
+
+  /** Records which transport produced the cursors now persisted. */
+  private stampCursorMode(cursors: GithubSyncCursors): void {
+    cursors.cursorMode = this.client.mode;
+  }
+
   /** Persist exactly where this tick stopped, so the next resumes there rather than at the top of the page. */
   private suspendPrBackfill(
     cursors: GithubSyncCursors,
     page: number,
     offset: number,
+    endCursor?: string,
   ): void {
     cursors.prPage = page;
     cursors.prPageOffset = offset > 0 ? offset : undefined;
+    // Only meaningful under GraphQL; left untouched under REST so a later
+    // mode switch still sees which transport wrote what.
+    if (this.client.mode === 'graphql') {
+      cursors.prGraphqlCursor = endCursor;
+    }
+    this.stampCursorMode(cursors);
   }
 
   private finishPrBackfill(cursors: GithubSyncCursors, floor: Date): void {
     cursors.prBackfillDone = true;
     cursors.prPage = undefined;
     cursors.prPageOffset = undefined;
+    cursors.prGraphqlCursor = undefined;
+    this.stampCursorMode(cursors);
     // The walk reached the floor (or ran out of history above it), so PR
     // coverage now extends all the way back to it.
     cursors.prOldestSeenAt = floor.toISOString();
@@ -543,11 +623,11 @@ export class GithubCollector extends BaseSourceCollector {
     prBudget: number,
   ): Promise<SyncResult> {
     const envelopes: CanonicalEnvelope[] = [];
-    const result = await this.client.listPullRequestsPage(
-      repoFullName,
-      token,
-      1,
-    );
+    // Always the first page, never a cursor: incremental sync re-reads the
+    // newest PRs each tick and stops at the watermark.
+    const result = await this.client.listPullRequestsPage(repoFullName, token, {
+      page: 1,
+    });
     if (result.rateLimitedUntil) {
       return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
     }
@@ -635,9 +715,19 @@ export class GithubCollector extends BaseSourceCollector {
     const envelopes: CanonicalEnvelope[] = [];
     const since = cursors.commitsCursor ?? backfillFloor.toISOString();
     const mode: CollectionMode = cursors.commitsCursor ? 'poll' : 'backfill';
-    let page = cursors.commitsResumePage ?? 1;
+    const startRef = this.pageRef(
+      cursors,
+      'commits',
+      cursors.commitsResumePage ?? 1,
+    );
+    let page = startRef.page;
+    let cursor = startRef.cursor;
     // Where in the current page the previous tick stopped — see `prPageOffset`.
-    let offset = cursors.commitsPageOffset ?? 0;
+    // Void if a mode switch restarted the page.
+    let offset =
+      page === (cursors.commitsResumePage ?? 1)
+        ? (cursors.commitsPageOffset ?? 0)
+        : 0;
     // Captured at pass START (not completion) so nothing landing mid-pass is missed.
     const passStartedAt = this.nowIso();
     let enrichBudget = commitBudget;
@@ -646,11 +736,11 @@ export class GithubCollector extends BaseSourceCollector {
       const result = await this.client.listCommitsPage(
         repoFullName,
         token,
-        page,
+        { page, cursor },
         since,
       );
       if (result.rateLimitedUntil) {
-        this.suspendCommitsPass(cursors, page, offset);
+        this.suspendCommitsPass(cursors, page, offset, cursor);
         return { envelopes, rateLimitedUntil: result.rateLimitedUntil };
       }
       if (result.failed) {
@@ -659,7 +749,7 @@ export class GithubCollector extends BaseSourceCollector {
         this.logger.error(
           `GitHub commit sync request failed for ${repoFullName} (connection ${connection.id}) — keeping cursors and retrying next tick instead of advancing the watermark.`,
         );
-        this.suspendCommitsPass(cursors, page, offset);
+        this.suspendCommitsPass(cursors, page, offset, cursor);
         return { envelopes, failed: true };
       }
       for (let i = offset; i < result.items.length; i++) {
@@ -667,7 +757,7 @@ export class GithubCollector extends BaseSourceCollector {
         if (enrichBudget <= 0) {
           // Resume at this exact item next tick — never ingest a commit with
           // permanently-missing stats, and never re-do the items above it.
-          this.suspendCommitsPass(cursors, page, i);
+          this.suspendCommitsPass(cursors, page, i, cursor);
           return { envelopes };
         }
         cursors.commitsOldestSeenAt = this.trackOldest(
@@ -685,13 +775,15 @@ export class GithubCollector extends BaseSourceCollector {
         );
         if (detail.rateLimitedUntil) {
           // This commit is already enriched and emitted — resume after it.
-          this.suspendCommitsPass(cursors, page, i + 1);
+          this.suspendCommitsPass(cursors, page, i + 1, cursor);
           return { envelopes, rateLimitedUntil: detail.rateLimitedUntil };
         }
       }
       if (result.items.length === 0 || !result.hasNextPage) {
         cursors.commitsResumePage = undefined;
         cursors.commitsPageOffset = undefined;
+        cursors.commitsGraphqlCursor = undefined;
+        this.stampCursorMode(cursors);
         cursors.commitsCursor = passStartedAt;
         // The pass walked its whole `since` range, so commit coverage reaches
         // the backfill floor.
@@ -703,10 +795,11 @@ export class GithubCollector extends BaseSourceCollector {
       }
       page++;
       offset = 0; // moved to a fresh page — start at its first item
+      cursor = result.endCursor; // undefined under REST, which pages by number
     }
 
     // budget exhausted — resume next tick, same `since`
-    this.suspendCommitsPass(cursors, page, offset);
+    this.suspendCommitsPass(cursors, page, offset, cursor);
     return { envelopes };
   }
 
@@ -715,9 +808,14 @@ export class GithubCollector extends BaseSourceCollector {
     cursors: GithubSyncCursors,
     page: number,
     offset: number,
+    endCursor?: string,
   ): void {
     cursors.commitsResumePage = page;
     cursors.commitsPageOffset = offset > 0 ? offset : undefined;
+    if (this.client.mode === 'graphql') {
+      cursors.commitsGraphqlCursor = endCursor;
+    }
+    this.stampCursorMode(cursors);
   }
 
   /**
@@ -941,6 +1039,26 @@ interface EnrichBudgets {
 }
 
 /**
+ * What one unit of enrich budget costs under GraphQL, relative to REST.
+ *
+ * The budgets below are denominated in REST API calls: one PR unit is 4 calls,
+ * one commit unit is 1. Under GraphQL a whole page of both arrives inside the
+ * list query for ~1 point, so the same numeric budget would throttle GraphQL
+ * to REST's pace and forfeit the entire reason for ADR-0008.
+ *
+ * The multiplier is deliberately conservative rather than the ~100x the cost
+ * ratio would allow: points stop being the binding constraint under GraphQL
+ * and **query complexity and latency** take over (a 6-repo batch at 25 PRs x
+ * 50 nested returned 502), so the budget's remaining job is to bound how long
+ * one tick runs, not how much quota it spends. Env-tunable for the same reason
+ * the REST budgets are — the right value depends on fleet size.
+ */
+const GRAPHQL_ENRICH_MULTIPLIER = envBudget(
+  'GITHUB_GRAPHQL_ENRICH_MULTIPLIER',
+  4,
+);
+
+/**
  * Splits the fleet's sweep budget across the connections sharing a credential.
  *
  * Clamped at both ends, and both ends matter:
@@ -949,11 +1067,25 @@ interface EnrichBudgets {
  *  - never below 1, because integer division at extreme fleet sizes floors to
  *    zero — a connection that enriches nothing makes no progress at all while
  *    still spending its list-page calls every tick.
+ *
+ * The fleet division itself (§12 #35) is transport-independent and unchanged:
+ * only the per-unit price differs, so `mode` scales the result rather than
+ * replacing the arithmetic.
  */
-function enrichBudgets(peersDue?: number): EnrichBudgets {
+function enrichBudgets(
+  peersDue: number | undefined,
+  mode: 'rest' | 'graphql',
+): EnrichBudgets {
   const peers = peersDue && peersDue > 0 ? peersDue : 1;
+  const multiplier = mode === 'graphql' ? GRAPHQL_ENRICH_MULTIPLIER : 1;
   const share = (sweepBudget: number, ceiling: number) =>
-    Math.max(1, Math.min(ceiling, Math.floor(sweepBudget / peers)));
+    Math.max(
+      1,
+      Math.min(
+        ceiling * multiplier,
+        Math.floor(sweepBudget / peers) * multiplier,
+      ),
+    );
   return {
     pr: share(PR_ENRICH_BUDGET_PER_SWEEP, PR_ENRICH_BUDGET_PER_TICK),
     commit: share(

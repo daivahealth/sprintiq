@@ -53,6 +53,10 @@ describe('GithubCollector.poll', () => {
 
   beforeEach(() => {
     client = {
+      // The transport identity matters: `pageRef` restarts a walk whose
+      // persisted cursors were written by the *other* mode, so a mock without
+      // it would look like a mode switch on every poll.
+      mode: 'rest',
       listPullRequestsPage: jest.fn(),
       listCommitsPage: jest.fn(),
       getCommitDetail: jest
@@ -761,9 +765,9 @@ describe('GithubCollector.poll', () => {
     await collector.poll(connection);
 
     // page 7 was requested first (not restarted from 1), for all 3 budgeted fetches (7,8,9)
-    expect(client.listPullRequestsPage.mock.calls.map((c) => c[2])).toEqual([
-      7, 8, 9,
-    ]);
+    expect(
+      client.listPullRequestsPage.mock.calls.map((c) => c[2].page),
+    ).toEqual([7, 8, 9]);
   });
 
   it('switches to incremental mode once backfill is done, stopping at the watermark', async () => {
@@ -1063,5 +1067,139 @@ describe('GithubCollector.normalizeWebhook (push)', () => {
       committedAt: '2026-06-01T00:00:00.000Z',
       filesChanged: 2,
     });
+  });
+});
+
+/**
+ * Switching `GITHUB_COLLECTION_MODE` changes how a walk paginates: REST resumes
+ * on a page number, GraphQL on an opaque cursor, and neither can read the
+ * other's. The collector must restart the walk rather than resume on a cursor
+ * the live transport cannot interpret — and must never let that restart pass
+ * for a completed backfill (ADR-0008).
+ */
+describe('GithubCollector.poll — collection mode changes', () => {
+  let connections: jest.Mocked<ConnectionsService>;
+  let secrets: jest.Mocked<SecretsService>;
+
+  function clientFor(mode: 'rest' | 'graphql') {
+    return {
+      mode,
+      listPullRequestsPage: jest.fn().mockResolvedValue({
+        items: [],
+        hasNextPage: false,
+      } as GithubPage<GithubPull>),
+      listCommitsPage: jest.fn().mockResolvedValue(emptyCommitsPage()),
+      getCommitDetail: jest.fn().mockResolvedValue({}),
+      getPullRequestDetail: jest.fn().mockResolvedValue({}),
+      listPullRequestCommits: jest.fn().mockResolvedValue({ messages: [] }),
+      listPullRequestReviews: jest.fn().mockResolvedValue({ reviews: [] }),
+      listPullRequestReviewComments: jest
+        .fn()
+        .mockResolvedValue({ countByReviewId: new Map(), truncated: false }),
+    } as unknown as jest.Mocked<GithubClient> & { mode: 'rest' | 'graphql' };
+  }
+
+  beforeEach(() => {
+    connections = {
+      setSyncCursors: jest.fn().mockResolvedValue(undefined),
+      setRateLimitState: jest.fn().mockResolvedValue(undefined),
+      setBackfillCompletedAt: jest.fn().mockResolvedValue(undefined),
+      updateConfig: jest.fn().mockResolvedValue(undefined),
+      setSyncHealth: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<ConnectionsService>;
+    secrets = {
+      resolve: jest.fn().mockResolvedValue('tok'),
+    } as unknown as jest.Mocked<SecretsService>;
+  });
+
+  it('restarts a REST-cursored backfill from page 1 when GraphQL takes over', async () => {
+    const client = clientFor('graphql');
+    const collector = new GithubCollector(client, connections, secrets);
+    const connection = baseConnection({
+      // Mid-backfill under REST: page 4, ten items in.
+      syncCursors: { prPage: 4, prPageOffset: 10, cursorMode: 'rest' },
+    });
+
+    await collector.poll(connection);
+
+    expect(client.listPullRequestsPage.mock.calls[0][2]).toEqual({
+      page: 1,
+      cursor: undefined,
+    });
+  });
+
+  it('resumes normally when the persisted cursors match the live transport', async () => {
+    const client = clientFor('graphql');
+    const collector = new GithubCollector(client, connections, secrets);
+    const connection = baseConnection({
+      syncCursors: {
+        prPage: 4,
+        prGraphqlCursor: 'CUR3',
+        cursorMode: 'graphql',
+      },
+    });
+
+    await collector.poll(connection);
+
+    expect(client.listPullRequestsPage.mock.calls[0][2]).toEqual({
+      page: 4,
+      cursor: 'CUR3',
+    });
+  });
+
+  it('treats cursors with no recorded mode as REST, the only transport that wrote them before', async () => {
+    const client = clientFor('rest');
+    const collector = new GithubCollector(client, connections, secrets);
+    const connection = baseConnection({
+      // Written before cursorMode existed — must NOT be read as a mode switch.
+      syncCursors: { prPage: 6 },
+    });
+
+    await collector.poll(connection);
+
+    expect(client.listPullRequestsPage.mock.calls[0][2].page).toBe(6);
+  });
+
+  it('stamps the transport that wrote the cursors it just persisted', async () => {
+    const client = clientFor('graphql');
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 1, updated_at: '2026-06-01T00:00:00.000Z' })],
+      hasNextPage: true,
+      endCursor: 'CUR9',
+    } as GithubPage<GithubPull>);
+    const collector = new GithubCollector(client, connections, secrets);
+
+    await collector.poll(baseConnection({ syncCursors: {} }));
+
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.cursorMode).toBe('graphql');
+  });
+
+  it('never reports a mode-switch restart as a completed backfill', async () => {
+    // The one unacceptable outcome: a restart that looks like completion would
+    // stamp backfillCompletedAt over history that was never re-walked.
+    const client = clientFor('graphql');
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [],
+      hasNextPage: false,
+      failed: true,
+    } as GithubPage<GithubPull>);
+    const collector = new GithubCollector(client, connections, secrets);
+    const connection = baseConnection({
+      syncCursors: { prPage: 4, cursorMode: 'rest' },
+    });
+
+    const result = await collector.poll(connection);
+
+    expect(result.failed).toBe(true);
+    expect(connections.setBackfillCompletedAt).not.toHaveBeenCalled();
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.prBackfillDone).toBeUndefined();
   });
 });

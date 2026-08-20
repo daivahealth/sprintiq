@@ -150,7 +150,9 @@ describe('GithubOrgSyncService', () => {
     );
 
     expect(result.reposFound).toBe(2);
-    expect(client.listOrgReposPage.mock.calls.map((c) => c[2])).toEqual([1, 2]);
+    expect(client.listOrgReposPage.mock.calls.map((c) => c[2].page)).toEqual([
+      1, 2,
+    ]);
   });
 
   it('stops and reports rateLimited when GitHub signals a rate limit', async () => {

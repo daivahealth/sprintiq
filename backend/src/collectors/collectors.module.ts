@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { ConnectionsModule } from '../modules/connections/connections.module';
 import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
@@ -10,6 +10,11 @@ import { GithubCommitReconcilerService } from './sources/github/github-commit-re
 import { GithubOrgSyncService } from './sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from './sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from './sources/github/github-review-reconciler.service';
+import { GithubGraphqlClient } from './sources/github/github-graphql.client';
+import {
+  GITHUB_SOURCE_CLIENT,
+  collectionMode,
+} from './sources/github/github-source-client';
 import { GithubClient } from './sources/github/github.client';
 import { GithubCollector } from './sources/github/github.collector';
 import { JiraStoryDateReconcilerService } from './sources/jira/jira-story-date-reconciler.service';
@@ -32,7 +37,24 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     IngestionService,
     SignatureVerifierRegistry,
     CollectorRegistry,
+    // Both transports are constructed; only one is bound to the token the
+    // collector, reconcilers and org sync inject. REST stays registered while
+    // GraphQL is on so the parity harness (ADR-0008) can drive them
+    // side-by-side against the same repos.
     GithubClient,
+    GithubGraphqlClient,
+    {
+      provide: GITHUB_SOURCE_CLIENT,
+      inject: [GithubClient, GithubGraphqlClient],
+      useFactory: (rest: GithubClient, graphql: GithubGraphqlClient) => {
+        const mode = collectionMode();
+        Logger.log(
+          `GitHub collection transport: ${mode}${mode === 'rest' ? ' (set GITHUB_COLLECTION_MODE=graphql to switch)' : ''}`,
+          'CollectorsModule',
+        );
+        return mode === 'graphql' ? graphql : rest;
+      },
+    },
     GithubCollector,
     GithubOrgSyncService,
     GithubCommitMessageReconcilerService,

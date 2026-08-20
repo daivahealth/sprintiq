@@ -1,9 +1,12 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { newId } from '../../../common/id';
 import { PrismaService } from '../../../database/prisma.service';
 import { evaluateBudget } from './github-rate-budget';
-import { GithubClient } from './github.client';
+import {
+  GITHUB_SOURCE_CLIENT,
+  GithubSourceClient,
+} from './github-source-client';
 
 export interface ReviewReconcileResult {
   candidates: number;
@@ -57,7 +60,8 @@ export class GithubReviewReconcilerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly secrets: SecretsService,
-    private readonly client: GithubClient,
+    @Inject(GITHUB_SOURCE_CLIENT)
+    private readonly client: GithubSourceClient,
   ) {}
 
   /**

@@ -1,4 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+// Type-only, and the reverse direction is type-only too, so the cycle is
+// erased at compile time and never exists at runtime.
+import type { GithubPageRef, GithubSourceClient } from './github-source-client';
 
 export interface GithubPull {
   number: number;
@@ -155,6 +158,18 @@ export interface GithubPage<T> {
    * mark the connection complete with nothing collected.
    */
   failed?: boolean;
+  /**
+   * Opaque GraphQL resume cursor for the NEXT page. Always absent under REST,
+   * which resumes by page number instead. Persisted to
+   * `GithubSyncCursors.prGraphqlCursor` / `commitsGraphqlCursor`.
+   */
+  endCursor?: string;
+  /**
+   * Quota left after this page. REST reads it from `X-RateLimit-*`; GraphQL
+   * from the `rateLimit` field it asks for on every query. Feeds
+   * `evaluateBudget` — note the two draw on **separate** 5,000-unit buckets.
+   */
+  rateLimit?: GithubRateLimit;
 }
 
 /**
@@ -162,19 +177,24 @@ export interface GithubPage<T> {
  * rate-limit awareness (`X-RateLimit-*` headers, 403/429) so the collector
  * never talks to `fetch` directly — collectors are the only door to the
  * outside world (CLAUDE.md).
+ *
+ * One of two `GithubSourceClient` implementations; see that interface for why
+ * its shape is REST's rather than GraphQL's, and `GithubGraphqlClient` for the
+ * cheaper transport behind the same signatures.
  */
 @Injectable()
-export class GithubClient {
+export class GithubClient implements GithubSourceClient {
+  readonly mode = 'rest' as const;
   private readonly logger = new Logger(GithubClient.name);
   private readonly baseUrl = 'https://api.github.com';
 
   async listPullRequestsPage(
     repoFullName: string,
     token: string,
-    page: number,
+    ref: GithubPageRef,
     perPage = 100,
   ): Promise<GithubPage<GithubPull>> {
-    const url = `${this.baseUrl}/repos/${repoFullName}/pulls?state=all&sort=updated&direction=desc&per_page=${perPage}&page=${page}`;
+    const url = `${this.baseUrl}/repos/${repoFullName}/pulls?state=all&sort=updated&direction=desc&per_page=${perPage}&page=${ref.page}`;
     return this.getPage<GithubPull>(url, token);
   }
 
@@ -182,10 +202,10 @@ export class GithubClient {
   async listOrgReposPage(
     org: string,
     token: string,
-    page: number,
+    ref: GithubPageRef,
     perPage = 100,
   ): Promise<GithubPage<GithubRepo>> {
-    const url = `${this.baseUrl}/orgs/${org}/repos?type=all&per_page=${perPage}&page=${page}`;
+    const url = `${this.baseUrl}/orgs/${org}/repos?type=all&per_page=${perPage}&page=${ref.page}`;
     return this.getPage<GithubRepo>(url, token);
   }
 
@@ -193,11 +213,11 @@ export class GithubClient {
   async listCommitsPage(
     repoFullName: string,
     token: string,
-    page: number,
+    ref: GithubPageRef,
     since: string,
     perPage = 100,
   ): Promise<GithubPage<GithubCommit>> {
-    const url = `${this.baseUrl}/repos/${repoFullName}/commits?since=${encodeURIComponent(since)}&per_page=${perPage}&page=${page}`;
+    const url = `${this.baseUrl}/repos/${repoFullName}/commits?since=${encodeURIComponent(since)}&per_page=${perPage}&page=${ref.page}`;
     return this.getPage<GithubCommit>(url, token);
   }
 
@@ -557,6 +577,7 @@ export class GithubClient {
 
     const items = (await res.json()) as T[];
     const hasNextPage = this.hasNextLink(res.headers.get('link'));
+    const rateLimit = this.readRateLimit(res);
 
     // Preempt a hard 403 next call: stop after this (already-fetched) page
     // rather than spending the last request and getting nothing back for it.
@@ -565,10 +586,15 @@ export class GithubClient {
       const resetAt = this.parseResetHeader(
         res.headers.get('x-ratelimit-reset'),
       );
-      return { items, hasNextPage: false, rateLimitedUntil: resetAt };
+      return {
+        items,
+        hasNextPage: false,
+        rateLimitedUntil: resetAt,
+        rateLimit,
+      };
     }
 
-    return { items, hasNextPage };
+    return { items, hasNextPage, rateLimit };
   }
 
   /** `X-RateLimit-*` off any response; absent when GitHub didn't send them. */

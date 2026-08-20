@@ -1,7 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import { SecretsService } from '../../../common/secrets/secrets.service';
-import { GithubClient } from './github.client';
+import {
+  GITHUB_SOURCE_CLIENT,
+  GithubSourceClient,
+} from './github-source-client';
 
 export interface CommitStatsReconcileResult {
   candidates: number;
@@ -29,7 +32,8 @@ export class GithubCommitReconcilerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly secrets: SecretsService,
-    private readonly client: GithubClient,
+    @Inject(GITHUB_SOURCE_CLIENT)
+    private readonly client: GithubSourceClient,
   ) {}
 
   async reconcile(
