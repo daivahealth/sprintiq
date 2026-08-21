@@ -1,8 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { evaluateBudget } from './github-rate-budget';
-import { GithubClient } from './github.client';
+import {
+  GITHUB_SOURCE_CLIENT,
+  GithubSourceClient,
+} from './github-source-client';
 
 export interface CommitMessageReconcileResult {
   candidates: number;
@@ -51,7 +54,8 @@ export class GithubCommitMessageReconcilerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly secrets: SecretsService,
-    private readonly client: GithubClient,
+    @Inject(GITHUB_SOURCE_CLIENT)
+    private readonly client: GithubSourceClient,
   ) {}
 
   /** How many PRs still need their commit messages — without fetching any. */

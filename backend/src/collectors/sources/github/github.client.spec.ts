@@ -33,7 +33,9 @@ describe('GithubClient', () => {
       }),
     ) as unknown as typeof fetch;
 
-    const page = await client.listPullRequestsPage('acme/payments', 'tok', 1);
+    const page = await client.listPullRequestsPage('acme/payments', 'tok', {
+      page: 1,
+    });
 
     expect(page.items).toEqual([{ number: 1 }]);
     expect(page.hasNextPage).toBe(true);
@@ -47,7 +49,9 @@ describe('GithubClient', () => {
         fakeResponse({ headers: { 'x-ratelimit-remaining': '100' }, body: [] }),
       ) as unknown as typeof fetch;
 
-    const page = await client.listPullRequestsPage('acme/payments', 'tok', 3);
+    const page = await client.listPullRequestsPage('acme/payments', 'tok', {
+      page: 3,
+    });
 
     expect(page.hasNextPage).toBe(false);
   });
@@ -62,7 +66,9 @@ describe('GithubClient', () => {
       }),
     ) as unknown as typeof fetch;
 
-    const page = await client.listPullRequestsPage('acme/payments', 'tok', 1);
+    const page = await client.listPullRequestsPage('acme/payments', 'tok', {
+      page: 1,
+    });
 
     expect(page.items).toEqual([]);
     expect(page.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
@@ -80,7 +86,9 @@ describe('GithubClient', () => {
       }),
     ) as unknown as typeof fetch;
 
-    const page = await client.listPullRequestsPage('acme/payments', 'tok', 1);
+    const page = await client.listPullRequestsPage('acme/payments', 'tok', {
+      page: 1,
+    });
 
     expect(page.items).toEqual([{ number: 42 }]);
     expect(page.hasNextPage).toBe(false);
@@ -90,7 +98,9 @@ describe('GithubClient', () => {
   it('returns empty without calling fetch when no token is configured', async () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
 
-    const page = await client.listPullRequestsPage('acme/payments', '', 1);
+    const page = await client.listPullRequestsPage('acme/payments', '', {
+      page: 1,
+    });
 
     expect(page.items).toEqual([]);
     expect(global.fetch).not.toHaveBeenCalled();
@@ -104,7 +114,7 @@ describe('GithubClient', () => {
     await client.listCommitsPage(
       'acme/payments',
       'tok',
-      1,
+      { page: 1 },
       '2026-01-01T00:00:00.000Z',
     );
 
@@ -121,7 +131,9 @@ describe('GithubClient', () => {
       }),
     ) as unknown as typeof fetch;
 
-    const page = await client.listOrgReposPage('athmahealth', 'tok', 1);
+    const page = await client.listOrgReposPage('athmahealth', 'tok', {
+      page: 1,
+    });
 
     expect(page.items).toEqual([
       { full_name: 'athmahealth/api', archived: false, disabled: false },
