@@ -27,8 +27,14 @@ import type { GithubPageRef, GithubSourceClient } from './github-source-client';
 const NESTED_COMMITS = 20;
 const NESTED_REVIEWS = 20;
 
-/** Below this a halved retry is pointless — give up and report `failed`. */
+/** Below these a halved retry is pointless — give up and report `failed`. */
 const MIN_NESTED = 5;
+/**
+ * Floor for the outer page. Small enough to rescue the heaviest repos
+ * (measured: 25 PRs enriched returns in ~1.2s where 100 takes ~3.7s), large
+ * enough that a backfill still advances meaningfully per tick.
+ */
+const MIN_FIRST = 10;
 
 /**
  * How long a prefetched page's enrichment stays answerable.
@@ -132,14 +138,15 @@ export class GithubGraphqlClient implements GithubSourceClient {
     }
 
     const result = await this.withComplexityFallback(
-      (nested) =>
+      (nested, first) =>
         this.post<PullsQuery>(token, this.pullsQuery(nested), {
           owner,
           name,
-          first: perPage,
+          first,
           after: ref.cursor ?? null,
         }),
       `PR page for ${repoFullName}`,
+      perPage,
     );
 
     if (result.rateLimitedUntil) {
@@ -527,6 +534,8 @@ export class GithubGraphqlClient implements GithubSourceClient {
           number: Number(number),
         }),
       `PR ${repoFullName}#${number}`,
+      // A single PR has no outer page to shrink; only `nested` can give here.
+      MIN_FIRST,
     );
     if (result.rateLimitedUntil) {
       const until = result.rateLimitedUntil;
@@ -672,28 +681,54 @@ export class GithubGraphqlClient implements GithubSourceClient {
   // ------------------------------------------------------------ transport
 
   /**
-   * Retries a 502/503 with halved nested page sizes before giving up.
+   * Retries a 502/503/504 with a smaller query before giving up.
    *
    * ADR-0008's inverted constraint in practice: the query was too *big*, not
    * wrong. Reporting that as an empty page would read as "this repo has no
    * PRs" and, during backfill, conclude the walk.
+   *
+   * **The outer page count is what actually costs, not the nested one**, and
+   * that was measured rather than assumed — on `athmahealth/cpoe-api`, one of
+   * the two repos this fallback was failing to rescue:
+   *
+   * | query                  | latency |
+   * |------------------------|---------|
+   * | `first:100 nested:20`  | 3.68s   |
+   * | `first:100 nested:5`   | 3.32s   |
+   * | `first:25  nested:20`  | 1.21s   |
+   *
+   * Cutting nested alone buys ~10%; cutting the outer page buys ~67%. An
+   * earlier version halved only `nested`, so it retried at essentially the
+   * same cost and then reported failure — which is how two large repos ended
+   * up permanently failing while the identical query succeeded when probed by
+   * hand. Both dimensions now shrink together, outer included.
+   *
+   * Shrinking the outer page is safe in a way it would not be under REST:
+   * GraphQL resumes from an opaque cursor, so a short page simply advances the
+   * cursor less far. The walk continues next tick from exactly where it
+   * stopped — no page-number arithmetic to get wrong.
    */
   private async withComplexityFallback<T>(
-    run: (nested: number) => Promise<GraphqlResult<T>>,
+    run: (nested: number, first: number) => Promise<GraphqlResult<T>>,
     label: string,
+    requestedFirst: number,
   ): Promise<GraphqlResult<T>> {
     let nested = Math.max(NESTED_COMMITS, NESTED_REVIEWS);
-    let result = await run(nested);
-    while (result.tooComplex && nested > MIN_NESTED) {
+    let first = requestedFirst;
+    let result = await run(nested, first);
+
+    while (result.tooComplex && (first > MIN_FIRST || nested > MIN_NESTED)) {
+      first = Math.max(MIN_FIRST, Math.floor(first / 2));
       nested = Math.max(MIN_NESTED, Math.floor(nested / 2));
       this.logger.warn(
-        `GitHub GraphQL 502 on ${label} — retrying with nested page size ${nested}.`,
+        `GitHub GraphQL rejected ${label} as too expensive — retrying with first:${first} nested:${nested}.`,
       );
-      result = await run(nested);
+      result = await run(nested, first);
     }
+
     if (result.tooComplex) {
       this.logger.error(
-        `GitHub GraphQL still failing at minimum nested size for ${label} — reporting failure, not emptiness.`,
+        `GitHub GraphQL still refusing ${label} at first:${first} nested:${nested} — reporting failure, not emptiness.`,
       );
       return { ...result, failed: true };
     }

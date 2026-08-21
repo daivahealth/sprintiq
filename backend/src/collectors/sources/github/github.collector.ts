@@ -375,7 +375,16 @@ export class GithubCollector extends BaseSourceCollector {
     await this.connections.setSyncHealth(
       connection.id,
       failed
-        ? 'GitHub rejected a request (check the token scope, repository access and that the repo still exists under this name).'
+        ? // Deliberately does NOT lead with token scope. `failed` is set by
+          // several unrelated causes — a query GitHub could not serve in time
+          // (502/504 on a large repo), a dropped connection or truncated body
+          // on the network path, an expired page token — as well as by
+          // permissions. Naming only the permission case sent a real
+          // investigation down the wrong path: two repos here reported it
+          // while the identical query returned 200 when probed by hand, and
+          // the real cause was query latency. The server log carries the
+          // specific reason.
+          'GitHub rejected a request. Common causes, in rough order: the query was too large or slow for GitHub to serve (large repos), a network interruption between here and GitHub, or token scope / repository access / a renamed repo. Check the collector log for this connection for the specific response.'
         : null,
     );
 

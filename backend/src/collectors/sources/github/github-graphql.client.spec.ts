@@ -139,10 +139,44 @@ describe('GithubGraphqlClient', () => {
 
   // ------------------------------------------------------------ 502 fallback
 
-  it('halves the nested page size on a 502 rather than reporting an empty page', async () => {
+  it('shrinks BOTH the outer page and the nested sizes on a 502', async () => {
+    // The outer count is what actually costs: measured on a live repo,
+    // first:100 nested:20 = 3.68s, first:100 nested:5 = 3.32s (~10% off), but
+    // first:25 nested:20 = 1.21s (~67% off). An earlier version halved only
+    // `nested`, so it retried at the same cost and gave up — which is how two
+    // large repos sat permanently failing.
     const fetchMock = jest
       .fn()
       .mockResolvedValueOnce(fakeResponse({ ok: false, status: 502 }))
+      .mockResolvedValueOnce(fakeResponse({ body: pullsBody([pullNode()]) }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const page = await client.listPullRequestsPage(
+      'acme/payments',
+      'tok',
+      { page: 1 },
+      100,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(page.failed).toBeUndefined();
+    expect(page.items).toHaveLength(1);
+
+    const attempt1 = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const attempt2 = JSON.parse(fetchMock.mock.calls[1][1].body);
+    // Outer page halved — the dimension that carries the cost.
+    expect(attempt1.variables.first).toBe(100);
+    expect(attempt2.variables.first).toBe(50);
+    // Nested halved too.
+    expect(attempt2.query).toContain('commits(first: 10)');
+  });
+
+  it('retries a 504 as too-expensive, not as a plain failure', async () => {
+    // 504 is the latency ceiling ADR-0008 predicted; it arrived on a 25-PR
+    // page with 20 nested commits and reviews.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(fakeResponse({ ok: false, status: 504 }))
       .mockResolvedValueOnce(fakeResponse({ body: pullsBody([pullNode()]) }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -153,12 +187,6 @@ describe('GithubGraphqlClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(page.failed).toBeUndefined();
     expect(page.items).toHaveLength(1);
-
-    // The retry really did shrink the query, not just repeat it.
-    const first = JSON.parse(fetchMock.mock.calls[0][1].body).query as string;
-    const second = JSON.parse(fetchMock.mock.calls[1][1].body).query as string;
-    expect(second).not.toEqual(first);
-    expect(second).toContain('commits(first: 10)');
   });
 
   it('reports failure — never emptiness — when 502s persist to the minimum size', async () => {
@@ -173,8 +201,10 @@ describe('GithubGraphqlClient', () => {
 
     expect(page.failed).toBe(true);
     expect(page.items).toEqual([]);
-    // 20 -> 10 -> 5, then gives up rather than looping forever.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // first 100->50->25->12->10 (floor), nested 20->10->5 (floor), then gives
+    // up rather than looping forever. The loop ends when BOTH are at their
+    // floor, so the count is driven by whichever takes longer to get there.
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   // ------------------------------------------------------------- rate limits
