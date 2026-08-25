@@ -119,10 +119,24 @@ export const DASHBOARD_REGISTRY: {
 ];
 
 /** Activity windows for the Project Activity board. */
+/**
+ * Selectable ranges for the activity boards, in **IST calendar days including
+ * today** (`istWindowFloor`), not rolling hours.
+ *
+ * The 30-day ceiling these had was a floor on what the boards could show, not a
+ * cost control: a repository whose whole history predates it is unreachable at
+ * any setting. `athmahealth/nh-website` is the case that surfaced it — 12
+ * commits between 20 Jun and 21 Jul, dormant since, so every developer on it
+ * read as "0 commits" on every available window. Reviewers then proposed
+ * removing those developers as inactive, which is the failure mode a missing
+ * range turns into: absence of a window presenting as absence of work.
+ */
 const ACTIVITY_WINDOWS: Record<string, number> = {
   day: 1,
   week: 7,
   month: 30,
+  quarter: 90,
+  year: 365,
 };
 
 /** BC-13 insight endpoints backing the common dashboards. JWT + tenant-scoped. */
@@ -327,7 +341,18 @@ export class InsightsController {
       [],
       istWindowFloor(days),
     );
-    return { window, ...view, computedAt: new Date().toISOString() };
+    // `windowDays` is the range actually measured, which is not always the one
+    // asked for: an unrecognised window falls back to 30 rather than 400ing, so
+    // a frontend deployed ahead of this backend keeps working (§ frontend/
+    // backend skew). Echoing only the requested key would then label 30 days of
+    // data as "90 days" — the board renders its interval from this number so it
+    // states what was measured, never what was requested.
+    return {
+      window,
+      windowDays: days,
+      ...view,
+      computedAt: new Date().toISOString(),
+    };
   }
 
   /** GitHub-style per-developer activity (commit history, repos, LOC, projects). */
@@ -343,7 +368,12 @@ export class InsightsController {
     );
     // Every other insight endpoint stamps this; this one didn't, which is why
     // the board had no way to show when its numbers were computed.
-    return { ...view, computedAt: new Date().toISOString() };
+    // `windowDays`: see the daily endpoint — the range measured, not requested.
+    return {
+      windowDays: days,
+      ...view,
+      computedAt: new Date().toISOString(),
+    };
   }
 
   private async resolveRepos(

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { FreshnessNote } from './FreshnessNote';
 import {
   Badge,
+  Button,
   Card,
   FilterBar,
   ProvenanceNote,
@@ -10,7 +11,7 @@ import {
   TableHeadRow,
 } from '../../components/ui';
 import { SearchSelect } from '../../components/search-select';
-import { timeAgo } from '../../lib/utils';
+import { istWindowFloor, timeAgo } from '../../lib/utils';
 import {
   type ActivityWindow,
   useDailyDeveloperActivity,
@@ -22,10 +23,20 @@ import { CommitChart } from './CommitChart';
 import { ProjectActivityChart } from './ProjectActivityChart';
 import { BarList, ErrorCard, LoadingCard, Stat } from './widgets';
 
+/**
+ * Ranges are named for what they measure. "Today" survives as a word because
+ * it is genuinely calendar-aligned — the server floors to IST midnight, so it
+ * means today, not the last 24 hours. The others don't get that licence: 30
+ * calendar days ending on 25 Aug begins on 27 Jul, which is not "this month",
+ * and a board whose whole purpose is trustworthy numbers shouldn't round its
+ * own range in the label.
+ */
 const WINDOWS: { key: ActivityWindow; label: string }[] = [
   { key: 'day', label: 'Today' },
-  { key: 'week', label: 'This week' },
-  { key: 'month', label: 'This month' },
+  { key: 'week', label: '7 days' },
+  { key: 'month', label: '30 days' },
+  { key: 'quarter', label: '90 days' },
+  { key: 'year', label: '12 months' },
 ];
 
 /** Mirrors the backend ACTIVITY_WINDOWS mapping (insights.controller). */
@@ -33,19 +44,42 @@ const WINDOW_DAYS: Record<ActivityWindow, number> = {
   day: 1,
   week: 7,
   month: 30,
+  quarter: 90,
+  year: 365,
 };
 
+/** The next range up, for the empty state to offer. Undefined at the widest. */
+function widerWindow(window: ActivityWindow): ActivityWindow | undefined {
+  const i = WINDOWS.findIndex((w) => w.key === window);
+  return WINDOWS[i + 1]?.key;
+}
+
+function windowLabel(window: ActivityWindow): string {
+  return WINDOWS.find((w) => w.key === window)?.label ?? String(window);
+}
+
 /**
- * The start of the selected window, so `FreshnessNote` can judge THIS board's
- * range rather than the whole dataset. These boards carry their own window
- * toggle instead of the shared Scope Bar, so they have to hand it over
- * explicitly — otherwise they would warn "incomplete" during any deep backfill
- * even when the days actually on screen are fully collected.
+ * First instant of the selected window — the shared `istWindowFloor`, which
+ * mirrors the backend's exactly.
+ *
+ * This board previously computed its own `now - days * 86400000`. That is the
+ * rolling convention DASHBOARDS.md §"IST alignment" records as retired, and
+ * the reason it matters here is `FreshnessNote`: it judges THIS board's window
+ * rather than the dataset, so a start up to a day earlier than the one
+ * actually queried had it vouching for — or warning about — time the board
+ * never showed.
  */
+function windowStart(window: ActivityWindow): Date {
+  return istWindowFloor(WINDOW_DAYS[window]);
+}
+
 function windowFrom(window: ActivityWindow): string {
-  return new Date(
-    Date.now() - WINDOW_DAYS[window] * 24 * 60 * 60 * 1000,
-  ).toISOString();
+  return windowStart(window).toISOString();
+}
+
+/** "27 Jul" — the interval ends today, so the year is noise until it isn't. */
+function shortDate(d: Date): string {
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
 function WindowToggle({
@@ -193,6 +227,70 @@ export function ProjectActivityBoard() {
 }
 
 /** GitHub-style per-developer activity: commit history, repos, LOC, projects. */
+/**
+ * What an empty board says instead of nothing.
+ *
+ * A blank result has two causes that look identical on screen — nothing
+ * happened, or nothing happened *in the range you picked* — and the board used
+ * to render both as one dim sentence. That is not a cosmetic gap: a repository
+ * dormant since July shows every one of its developers at zero on every window
+ * the board offered, and a reader reasonably concludes those people are
+ * inactive. Naming the interval and offering the next one up turns an absence
+ * into a reading with a range attached.
+ *
+ * Styled as an inset caveat rather than centred filler because the board
+ * already has that vocabulary directly above (the truncation note), and it sits
+ * at `fg-subtle` rather than `fg-faint` — this is provenance, which the design
+ * system keeps legible on purpose, not decoration.
+ */
+function EmptyWindowNote({
+  window,
+  measuredDays,
+  onWiden,
+}: {
+  window: ActivityWindow;
+  /** Days the server measured; falls back to the selection if it didn't say. */
+  measuredDays?: number;
+  onWiden: (w: ActivityWindow) => void;
+}) {
+  const days = measuredDays ?? WINDOW_DAYS[window];
+  const end = new Date();
+  const start = new Date(
+    windowStart(window).getTime() +
+      (WINDOW_DAYS[window] - days) * 86_400_000,
+  );
+  const wider = widerWindow(window);
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-subtle p-2.5">
+      <p className="text-xs text-fg-subtle">
+        No commits{' '}
+        {days === 1 ? (
+          <>
+            today (<span className="font-mono tabular-nums">{shortDate(end)}</span>)
+          </>
+        ) : (
+          <>
+            between{' '}
+            <span className="font-mono tabular-nums">{shortDate(start)}</span>
+            {' and '}
+            <span className="font-mono tabular-nums">{shortDate(end)}</span>
+          </>
+        )}
+        .{' '}
+        {wider
+          ? 'Work older than this range is not counted here.'
+          : 'This is the widest range available.'}
+      </p>
+      {wider && (
+        <Button variant="secondary" size="sm" onClick={() => onWiden(wider)}>
+          Try {windowLabel(wider)}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /** IST day key ("2026-08-14") → "Thu, 14 Aug". */
 function formatDayKey(date: string): string {
   const d = new Date(`${date}T00:00:00`);
@@ -210,7 +308,14 @@ function formatDayKey(date: string): string {
  * leaderboard (CLAUDE.md). The count sort exists but is the reader's explicit
  * act: a deliberate deviation, requested and recorded in DASHBOARDS.md §4.1.3.
  */
-function DailyActivitySection({ window }: { window: ActivityWindow }) {
+function DailyActivitySection({
+  window,
+  onWindowChange,
+}: {
+  window: ActivityWindow;
+  /** The empty state offers the next range up, so it needs to set it. */
+  onWindowChange: (w: ActivityWindow) => void;
+}) {
   const query = useDailyDeveloperActivity(window);
   const [sort, setSort] = useState<'name' | 'commits'>('name');
   const d = query.data;
@@ -255,9 +360,11 @@ function DailyActivitySection({ window }: { window: ActivityWindow }) {
       )}
 
       {d && d.days.length === 0 && (
-        <p className="py-6 text-center text-sm text-fg-faint">
-          No commits in this window.
-        </p>
+        <EmptyWindowNote
+          window={window}
+          measuredDays={d.windowDays}
+          onWiden={onWindowChange}
+        />
       )}
 
       {d && d.days.length > 0 && (
@@ -378,7 +485,7 @@ export function DeveloperActivityBoard() {
         <FreshnessNote windowFrom={windowFrom(window)} />
       </FilterBar>
 
-      <DailyActivitySection window={window} />
+      <DailyActivitySection window={window} onWindowChange={setWindow} />
 
       {query.isLoading && developer && <LoadingCard />}
       {query.isError && <ErrorCard error={query.error} />}

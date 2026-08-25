@@ -215,7 +215,7 @@ export interface FlowMetricsView {
 
 export interface SprintCatalogItem extends SprintSummary {}
 
-export type ActivityWindow = 'day' | 'week' | 'month';
+export type ActivityWindow = 'day' | 'week' | 'month' | 'quarter' | 'year';
 
 export interface ProjectActivityRow {
   projectKey: string;
@@ -311,6 +311,14 @@ export interface DailyDeveloperActivityView {
   totals: { commits: number; activeDevelopers: number };
   /** The read hit its ceiling — figures under-report the window and say so. */
   truncated: boolean;
+  /**
+   * Days the server actually measured, which is not always what was asked for
+   * — an unrecognised window falls back to 30 so a frontend can ship ahead of
+   * its backend. Optional because an older backend won't send it. Render the
+   * interval from this, not from the selected window, or a skewed deploy
+   * labels 30 days of data with a 90-day heading.
+   */
+  windowDays?: number;
 }
 
 // ---- Hooks ------------------------------------------------------------------
