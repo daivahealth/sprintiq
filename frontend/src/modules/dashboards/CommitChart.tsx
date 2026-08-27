@@ -18,11 +18,14 @@ const PAD = { top: 12, right: 8, bottom: 26, left: 30 };
 export function CommitChart({
   series,
   windowDays,
+  endKey,
 }: {
   series: DayPoint[]; // sparse: only days with commits
   windowDays: number;
+  /** Last day the chart covers. Defaults to today; a past range passes its end. */
+  endKey?: string;
 }) {
-  const days = buildFullWindow(series, windowDays);
+  const days = buildFullWindow(series, windowDays, endKey);
   const maxCommits = Math.max(1, ...days.map((d) => d.commits));
   const maxLoc = Math.max(1, ...days.map((d) => d.locChanged));
   const total = days.reduce((s, d) => s + d.commits, 0);
@@ -139,10 +142,14 @@ export function CommitChart({
   );
 }
 
-/** Fill the sparse series into a contiguous [today-windowDays+1 … today] range. */
-function buildFullWindow(series: DayPoint[], windowDays: number): DayPoint[] {
+/** Fill the sparse series into a contiguous [end-windowDays+1 … end] range. */
+function buildFullWindow(
+  series: DayPoint[],
+  windowDays: number,
+  endKey?: string,
+): DayPoint[] {
   const byDate = new Map(series.map((d) => [d.date, d]));
-  return istDayAxis(windowDays).map(
+  return istDayAxis(windowDays, endKey).map(
     (date) => byDate.get(date) ?? { date, commits: 0, locChanged: 0 },
   );
 }

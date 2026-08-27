@@ -45,14 +45,59 @@ export function istWindowFloor(windowDays: number): Date {
   return new Date(istMidnightUtc.getTime() - (windowDays - 1) * 86_400_000);
 }
 
-export function istDayAxis(windowDays: number): string[] {
-  const todayIst = new Date(Date.now() + IST_OFFSET_MS);
-  todayIst.setUTCHours(0, 0, 0, 0);
+/** Today's IST calendar-date key (YYYY-MM-DD). */
+export function istTodayKey(): string {
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * The UTC instant at which an IST calendar date begins. Mirrors the backend's
+ * `istDayStart` — the offset is in the string so it cannot drift from
+ * `istWindowFloor`, and IST has no DST, so the literal is exact for every date.
+ */
+export function istDayStart(key: string): Date {
+  return new Date(`${key}T00:00:00.000+05:30`);
+}
+
+/**
+ * Days covered by an IST date range, counting BOTH ends — the same convention
+ * as `istWindowFloor`, where 7 days is today plus the six before it. Mirrors
+ * the backend's `istDaySpan`, which computes the `windowDays` the API echoes.
+ */
+export function istDaySpan(fromKey: string, toKey: string): number {
+  const days =
+    (istDayStart(toKey).getTime() - istDayStart(fromKey).getTime()) /
+    86_400_000;
+  return Math.round(days) + 1;
+}
+
+/**
+ * A date key moved by whole days. Key arithmetic is anchored on UTC midnight
+ * rather than IST, because shifting both ends by the same offset cannot change
+ * a difference in days — and the UTC anchor keeps the arithmetic exact.
+ */
+export function istDayKeyOffset(key: string, deltaDays: number): string {
+  const anchor = new Date(`${key}T00:00:00.000Z`).getTime();
+  return new Date(anchor + deltaDays * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * `windowDays` contiguous IST date keys ending on `endKey` (today by default),
+ * oldest first — the axis a chart zero-fills a sparse series against. Must stay
+ * in sync with the backend's `istDateKey` bucketing, or the axis and the data
+ * disagree about what a day is.
+ *
+ * The end is a parameter because a custom range can end in the past. An axis
+ * hardcoded to today drew a closed April–June range as an unbroken row of
+ * zeros, every real commit having fallen off the left of a window ending now.
+ */
+export function istDayAxis(
+  windowDays: number,
+  endKey: string = istTodayKey(),
+): string[] {
   const out: string[] = [];
   for (let i = windowDays - 1; i >= 0; i--) {
-    out.push(
-      new Date(todayIst.getTime() - i * 86_400_000).toISOString().slice(0, 10),
-    );
+    out.push(istDayKeyOffset(endKey, -i));
   }
   return out;
 }
