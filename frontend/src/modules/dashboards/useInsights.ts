@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import type { Scope } from '../../lib/scope';
+import { rangeParams, type ActivityRange } from './activity-range';
 
 // ---- Response types (mirror backend insights.service.ts) -------------------
 
@@ -9,6 +10,17 @@ export interface DashboardAssignment {
   title: string;
   path: string;
   description: string;
+  /**
+   * Subsections rendered as nested nav under this entry. Optional: an API
+   * deployed before the Developer Activity section existed sends no such
+   * field, and the nav must render exactly as it did then.
+   */
+  children?: {
+    key: string;
+    title: string;
+    path: string;
+    description: string;
+  }[];
 }
 
 export interface LinkedPr {
@@ -292,6 +304,29 @@ export interface DeveloperActivityView {
     additions: number;
     deletions: number;
   }[];
+  /**
+   * Non-bot reviews this person submitted in the window. Optional for the same
+   * frontend/backend-skew reason as `identity`: a build of this app can be
+   * serving against an API deployed before the section existed.
+   */
+  prsReviewed?: number;
+  /**
+   * Their assigned Jira work. `null` means the assignee bridge never matched
+   * this person — which the page must SAY, because an empty list rendered
+   * without that caveat asserts they have nothing assigned.
+   */
+  assignment?: {
+    openItems: {
+      key: string;
+      projectKey: string;
+      type: string;
+      status: string;
+      title: string;
+      inSprint: boolean;
+    }[];
+    jiraRefs: string[];
+  } | null;
+  assigneeCoverage?: JiraAssigneeCoverage;
 }
 
 /**
@@ -566,13 +601,15 @@ export function useDeveloperCatalog(search: string) {
 
 export function useDeveloperActivity(
   developer: string | null,
-  window: ActivityWindow,
+  range: ActivityRange,
 ) {
+  const params = rangeParams(range);
+  params.set('developer', developer ?? '');
   return useQuery({
-    queryKey: ['developer-activity', developer, window],
+    queryKey: ['developer-activity', params.toString()],
     queryFn: () =>
       api.get<DeveloperActivityView & { computedAt: string }>(
-        `/api/dashboards/developer-activity?developer=${encodeURIComponent(developer!)}&window=${window}`,
+        `/api/dashboards/developer-activity?${params}`,
       ),
     enabled: Boolean(developer),
   });
@@ -584,6 +621,176 @@ export function useDailyDeveloperActivity(window: ActivityWindow) {
     queryFn: () =>
       api.get<DailyDeveloperActivityView & { computedAt: string }>(
         `/api/dashboards/developer-activity/daily?window=${window}`,
+      ),
+    staleTime: 60_000,
+  });
+}
+
+// ---- Developer Activity section (DASHBOARDS.md §4.4) -----------------------
+
+/**
+ * How far the Jira↔GitHub assignee bridge reaches.
+ *
+ * Rendered wherever assignment is, and for the same reason `AttributionCoverage`
+ * is rendered beside commit counts: an assignee the bridge never matched and a
+ * developer with nothing assigned are the same absence on screen and opposite
+ * findings in fact. A page that shows the second without the first is asserting
+ * something it cannot support.
+ */
+export interface JiraAssigneeCoverage {
+  /** Developers who committed in the window, automation excluded. */
+  developersInWindow: number;
+  /** Of those, the ones linked to a Jira account. */
+  developersLinked: number;
+  /**
+   * developersLinked / developersInWindow — the figure to show.
+   *
+   * NOT the assignee-side ratio below. That one reads as "how well the bridge
+   * works" and is nothing of the kind: most Jira assignees are QA, BA and
+   * support staff who never commit, so it measures org composition. Showing it
+   * as the trust signal understated the bridge by half on the reference tenant
+   * (41% against a real 90%) and pointed remediation at the wrong problem.
+   */
+  coveragePct: number | null;
+  /** Active committers with no Jira account — the actionable list. */
+  unlinkedDevelopers: string[];
+  /** Org context only. Never the headline. */
+  assigneesObserved: number;
+  assigneesMatched: number;
+  assigneesUnmatched: number;
+}
+
+export interface ActivityDay {
+  date: string;
+  totalCommits: number;
+  developers: { developer: string; displayName: string; commits: number }[];
+  unattributedCommits: number;
+}
+
+export interface DeveloperOverviewView {
+  totals: {
+    commits: number;
+    developersWithSignal: number;
+    developersKnown: number;
+    prsOpened: number;
+    prsMerged: number;
+    /** Null when the bridge matched nobody — never render null as zero. */
+    committingWithoutAssignedWork: number | null;
+  };
+  days: ActivityDay[];
+  attribution: {
+    commitsInScope: number;
+    commitsUnattributed: number;
+    coveragePct: number | null;
+    unattributedIdentities: number;
+  };
+  assigneeCoverage: JiraAssigneeCoverage;
+  truncated: boolean;
+  windowDays: number;
+  computedAt: string;
+}
+
+export type SignalType = 'commit' | 'pr_opened' | 'pr_merged' | 'pr_reviewed';
+export type WatchlistBucket = 'active' | 'quiet' | 'no_signal';
+
+export interface WatchlistDeveloper {
+  developer: string;
+  displayName: string;
+  projects: string[];
+  lastSignal: { type: SignalType; at: string } | null;
+  bucket: WatchlistBucket;
+  /** `null` = the bridge never matched them. Not the same as "nothing assigned". */
+  hasAssignedWork: boolean | null;
+  assignedOpenItems?: number;
+}
+
+export interface WatchlistView {
+  developers: WatchlistDeveloper[];
+  counts: Record<WatchlistBucket, number>;
+  committingWithoutAssignedWork: WatchlistDeveloper[];
+  excluded: {
+    developer: string;
+    displayName: string;
+    reason: string;
+    expiresAt: string;
+  }[];
+  assigneeCoverage: JiraAssigneeCoverage;
+  thresholds: {
+    activeWithinWorkingDays: number;
+    quietWithinWorkingDays: number;
+  };
+  windowDays: number;
+  computedAt: string;
+}
+
+export interface WaitingPr {
+  ref: string;
+  repo: string;
+  number: string;
+  title: string;
+  author: string | null;
+  projects: string[];
+  additions: number;
+  deletions: number;
+  openedAt: string;
+  waitingHours: number;
+  neverReviewed: boolean;
+}
+
+export interface PrStatusView {
+  totals: {
+    open: number;
+    waitingOverThreshold: number;
+    neverReviewed: number;
+    reviewsGiven: number;
+    botReviews: number;
+  };
+  waiting: WaitingPr[];
+  reviewLoad: {
+    developer: string;
+    displayName: string;
+    prsRaised: number;
+    prsReviewed: number;
+    oldestWaitingHours: number | null;
+  }[];
+  /** Open PRs whose review timeline was never fetched — not "unreviewed". */
+  excludedNoReviewData: number;
+  thresholdHours: number;
+  windowDays: number;
+  computedAt: string;
+}
+
+export function useDeveloperOverview(range: ActivityRange) {
+  const params = rangeParams(range);
+  return useQuery({
+    queryKey: ['developer-activity-overview', params.toString()],
+    queryFn: () =>
+      api.get<DeveloperOverviewView>(
+        `/api/dashboards/developer-activity/overview?${params}`,
+      ),
+    staleTime: 60_000,
+  });
+}
+
+export function useWatchlist(range: ActivityRange) {
+  const params = rangeParams(range);
+  return useQuery({
+    queryKey: ['developer-activity-watchlist', params.toString()],
+    queryFn: () =>
+      api.get<WatchlistView>(
+        `/api/dashboards/developer-activity/watchlist?${params}`,
+      ),
+    staleTime: 60_000,
+  });
+}
+
+export function usePrStatus(range: ActivityRange) {
+  const params = rangeParams(range);
+  return useQuery({
+    queryKey: ['developer-activity-pr-status', params.toString()],
+    queryFn: () =>
+      api.get<PrStatusView>(
+        `/api/dashboards/developer-activity/pr-status?${params}`,
       ),
     staleTime: 60_000,
   });
