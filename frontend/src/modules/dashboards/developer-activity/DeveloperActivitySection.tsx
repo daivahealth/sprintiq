@@ -2,8 +2,8 @@ import { NavLink, Outlet, useSearchParams } from 'react-router-dom';
 import { FilterBar } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { FreshnessNote } from '../FreshnessNote';
+import { RangeToggle } from './RangeToggle';
 import {
-  WindowToggle,
   parseRange,
   rangeFrom,
   rangeParams,
@@ -103,12 +103,7 @@ export function DeveloperActivitySection() {
       </div>
 
       <FilterBar>
-        {range.kind === 'preset' && (
-          <WindowToggle
-            value={range.window}
-            onChange={(w) => setRange({ kind: 'preset', window: w })}
-          />
-        )}
+        <RangeToggle value={range} onChange={setRange} />
         {/* One freshness signal for the whole section. Mounted here rather
             than per page: it judges the window, and the window is the shell's. */}
         <FreshnessNote windowFrom={rangeFrom(range)} />
