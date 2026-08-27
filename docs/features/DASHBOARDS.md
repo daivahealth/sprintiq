@@ -54,11 +54,11 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 | **Productivity** | `/productivity` | `dashboards/productivity` | weekly throughput: items + points (Jira) and merged PRs + LOC (GitHub) — team-level |
 | **Efficiency** | `/efficiency` | `dashboards/efficiency` | PR cycle p50/p85, story cycle p50/p85, **traceability both directions** |
 | **Project Activity** | `/project-activity` | `dashboards/project-activity` | most-active projects by **commits + LOC across all mapped repos** (delivery graph), Today/7/30/90-day/12-month windows; unlinked repos bucketed honestly |
-| **Developer Activity** | `/developer-activity` | `dashboards/developer-activity` | GitHub-style per-developer profile: commit history (sha/±LOC), repos committed to, lines committed, commits-per-day, PRs authored (**and how many merged**), **active projects** via the graph, plus the **identities the figures were gathered under** — activity context, never a ranking |
+| **Developer Activity** | `/developer-activity/*` | `dashboards/developer-activity/{overview,watchlist,pr-status}` + `dashboards/developer-activity` | **Four subpages under one shell** (§4.4): Overview (team-shaped), Watchlist (people), Developer (one profile), PR Status (review queue). One window, shared across tabs — activity context, never a ranking |
 | **Top Repos** | `/top-repos` | `dashboards/metrics` (groupBy=repo, fixed) | Repos ranked by Changed LOC, top 20 by default with a "show all N repos" expansion — repo-level ranking only, never individual |
-| **Team Capacity** | `/team-capacity` | `dashboards/metrics` (groupBy=developer, fixed) + developer catalog | Alphabetical roster diff — developers with **no PR activity in the window** (a staffing/blocker signal); intentionally unsorted by volume, never a leaderboard |
+Top Repos forces its `groupBy` (via `useBatchMetrics`'s explicit override) and hides the Scope Bar's Group-by toggle (`ScopeBar`'s `showGroupBy={false}`) — it is a dedicated single-purpose screen, not a configurable view like Delivery Explorer.
 
-Top Repos and Team Capacity force their `groupBy` (via `useBatchMetrics`'s explicit override) and hide the Scope Bar's Group-by toggle (`ScopeBar`'s `showGroupBy={false}`) — they are dedicated single-purpose screens, not configurable views like Delivery Explorer.
+**Team Capacity was retired into Developer Activity §Watchlist on 2026-08-25.** It answered "who has no PR activity in this window" over a `groupBy=developer` metrics read. The Watchlist answers the same question over a strictly wider signal set — commits, PRs opened, merges and reviews together — so keeping both meant two routes, two nav entries and two different answers to one question, differing only in which signals each happened to look at. `/team-capacity` now redirects to `/developer-activity/watchlist`; the registry entry is gone.
 
 ### 4.1 Two boards, one person: stating each board's denominator
 
@@ -90,9 +90,11 @@ An active sprint whose `endAt` passed more than **`STALE_ACTIVE_SPRINT_GRACE_DAY
 
 Unstarted (`future`) sprints are likewise kept out of the sprint picker, which requests `state=active,closed`: they have no dates, no transitions and nothing delivered, so every figure these boards compute is empty for one. Note also that sprint ordering must specify `nulls: 'last'` — Postgres sorts `NULL` **first** on a descending sort, so a dateless future sprint otherwise outranked every real one and arrived at the top of the picker.
 
-### 4.1.3 Daily activity section (who committed, day by day)
+### 4.1.3 Daily activity (who committed, day by day)
 
-Developer Activity opens with a team-level daily commit log (`GET /api/dashboards/developer-activity/daily?window=`): one row per IST day, newest first, with the day's **total commit count** and **every developer who committed** that day, each with their count. Attribution runs through the identity map in bulk (`DeveloperIdentityService.attributionIndex`) so unverified-email commits count under the right person; commits matching no identity appear as **"+N unattributed"** per day — disclosed, never dropped or guessed. A truncated read says so on screen instead of under-reporting silently.
+Superseded as a standalone section on 2026-08-25 — this content now lives inside §Overview's commit timeline as its drill-down (§4.4.1). The rules below survive the move unchanged and are still binding; only the presentation changed, from a scrolling text log beside a chart of the same data to one chart whose bars open.
+
+The data comes from `GET /api/dashboards/developer-activity/overview?window=` (previously `/daily`, which is retained for compatibility): one entry per IST day, newest first, with the day's **total commit count** and **every developer who committed** that day, each with their count. Attribution runs through the identity map in bulk (`DeveloperIdentityService.attributionIndex`) so unverified-email commits count under the right person; commits matching no identity appear as **"+N unattributed"** per day — disclosed, never dropped or guessed. A truncated read says so on screen instead of under-reporting silently.
 
 **An empty window says which window it was empty for.** The selectable ranges are Today / 7 / 30 / 90 days / 12 months (`ACTIVITY_WINDOWS`); the 30-day ceiling they used to stop at was a limit on what the board could show rather than a cost control, and it made a whole class of repository unreachable. `athmahealth/nh-website` is the case that surfaced it — 12 commits between 20 Jun and 21 Jul, dormant since — so every developer on it read as "0 commits" on every available range, and a review of the developer roster proposed removing them as inactive. That is the failure a missing range becomes: absence of a window presenting as absence of work. An empty result now names the interval it measured (`No commits between 27 Jul and 25 Aug`) and offers the next range up, degrading to a plain statement at the widest one. The interval is rendered from the server's `windowDays` — the range actually measured — not from the selected key, because an unrecognised window falls back to 30 days rather than 400ing so a frontend can ship ahead of its backend, and echoing the requested key would label 30 days of data as 90.
 
@@ -151,6 +153,89 @@ All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cros
 `groupBy` is sent by exactly one hook, `useBatchMetrics`. Productivity and Efficiency go through `scopeParams`, which drops it — so their Group-by toggle changed the URL and nothing else until 2026-08-17 (api/README.md §12 #33). Neither has rows for the axis to split even in principle: Productivity is bucketed by **week** by construction, and Efficiency reports scope-wide percentiles and coverage ratios.
 
 The last row is the substantive one: those three are **Jira-only** metrics. Forecasting is `avg velocity of recent closed sprints ÷ remaining backlog` — sprints, points and backlog items, with no repository dimension to filter by at all; narrowing it by repo would require mapping stories through `pr_implements_story` and would silently drop every unlinked story, making the forecast *wrong* rather than narrower. Time range is equally meaningless there: the forecast samples the **last 3 closed sprints**, not a rolling day window, so a `30d` selector implies control over a sampling decision it doesn't have.
+
+### 4.4 Developer Activity: four subpages, one dataset
+
+Developer Activity is one section at `/developer-activity/*` with four subpages — Overview, Watchlist, Developer, PR Status — under a shell that owns the title, the tab strip and **the window**. The window lives in the URL (`?window=`) and is shared across tabs, so switching from Overview to PR Status keeps the range you were reading and there is exactly **one** `FreshnessNote` on screen rather than four boards each vouching for their own copy of the same range. The sidebar keeps one entry that expands to its four children while the section is active (`DASHBOARD_REGISTRY[].children`), rather than four permanent peer entries.
+
+**The organising rule is that each subpage owns exactly one question, and no number appears on two of them.** The design this replaced failed that test in four places, and each fix is load-bearing rather than cosmetic:
+
+| Duplication | Resolution |
+|---|---|
+| Overview's roster table (status + last signal) *was* the Watchlist, laid out differently | Overview drops the roster entirely and becomes team-shaped. Watchlist owns people. |
+| A commit chart **and** a text log of who committed each day — the same data drawn twice | One chart whose bars open to that day's contributors (§4.4.1) |
+| "Needs a check-in: 4" on Overview and "No tracked activity: 4" on the Watchlist | One number, on the Watchlist; Overview links to it |
+| Developer Detail's "commits with a ticket" and "commits without a ticket" tables | One list; linkage is a column, not a second table |
+
+Two things the mockups asked for are **not built, because the data does not exist**, and inventing them would have been a guess presented as a fact:
+
+- **"Pending on them"** (which reviewer a PR is blocked on) needs GitHub's `requested_reviewers`, which the collector does not fetch and `code_pull_request` has no column for. PR Status reports what *is* known — how long the change has waited and whether anyone has reviewed it at all.
+- **Auto-exclusion for approved leave / recent joiners** needs an HR feed SprintIQ does not have. Replaced by an explicit admin-entered exclusion (§4.4.2).
+
+#### 4.4.1 Overview — team-shaped
+
+Four tiles (commits · developers with a signal `N of M` · PRs opened, `N` merged · committing without assigned work), the commit timeline, and a **data-health card** carrying both coverage figures.
+
+**The timeline is one widget doing the work of two.** Each bar is an IST day; selecting one opens that day's contributors inline, each linking to their Developer page. This is where §4.1.3's daily log went, and every rule from it survives: alphabetical ordering by default, the recorded owner-requested **"Most commits"** toggle as the reader's explicit act only, `+N unattributed` per day, and the empty-window note that names the interval it measured (from the server's `windowDays`, never the requested key) and offers the next range up.
+
+**No per-developer roster and no project breakdown.** People are the Watchlist's; projects are Project Activity's.
+
+#### 4.4.2 Watchlist — people, and the two lenses on them
+
+The one page in the platform that names individuals for attention, so its framing is part of its specification, not decoration around it. A guardrail banner is the first element on the page, and it states plainly that this is a prompt to ask a question, that absence of a tracked signal is not absence of work (pairing, design, support and review outside GitHub all leave nothing here), and that individual cases go to the person's manager in conversation.
+
+**Two orthogonal lenses, deliberately not merged:**
+
+1. **Recency buckets** — Active / Quiet / No tracked activity, over commits, PRs opened, merges and reviews together. Each column header states its exact threshold; a bucket whose rule the reader has to guess is a label they will fill in themselves. Cards carry the last signal's **type and when**, and deliberately **no commit counts** — counts invite the comparison between two named people this page must not support, and recency is the question being asked.
+2. **Committing without assigned work** — landed commits in the window, no open Jira item assigned. This is the planning gap: work the plan cannot see. Separate from the buckets because the two are independent — an *Active* developer with nothing assigned is exactly the case worth surfacing, and folding assignment into the buckets would bury them.
+
+**Thresholds are in working days (Mon–Fri).** On calendar days a "7 day" rule spends two of them on a weekend nobody was expected to commit through, and the whole roster reads quieter every Monday morning. Public holidays are **not** modelled — SprintIQ has no holiday calendar and inventing one per tenant would be a guess — so a team returning from one reads slightly quieter than it was, which the page's framing is built to tolerate. Boundaries belong to the kinder bucket: being an hour over a threshold is not evidence about a person.
+
+**Recency is measured as of the range end, not as of today.** With a preset those are the same instant. With a custom range ending in the past they are not, and measuring against today would put two timeframes on one page — April's commits beside "quiet as of this morning". So the whole page answers for one moment: the signal scan is bounded above at the range end (`signalScanRange`) as well as below, and `bucketFor` is given that same moment. A developer who went quiet in May and returned in August therefore reads as quiet on an April–June board, which is what was true then.
+
+**Exclusions are an explicit human statement, never an inference.** `watchlist_exclusion` rows are entered by an admin (`PUT /api/dashboards/watchlist-exclusions/{developer}`), carry a **reason from a closed set**, **who entered them**, and a **mandatory expiry capped at 180 days** — an exclusion with no end date is how someone drops off the roster permanently without anyone deciding to. An exclusion suppresses exactly one thing: appearing in an attention bucket. The developer keeps counting in every commit, PR and metric figure, and the page **publishes the exclusion list with reasons** rather than applying it silently, because a filtered roster whose filter is invisible is how a review loses the person it should have surfaced. With none configured the page says so — never that leave and start dates were checked.
+
+#### 4.4.3 Developer — one person, evidence-first
+
+The profile from the old board (commits, lines, PRs opened/merged, commits-per-day, repos, recent commits, and the identity notes) plus **reviews given** and **assigned Jira work**. Two removals:
+
+- **The second commit table** ("without a linked ticket") was the same list split by one attribute. One list; linkage is a column.
+- **Per-person "average time to first review"** is gone. Review latency is a property of the team's review capacity, not of the person waiting on it; attaching it to an individual converts a queue signal into a personal score. The team figure is Efficiency's.
+
+#### 4.4.4 PR Status — the review queue
+
+Tiles (open · waiting past the threshold · **never reviewed** · reviews given, bots excluded), the waiting queue oldest-first, and review load A–Z.
+
+**It reports no cycle-time percentiles.** Those are Efficiency's, over a merged-only denominator; restating them here over a different one puts two numbers for one concept on two screens and invites the reader to reconcile a gap that exists by design (§4.1). The page links across instead.
+
+**Open PRs are not windowed.** A change opened four months ago and still unreviewed is the most actionable row the page can carry, and a `from` filter is precisely what would hide it. Reviews given and PRs raised *do* use the window; the provenance note says so.
+
+**Ordering is by how long the change has waited** — a property of the pull request, not of its author. The per-developer table is alphabetical, and reports **oldest PR still waiting** rather than an average: a mean over two PRs describes neither of them.
+
+**`reviewsFetchedAt` gates the unreviewed count.** An open PR whose review timeline was never fetched is excluded and disclosed, not counted as unreviewed — "never asked" and "never reviewed" are the same absence of `code_pr_review` rows and opposite findings, and conflating them reports collection lag as a review failure.
+
+#### 4.4.5 The Jira assignee bridge, and why its coverage is always on screen
+
+Assignment answers ("who is committing with nothing assigned") require mapping a **Jira assignee to a canonical developer**, and until 2026-08-25 no such mapping existed: `DeveloperIdentityService` had `sourceSystem` hardcoded to `github`. The Jira arm (`resolveJiraAssignees`, run each correlation sweep **after** the GitHub pass, whose canonical ids it matches into) fills that gap — and it is the weakest link in this section, which is why it is documented rather than assumed.
+
+**How strong the bridge is depends on one Jira setting.** Where the instance discloses the assignee's Atlassian email, matching is `email_exact` against an address the person already commits under — a fact, not a guess, and the reason people who commit under a corporate address are reachable at all. Where it doesn't, the ladder falls back to normalized display name and account reference, both recorded as `name_normalized`. Jira Cloud withholds `emailAddress` unless user-profile visibility permits it, so the weaker path is the common one until an admin opens that setting and `POST /admin/configurations/jira/reconcile-assignee-emails` backfills. The full ladder, its guards (machine addresses, shared mailboxes) and the reconciler's assignee-keyed cost model are in DATA-MODEL.md §3.1.
+
+Ambiguity on the name rungs (two colleagues normalizing to one key) is **refused and orphaned**, never resolved by coin flip: guessing here would assign one person's tickets to another *and* report the wronged party as working off-plan.
+
+**Coverage is measured over developers, not over Jira assignees** — and getting that wrong cost a wasted investigation, so it is worth stating plainly (api/README.md §12 #47).
+
+The assignee-side ratio (`matched / observed`) was published first and read as *"how well the bridge works"*. It is nothing of the kind. On the reference tenant it said **41%**, which sent remediation toward collecting Atlassian emails — until a diagnostic showed **127 of the 128 unmatched assignees have no route to GitHub by any token**. They are QA, BA, PM and support staff who hold tickets and never commit: there is no GitHub entity to link them to, and email matching would have recovered exactly one person. That ratio measures **org composition**, not matching quality.
+
+The figure the boards show is `developersLinked / developersInWindow` over the people who actually committed. Same tenant, same data: **97.7% (7 days)**, **94.2% (30 days)**.
+
+Two corrections follow from it:
+
+- **Automation is excluded from every head-count.** `dependabot[bot]`, `Copilot` and `github-actions[bot]` were being counted as developers missing a Jira account. `isBotDeveloper` keeps them out of the coverage denominator *and* out of the Watchlist roster — where a bot would eventually have surfaced under "no tracked activity", inviting someone to go check on a robot. Their commits still count in commit and LOC totals; this excludes them from counts of *people*, not from the work.
+- **The unlinked are named, not just counted.** A percentage tells a reader to distrust the whole list; four names tell them which rows to distrust, and are short enough to act on.
+
+**Every assignment figure ships beside `assigneeCoverage`, and null is never rendered as zero.** An unmatched assignee and a developer with nothing assigned are the same absence on screen and opposite findings in fact — a data gap versus the finding itself. So: `hasAssignedWork` is `null` (not `false`) for anyone the bridge missed; the "committing without assigned work" list is computed only over matched people; the Overview tile renders `—` rather than `0` when nothing matched at all; the Developer page distinguishes "no assignee matched" from "no open items"; and the Watchlist prints the unmatched count beside the list with the instruction to check it in conversation before acting.
+
+**Jira rows share a table with commit attribution, so every commit-facing read is now scoped.** `aliasesFor`, `attributionIndex`, `listDevelopers` and `attributionCoverage` all filter `sourceSystem: 'github'`. Without that, a Jira `accountId` would enter `AttributionIndex.byLogin` — the map commit attribution is looked up in — and would widen a developer's commit query with an identifier that means nothing to git. There is a test asserting each of the four stays scoped.
 
 ### Honest-math notes
 - Velocity/health treat `Done/Closed/Resolved` as done (tenant-tunable constant); committed = items currently attached to the sprint (scope-change history is a follow-up, so mid-sprint additions inflate "committed").
