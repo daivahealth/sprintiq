@@ -9,6 +9,7 @@ import {
 import { timeAgo } from '../../../lib/utils';
 import { useDeveloperOverview, type ActivityDay } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
+import { CurrentLensNote } from './CurrentLensNote';
 import { EmptyWindowNote, formatDayKey, useSectionRange } from './window';
 
 /**
@@ -65,6 +66,11 @@ export function OverviewPage() {
           }
         />
       </div>
+
+      <CurrentLensNote
+        range={range}
+        lens="The Jira assignment behind “Committing, nothing assigned”"
+      />
 
       <CommitTimeline
         days={d.days}

@@ -8,6 +8,7 @@ import {
 import { timeAgo } from '../../../lib/utils';
 import { usePrStatus } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
+import { CurrentLensNote } from './CurrentLensNote';
 import { useSectionRange } from './window';
 
 /**
@@ -63,6 +64,11 @@ export function PrStatusPage() {
           }
         />
       </div>
+
+      <CurrentLensNote
+        range={range}
+        lens="The review queue (open PRs and how long they have waited)"
+      />
 
       <Card className="space-y-3">
         <div>

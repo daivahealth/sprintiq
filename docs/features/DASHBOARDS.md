@@ -82,6 +82,8 @@ Every window and every bucket in the app is **IST calendar-aligned**, via `istWi
 
 This was three conventions until they were unified: the Scope Bar sent a rolling `now − days×86400000`, the activity boards bucketed by IST day, and Productivity bucketed weeks on the **UTC** Sunday. (The activity boards' own `windowFrom` kept computing the retired rolling form for `FreshnessNote` long after this was written — so the note judged a range up to a day wider than the one the board had actually queried. It now calls the shared `istWindowFloor` like everything else.) "Last 7 days" therefore denoted three different ranges depending on the board, differing by up to a full day at each edge, and a PR merged after 18:30 IST was filed under tomorrow on one screen and today on another. Adding a new window or bucket means reusing these helpers, not writing another date expression.
 
+The Developer Activity section additionally accepts a **custom range**: two IST calendar dates, inclusive at both ends, resolved by `istDayStart` / `istDayEnd` / `istDaySpan` (backend `common/time.ts`, mirrored in `frontend/src/lib/utils.ts`). Inclusive at both ends is what keeps it the same definition — a hand-picked seven days and the "7 days" preset resolve to the same instants and return the same numbers. The same reason `istDayAxis` takes the day to end on: a chart hardcoded to today drew a closed April–June range as an unbroken row of zeros.
+
 ### 4.1.2 Sprints Jira still calls active
 
 Jira never closes a sprint by itself — `state` is whatever someone last set. A team that stops using a board leaves its final sprint `active` indefinitely; on the reference tenant one had been "active" for over four years and rendered as a live card at 100% elapsed, 0 days remaining, pace "behind", permanently, beside the sprint actually running.
@@ -158,6 +160,8 @@ The last row is the substantive one: those three are **Jira-only** metrics. Fore
 
 Developer Activity is one section at `/developer-activity/*` with four subpages — Overview, Watchlist, Developer, PR Status — under a shell that owns the title, the tab strip and **the window**. The window lives in the URL (`?window=`) and is shared across tabs, so switching from Overview to PR Status keeps the range you were reading and there is exactly **one** `FreshnessNote` on screen rather than four boards each vouching for their own copy of the same range. The sidebar keeps one entry that expands to its four children while the section is active (`DASHBOARD_REGISTRY[].children`), rather than four permanent peer entries.
 
+**The window is a range.** Alongside the five presets the section offers a **custom** interval — any two IST dates — because every preset ends today, so a closed past period cannot be looked at in isolation: the range containing a repository's active June also contains the dormant months that dilute it. Presets remain unchanged on the wire (`?window=week`); a custom range travels as `?window=custom&from=&to=` and is carried across tab switches like the preset is. Three figures on these pages are **current state that cannot be time-travelled** — Jira assignment, the open-PR queue, and live exclusions — and on a range ending in the past each says so on screen rather than passing as historical.
+
 **The organising rule is that each subpage owns exactly one question, and no number appears on two of them.** The design this replaced failed that test in four places, and each fix is load-bearing rather than cosmetic:
 
 | Duplication | Resolution |
@@ -208,7 +212,7 @@ Tiles (open · waiting past the threshold · **never reviewed** · reviews given
 
 **It reports no cycle-time percentiles.** Those are Efficiency's, over a merged-only denominator; restating them here over a different one puts two numbers for one concept on two screens and invites the reader to reconcile a gap that exists by design (§4.1). The page links across instead.
 
-**Open PRs are not windowed.** A change opened four months ago and still unreviewed is the most actionable row the page can carry, and a `from` filter is precisely what would hide it. Reviews given and PRs raised *do* use the window; the provenance note says so.
+**Open PRs are not windowed.** A change opened four months ago and still unreviewed is the most actionable row the page can carry, and a `from` filter is precisely what would hide it. Reviews given and PRs raised *do* use the window; the provenance note says so. On a custom range ending in the past, the queue is still today's — open PRs are current state with no collected history — and the page says so rather than letting an as-of-today queue pass as historical.
 
 **Ordering is by how long the change has waited** — a property of the pull request, not of its author. The per-developer table is alphabetical, and reports **oldest PR still waiting** rather than an average: a mean over two PRs describes neither of them.
 
@@ -234,6 +238,8 @@ Two corrections follow from it:
 - **The unlinked are named, not just counted.** A percentage tells a reader to distrust the whole list; four names tell them which rows to distrust, and are short enough to act on.
 
 **Every assignment figure ships beside `assigneeCoverage`, and null is never rendered as zero.** An unmatched assignee and a developer with nothing assigned are the same absence on screen and opposite findings in fact — a data gap versus the finding itself. So: `hasAssignedWork` is `null` (not `false`) for anyone the bridge missed; the "committing without assigned work" list is computed only over matched people; the Overview tile renders `—` rather than `0` when nothing matched at all; the Developer page distinguishes "no assignee matched" from "no open items"; and the Watchlist prints the unmatched count beside the list with the instruction to check it in conversation before acting.
+
+The same caveat governs a range that ends in the past. Jira assignment is read as it stands **now**; we keep no assignment history. So on a historical range the planning gap would be comparing that range's commits against today's Jira board — two moments, one figure. The affected panels carry a note saying which moment they describe (`CurrentLensNote`), on the same principle as the coverage figure itself: the number is shown, and what it can support is stated with it.
 
 **Jira rows share a table with commit attribution, so every commit-facing read is now scoped.** `aliasesFor`, `attributionIndex`, `listDevelopers` and `attributionCoverage` all filter `sourceSystem: 'github'`. Without that, a Jira `accountId` would enter `AttributionIndex.byLogin` — the map commit attribution is looked up in — and would widen a developer's commit query with an identifier that means nothing to git. There is a test asserting each of the four stays scoped.
 

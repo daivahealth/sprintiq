@@ -12,6 +12,7 @@ import { timeAgo } from '../../../lib/utils';
 import { CommitChart } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
 import { BarList, ErrorCard, LoadingCard, Stat } from '../widgets';
+import { CurrentLensNote } from './CurrentLensNote';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
 /**
@@ -186,6 +187,7 @@ export function DeveloperPage() {
             </div>
           </Card>
 
+          <CurrentLensNote range={range} lens="Assigned Jira work" />
           <AssignedWork view={d} />
 
           <Card className="space-y-3">

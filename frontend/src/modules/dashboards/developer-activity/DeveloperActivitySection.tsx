@@ -7,6 +7,7 @@ import {
   parseRange,
   rangeFrom,
   rangeParams,
+  rangeTo,
   type ActivityRange,
 } from './window';
 
@@ -106,7 +107,7 @@ export function DeveloperActivitySection() {
         <RangeToggle value={range} onChange={setRange} />
         {/* One freshness signal for the whole section. Mounted here rather
             than per page: it judges the window, and the window is the shell's. */}
-        <FreshnessNote windowFrom={rangeFrom(range)} />
+        <FreshnessNote windowFrom={rangeFrom(range)} windowTo={rangeTo(range)} />
       </FilterBar>
 
       <Outlet context={{ range, setRange }} />

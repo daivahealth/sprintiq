@@ -20,6 +20,8 @@ import { useFreshness } from './useInsights';
  *    so, with the date history actually starts, because those numbers really
  *    are short.
  *  - **Is the recent end behind?** `collectedThroughAt` old — say so.
+ *  - **Has the range already ended?** Then being behind is irrelevant to it,
+ *    and the warning is suppressed.
  *
  * Boards without a time window (Sprint Health, Sprint Risk) pass no
  * `windowFrom` and get the plain statement.
@@ -28,7 +30,13 @@ import { useFreshness } from './useInsights';
 /** Beyond this, being behind is worth flagging rather than just stating. */
 const BEHIND_WARN_SECONDS = 6 * 60 * 60;
 
-export function FreshnessNote({ windowFrom }: { windowFrom?: string }) {
+export function FreshnessNote({
+  windowFrom,
+  windowTo,
+}: {
+  windowFrom?: string;
+  windowTo?: string;
+}) {
   const { data } = useFreshness();
   if (!data) {
     return null;
@@ -45,7 +53,13 @@ export function FreshnessNote({ windowFrom }: { windowFrom?: string }) {
     collectedBackTo != null &&
     new Date(collectedBackTo) > new Date(windowFrom);
 
-  const behind = behindSeconds !== null && behindSeconds > BEHIND_WARN_SECONDS;
+  // A range that has already ended cannot be affected by collection being
+  // hours behind — those hours are after everything it covers. Warning anyway
+  // is the unnecessary warning this file exists to avoid: it teaches people to
+  // ignore the real ones.
+  const rangeEnded = windowTo != null && new Date(windowTo) < new Date();
+  const behind =
+    !rangeEnded && behindSeconds !== null && behindSeconds > BEHIND_WARN_SECONDS;
   const hasProblem = failing.length > 0 || neverSynced > 0;
   // Backfill only matters to THIS board if it actually clips its window, or if
   // nothing has been collected at all yet.

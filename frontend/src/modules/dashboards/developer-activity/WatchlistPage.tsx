@@ -14,6 +14,7 @@ import {
   type WatchlistView,
 } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
+import { CurrentLensNote } from './CurrentLensNote';
 import { useSectionRange } from './window';
 
 /**
@@ -98,6 +99,10 @@ export function WatchlistPage() {
         />
       </div>
 
+      <CurrentLensNote
+        range={range}
+        lens="Assigned Jira work, the planning gap and exclusions"
+      />
       <PlanningGap view={d} />
       <ExclusionPanel view={d} />
 
