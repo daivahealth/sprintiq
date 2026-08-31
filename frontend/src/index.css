@@ -13,109 +13,111 @@
 :root {
   color-scheme: light;
 
-  --brand: 91 87 214;
-  --brand-fg: 238 237 251;
-  --brand-muted: 110 106 224;
+  --brand: 184 72 26;
+  --brand-fg: 247 236 230;
+  --brand-muted: 143 54 18;
   --on-brand: 255 255 255;
 
-  --canvas: 248 250 252;
+  --canvas: 255 255 255;
   --surface: 255 255 255;
   --popover: 255 255 255;
-  --subtle: 248 250 252;
-  --muted: 241 245 249;
-  --muted-strong: 226 232 240;
+  --subtle: 250 250 249;
+  --muted: 244 244 242;
+  --muted-strong: 232 232 229;
 
-  --fg: 30 41 59;
-  --fg-secondary: 51 65 85;
-  --fg-muted: 71 85 105;
-  --fg-subtle: 100 116 139;
-  --fg-faint: 148 163 184;
+  --fg: 17 17 20;
+  --fg-secondary: 46 46 52;
+  --fg-muted: 90 90 99;
+  --fg-subtle: 107 107 118;
+  --fg-faint: 143 143 156;
 
-  --border: 226 232 240;
-  --border-subtle: 241 245 249;
-  --border-strong: 203 213 225;
+  --border: 230 230 234;
+  --border-subtle: 240 240 243;
+  --border-strong: 196 196 203;
+  --rule: 17 17 20;
 
-  --success: 16 185 129;
-  --success-fg: 4 120 87;
-  --success-bg: 209 250 229;
-  --success-border: 167 243 208;
+  --success: 47 111 82;
+  --success-fg: 26 107 69;
+  --success-bg: 220 239 228;
+  --success-border: 190 222 205;
 
-  --warning: 245 158 11;
-  --warning-fg: 180 83 9;
-  --warning-bg: 254 243 199;
-  --warning-border: 253 230 138;
+  --warning: 154 123 16;
+  --warning-fg: 122 90 16;
+  --warning-bg: 245 236 212;
+  --warning-border: 230 214 170;
 
-  --danger: 244 63 94;
-  --danger-fg: 190 18 60;
-  --danger-bg: 255 228 230;
-  --danger-border: 254 205 211;
-  --danger-solid: 225 29 72;
-  --danger-solid-hover: 190 18 60;
+  --danger: 168 32 47;
+  --danger-fg: 143 22 32;
+  --danger-bg: 246 220 220;
+  --danger-border: 234 194 194;
+  --danger-solid: 168 32 47;
+  --danger-solid-hover: 143 22 32;
   --on-danger: 255 255 255;
 
-  --chart-1: 91 87 214;
-  --chart-2: 16 185 129;
-  --chart-3: 245 158 11;
-  --chart-4: 244 63 94;
-  --chart-5: 59 130 246;
-  --chart-6: 6 182 212;
-  --chart-grid: 241 245 249;
-  --chart-axis: 148 163 184;
-  --chart-empty: 241 245 249;
+  --chart-1: 184 72 26;
+  --chart-2: 47 111 82;
+  --chart-3: 61 90 138;
+  --chart-4: 143 22 32;
+  --chart-5: 154 123 16;
+  --chart-6: 90 78 120;
+  --chart-grid: 240 240 243;
+  --chart-axis: 143 143 156;
+  --chart-empty: 240 240 243;
 }
 
 .dark {
   color-scheme: dark;
 
-  --brand: 139 135 240;
-  --brand-fg: 33 30 74;
-  --brand-muted: 166 162 245;
-  --on-brand: 18 19 43;
+  --brand: 224 114 60;
+  --brand-fg: 46 26 16;
+  --brand-muted: 240 160 113;
+  --on-brand: 26 13 6;
 
-  --canvas: 11 18 32;
-  --surface: 19 24 38;
-  --popover: 30 41 59;
-  --subtle: 11 18 32;
-  --muted: 23 32 51;
-  --muted-strong: 51 65 85;
+  --canvas: 13 13 16;
+  --surface: 13 13 16;
+  --popover: 26 26 31;
+  --subtle: 21 21 25;
+  --muted: 32 32 38;
+  --muted-strong: 45 45 52;
 
-  --fg: 241 245 249;
-  --fg-secondary: 226 232 240;
-  --fg-muted: 203 213 225;
-  --fg-subtle: 168 179 196;
-  --fg-faint: 141 153 171;
+  --fg: 240 240 242;
+  --fg-secondary: 214 214 219;
+  --fg-muted: 168 168 178;
+  --fg-subtle: 143 143 156;
+  --fg-faint: 112 112 124;
 
-  --border: 42 53 75;
-  --border-subtle: 26 34 50;
-  --border-strong: 61 74 99;
+  --border: 42 42 49;
+  --border-subtle: 32 32 38;
+  --border-strong: 62 62 71;
+  --rule: 240 240 242;
 
-  --success: 16 185 129;
-  --success-fg: 110 231 183;
-  --success-bg: 2 44 34;
-  --success-border: 6 95 70;
+  --success: 79 184 127;
+  --success-fg: 95 199 142;
+  --success-bg: 18 48 31;
+  --success-border: 30 74 50;
 
-  --warning: 245 158 11;
-  --warning-fg: 252 211 77;
-  --warning-bg: 69 26 3;
-  --warning-border: 146 64 14;
+  --warning: 217 185 92;
+  --warning-fg: 224 185 92;
+  --warning-bg: 46 36 16;
+  --warning-border: 74 60 26;
 
-  --danger: 244 63 94;
-  --danger-fg: 253 164 175;
-  --danger-bg: 76 5 25;
-  --danger-border: 159 18 57;
-  --danger-solid: 225 29 72;
-  --danger-solid-hover: 244 63 94;
+  --danger: 224 90 105;
+  --danger-fg: 240 138 149;
+  --danger-bg: 51 21 26;
+  --danger-border: 82 34 42;
+  --danger-solid: 199 58 74;
+  --danger-solid-hover: 216 78 93;
   --on-danger: 255 255 255;
 
-  --chart-1: 139 135 240;
-  --chart-2: 52 211 153;
-  --chart-3: 251 191 36;
-  --chart-4: 251 113 133;
-  --chart-5: 96 165 250;
-  --chart-6: 34 211 238;
-  --chart-grid: 42 53 75;
-  --chart-axis: 110 122 142;
-  --chart-empty: 48 58 79;
+  --chart-1: 224 114 60;
+  --chart-2: 79 184 127;
+  --chart-3: 107 147 214;
+  --chart-4: 224 90 105;
+  --chart-5: 217 185 92;
+  --chart-6: 154 138 198;
+  --chart-grid: 32 32 38;
+  --chart-axis: 112 112 124;
+  --chart-empty: 32 32 38;
 }
 
 html,
