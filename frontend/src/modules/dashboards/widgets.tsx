@@ -23,7 +23,7 @@ export function Stat({
 }) {
   return (
     <div className="rounded-lg border border-border bg-subtle p-3">
-      <div className="text-2xl font-semibold tracking-[-0.03em] tabular-nums text-fg">
+      <div className="text-[28px] font-bold tracking-[-0.045em] tabular-nums text-fg">
         {value}
       </div>
       <div className="text-xs text-fg-subtle">{label}</div>

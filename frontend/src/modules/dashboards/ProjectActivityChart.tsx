@@ -155,7 +155,7 @@ export function ProjectActivityChart({
         {series.map((r, i) => (
           <span key={r.projectKey} className="flex items-center gap-1.5">
             <span
-              className={cn('h-2 w-2 rounded-full', LEGEND_DOT_COLORS[i % LEGEND_DOT_COLORS.length])}
+              className={cn('h-2 w-2 rounded-none', LEGEND_DOT_COLORS[i % LEGEND_DOT_COLORS.length])}
             />
             {r.projectKey}
           </span>

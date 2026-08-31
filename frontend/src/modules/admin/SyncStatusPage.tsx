@@ -104,7 +104,7 @@ function StatCard({
     <div className="rounded-lg border border-border bg-surface p-4">
       <p
         className={cn(
-          "text-2xl font-semibold tracking-[-0.03em] tabular-nums",
+          "text-[28px] font-bold tracking-[-0.045em] tabular-nums",
           danger ? "text-danger-fg" : "text-fg",
         )}
       >
@@ -259,7 +259,7 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
                 due connections processed this tick
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-2 w-full overflow-hidden rounded-none bg-muted">
               <div
                 className="h-full bg-brand transition-all"
                 style={{
@@ -533,7 +533,7 @@ export function SyncStatusPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">Sync Status</h2>
+        <h2 className="text-xl font-bold tracking-[-0.035em] text-fg">Sync Status</h2>
         <p className="text-sm text-fg-subtle">
           Data transfer/backfill progress from GitHub and Jira — each source syncs
           independently on its own configurable interval (Configuration screen, default every 4

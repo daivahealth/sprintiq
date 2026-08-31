@@ -356,7 +356,7 @@ export function AdminConfigurationsPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold tracking-[-0.02em] text-fg">
+          <h2 className="text-2xl font-bold tracking-[-0.035em] text-fg">
             Configuration
           </h2>
           <p className="mt-1 text-sm text-fg-subtle">
@@ -396,7 +396,7 @@ export function AdminConfigurationsPage() {
                   {dirty ? (
                     <span
                       title="Unsaved changes"
-                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
+                      className="h-1.5 w-1.5 shrink-0 rounded-none bg-warning"
                     />
                   ) : null}
                 </span>

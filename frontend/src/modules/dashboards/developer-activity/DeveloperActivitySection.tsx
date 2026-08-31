@@ -76,7 +76,7 @@ export function DeveloperActivitySection() {
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">
+        <h2 className="text-xl font-bold tracking-[-0.035em] text-fg">
           Engineering Activity
         </h2>
         <p className="text-sm text-fg-subtle">

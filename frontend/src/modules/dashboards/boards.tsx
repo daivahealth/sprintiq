@@ -40,7 +40,7 @@ import {
 function BoardHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div>
-      <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">{title}</h2>
+      <h2 className="text-xl font-bold tracking-[-0.035em] text-fg">{title}</h2>
       <p className="text-sm text-fg-subtle">{subtitle}</p>
     </div>
   );
@@ -293,7 +293,7 @@ export function SprintHealthBoard() {
 
 function cnCard(selected: boolean): string {
   return cn(
-    'space-y-2 rounded-xl border bg-surface p-4 text-left shadow-sm transition hover:border-brand/60',
+    'space-y-2 rounded-xl border bg-surface p-4 text-left transition hover:border-brand/60',
     selected ? 'border-brand ring-2 ring-brand/20' : 'border-border',
   );
 }

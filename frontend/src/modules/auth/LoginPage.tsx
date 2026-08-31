@@ -40,7 +40,7 @@ export function LoginPage() {
           <div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-lg bg-brand text-sm font-bold text-on-brand">
             IQ
           </div>
-          <h1 className="text-lg font-semibold tracking-[-0.01em] text-fg">
+          <h1 className="text-lg font-bold tracking-[-0.025em] text-fg">
             Sign in to SprintIQ
           </h1>
           <p className="text-sm text-fg-subtle">Engineering Intelligence Platform</p>
