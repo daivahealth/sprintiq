@@ -87,6 +87,8 @@ export default {
         lg: '3px',
         xl: '4px',
         '2xl': '6px',
+        '3xl': '8px',
+        '4xl': '10px',
         full: '9999px',
       },
     },

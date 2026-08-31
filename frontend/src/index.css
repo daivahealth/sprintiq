@@ -59,7 +59,68 @@
   --chart-3: 61 90 138;
   --chart-4: 143 22 32;
   --chart-5: 154 123 16;
-  --chart-6: 90 78 120;
+  --chart-6: 40 130 150;
+  --chart-grid: 240 240 243;
+  --chart-axis: 143 143 156;
+  --chart-empty: 240 240 243;
+}
+
+/*
+ * Mirrors :root exactly. Exists so a forced-light region (the style gallery's
+ * left panel) renders light even while `.dark` is on `<html>` — tokens are
+ * otherwise declared only on `:root` and `.dark`, so a light region nested
+ * under `.dark` would silently inherit dark values.
+ */
+.light {
+  color-scheme: light;
+
+  --brand: 184 72 26;
+  --brand-fg: 247 236 230;
+  --brand-muted: 143 54 18;
+  --on-brand: 255 255 255;
+
+  --canvas: 255 255 255;
+  --surface: 255 255 255;
+  --popover: 255 255 255;
+  --subtle: 250 250 249;
+  --muted: 244 244 242;
+  --muted-strong: 232 232 229;
+
+  --fg: 17 17 20;
+  --fg-secondary: 46 46 52;
+  --fg-muted: 90 90 99;
+  --fg-subtle: 107 107 118;
+  --fg-faint: 143 143 156;
+
+  --border: 230 230 234;
+  --border-subtle: 240 240 243;
+  --border-strong: 196 196 203;
+  --rule: 17 17 20;
+
+  --success: 47 111 82;
+  --success-fg: 26 107 69;
+  --success-bg: 220 239 228;
+  --success-border: 190 222 205;
+
+  --warning: 154 123 16;
+  --warning-fg: 122 90 16;
+  --warning-bg: 245 236 212;
+  --warning-border: 230 214 170;
+
+  --danger: 168 32 47;
+  --danger-fg: 143 22 32;
+  --danger-bg: 246 220 220;
+  --danger-border: 234 194 194;
+  --danger-solid: 168 32 47;
+  --danger-solid-hover: 143 22 32;
+  --on-danger: 255 255 255;
+
+  --chart-1: 184 72 26;
+  --chart-2: 47 111 82;
+  --chart-3: 61 90 138;
+  --chart-4: 143 22 32;
+  --chart-5: 154 123 16;
+  --chart-6: 40 130 150;
   --chart-grid: 240 240 243;
   --chart-axis: 143 143 156;
   --chart-empty: 240 240 243;
@@ -83,8 +144,8 @@
   --fg: 240 240 242;
   --fg-secondary: 214 214 219;
   --fg-muted: 168 168 178;
-  --fg-subtle: 143 143 156;
-  --fg-faint: 112 112 124;
+  --fg-subtle: 153 153 166;
+  --fg-faint: 138 138 150;
 
   --border: 42 42 49;
   --border-subtle: 32 32 38;
@@ -114,10 +175,10 @@
   --chart-3: 107 147 214;
   --chart-4: 224 90 105;
   --chart-5: 217 185 92;
-  --chart-6: 154 138 198;
-  --chart-grid: 32 32 38;
-  --chart-axis: 112 112 124;
-  --chart-empty: 32 32 38;
+  --chart-6: 94 194 214;
+  --chart-grid: 42 42 49;
+  --chart-axis: 138 138 150;
+  --chart-empty: 45 45 52;
 }
 
 html,

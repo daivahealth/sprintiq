@@ -387,7 +387,7 @@ export function AdminConfigurationsPage() {
                 onClick={() => setActive(section.namespace)}
                 className={
                   selectedSection
-                    ? 'flex w-full items-center justify-between rounded-md bg-brand-fg px-3 py-2 text-left text-sm font-medium text-brand'
+                    ? 'flex w-full items-center justify-between rounded-md bg-brand-fg px-3 py-2 text-left text-sm font-medium text-brand-muted'
                     : 'flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-fg-muted hover:bg-muted'
                 }
               >
@@ -527,7 +527,9 @@ export function AdminConfigurationsPage() {
                           {isStoredSecurely ? (
                             <Badge tone="good">Stored securely</Badge>
                           ) : (
-                            <Badge>Not stored — falls back to server env var if set</Badge>
+                            <span className="text-xs text-fg-subtle">
+                              Not stored — falls back to server env var if set
+                            </span>
                           )}
                         </div>
                         {catalog.data?.secretsStoreEnabled === false ? (

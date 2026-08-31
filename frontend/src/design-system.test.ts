@@ -74,6 +74,9 @@ describe('contrast contract', () => {
     ['--warning-fg', '--warning-bg'],
     ['--danger-fg', '--danger-bg'],
     ['--on-brand', '--brand'],
+    // --fg-subtle sits on --canvas in both themes and clears 4.5:1 in both
+    // (checked below), so it guards the same way as the pairs above.
+    ['--fg-subtle', '--canvas'],
   ];
 
   for (const [theme, tokens] of [['light', LIGHT], ['dark', DARK]] as const) {
@@ -87,12 +90,36 @@ describe('contrast contract', () => {
       });
     }
   }
+
+  // --fg-faint and --chart-axis also sit on --canvas in both themes, but only
+  // the dark values were raised to meet AA (2026-08-31 fix wave): dark canvas
+  // text at the old value was 3.97:1, unreadable, and now clears 4.5:1 at
+  // `138 138 150`. The light tokens share one literal value (`143 143 156`)
+  // between --fg-faint and --chart-axis, and that value lands at 3.19:1 on
+  // white — legitimately short of 4.5:1, and out of this fix's scope (light
+  // wasn't touched). Per policy this does not lower the global 4.5 floor or
+  // get silently forced; it is guarded only where it was actually fixed, and
+  // the light-side gap is reported for a human to decide on separately.
+  const DARK_ONLY_CANVAS_PAIRS: [fg: string, bg: string][] = [
+    ['--fg-faint', '--canvas'],
+    ['--chart-axis', '--canvas'],
+  ];
+
+  for (const [fg, bg] of DARK_ONLY_CANVAS_PAIRS) {
+    it(`dark: ${fg} on ${bg} is at least 4.5:1`, () => {
+      const fgValue = DARK.get(fg);
+      const bgValue = DARK.get(bg);
+      expect(fgValue, `dark ${fg} missing`).toBeDefined();
+      expect(bgValue, `dark ${bg} missing`).toBeDefined();
+      expect(contrast(fgValue!, bgValue!)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });
 
 describe('source hygiene', () => {
   it('uses no raw Tailwind palette classes', () => {
     const raw =
-      /\b(?:bg|text|border|ring|fill|stroke|from|to|via)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/;
+      /\b(?:bg|text|border|ring|fill|stroke|from|to|via|outline|decoration|accent|caret|divide|placeholder)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/;
     const offenders = sourceFiles().filter((f) => raw.test(readFileSync(f, 'utf8')));
     expect(
       offenders,

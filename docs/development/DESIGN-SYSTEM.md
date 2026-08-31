@@ -2,7 +2,7 @@
 
 The token, primitive, and motion system behind `frontend/src/`. This is the "shared theme tokens" `CLAUDE.md`'s frontend rules refer to — before this doc existed, no such tokens did; the app was ~360 hardcoded Tailwind color utilities with one unmodified `indigo-600` accent and no dark mode. Read this before adding a new screen, primitive, or color.
 
-This doc describes **editorial contrast**, the visual language that replaced the earlier indigo/boxed/rounded system on 2026-08-31: near-black ink on paper, rules instead of filled boxes, large tight numerals, wide-tracked uppercase micro-labels, and a **sienna** accent used sparingly. The re-skin changed token *values*, shape, type, and motion character. It did not rename any token, change any primitive's API, or touch routes, layouts, or data flow — see [`docs/superpowers/specs/2026-08-31-visual-reskin-design.md`](../superpowers/specs/2026-08-31-visual-reskin-design.md) for the full design record.
+This doc describes **editorial contrast**, the visual language that replaced the earlier indigo/boxed/rounded system on 2026-08-31: near-black ink on paper, rules instead of filled boxes, large tight numerals, wide-tracked uppercase micro-labels, and a **sienna** accent used sparingly. The re-skin changed token *values*, shape, type, and motion character. It did not rename any token, change any primitive's API, or change any existing route — see [`docs/superpowers/specs/2026-08-31-visual-reskin-design.md`](../superpowers/specs/2026-08-31-visual-reskin-design.md) for the full design record.
 
 > Context: [DASHBOARDS.md](../features/DASHBOARDS.md) (dashboard behavior/content this system styles), [DEVELOPER-ONBOARDING.md](DEVELOPER-ONBOARDING.md) (local setup).
 
@@ -55,6 +55,8 @@ Computed pairs against the ≥4.5:1 floor (WCAG relative luminance):
 
 `--warning` moved from amber (`245 158 11`) to mustard (`154 123 16` light / `217 185 92` dark). Amber sits too close to sienna (`184 72 26`, the new `--brand`) — a user could not reliably tell "this is the brand" from "this is a caution" at a glance. Pushing warning yellow-ward restores the separation. `--chart-3` left amber for the same reason, moving to ink blue (`61 90 138` light / `107 147 214` dark) — otherwise the six-series chart palette carried three warm hues. Do not "fix" `--warning` or `--chart-3` back to amber; the collision with brand is the reason they moved.
 
+Dark `--warning` (`217 185 92`) and dark `--warning-fg` (`224 185 92`) are a deliberate exception to the two-tier split described above: they compute to 1.02:1 against each other — effectively one colour, not two. Every other status pair keeps its solid tier and its badge/text tier visibly distinct; warning's dark tiers converge because mustard's readable body-text tier and its readable dot/fill tier happen to land on almost the same value in dark mode. This is a known, accepted state, not an oversight — do not "fix" it by nudging one value away from the other without a deliberate design call (see "Adding a new color" below).
+
 ### Chart tokens are structural, not just color
 
 Tailwind derives `fill-*`/`stroke-*` utilities from `theme.colors` automatically, so `--chart-1..6` gave `fill-chart-1`/`stroke-chart-1` etc. for free — no `theme.extend.fill` needed, and dark mode is handled entirely by the `.dark` block flipping the CSS variable. The series arrays in `ProjectActivityChart.tsx` **must stay static string literals**:
@@ -95,6 +97,9 @@ Table headers moved from `fg-faint` (11px, mixed case) to `fg-muted` (10px, bold
 | `md` | 6px | 2px |
 | `lg` | 8px | 3px |
 | `xl` | 12px | 4px |
+| `2xl` | 16px | 6px |
+| `3xl` | 24px | 8px |
+| `4xl` | not defined by default Tailwind | 10px |
 | `full` | 9999px | unchanged |
 
 Remapping the scale centrally in `tailwind.config.js` is what let ~48 hardcoded `rounded-md`/`rounded-lg`/`rounded-sm`/`rounded-xl` utilities scattered across the page modules re-shape without a single page edit — the utility names didn't change, only what they resolve to.

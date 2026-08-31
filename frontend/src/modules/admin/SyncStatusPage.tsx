@@ -220,7 +220,12 @@ function HistoryRow({ run }: { run: SyncRunHistoryEntry }) {
         {run.status === "success" ? (
           <Badge tone="good">success</Badge>
         ) : run.status === "error" ? (
-          <Badge tone="bad">{run.errorMessage ? `error: ${run.errorMessage}` : "error"}</Badge>
+          <span className="flex items-center gap-1.5">
+            <Badge tone="bad">error</Badge>
+            {run.errorMessage && (
+              <span className="text-xs text-fg-muted">{run.errorMessage}</span>
+            )}
+          </span>
         ) : run.status === "skipped" ? (
           <span title={run.errorMessage ?? undefined}>
             <Badge tone="neutral">skipped</Badge>
@@ -574,7 +579,7 @@ export function SyncStatusPage() {
               connections up top instead of making the admin open each source
               tab to find them. */}
           {query.data.summary.failing.length > 0 && (
-            <Card className="space-y-1 border-danger-border">
+            <Card className="space-y-1 border-danger">
               <h3 className="text-sm font-semibold text-danger-fg">
                 {query.data.summary.failing.length} connection
                 {query.data.summary.failing.length === 1 ? "" : "s"} failing

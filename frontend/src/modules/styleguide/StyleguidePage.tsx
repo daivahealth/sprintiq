@@ -37,6 +37,49 @@ const CHART_SWATCHES = [
   'bg-chart-6',
 ] as const;
 
+/**
+ * Static demo chart for the "Chart series" section below — same stroke width
+ * and token classes `ProjectActivityChart`/`CommitChart` actually render
+ * with, so series separation can be judged as thin strokes, not 32px swatch
+ * blocks. Hardcoded data on purpose: no hooks, no dashboards-module import.
+ */
+const CHART_W = 300;
+const CHART_H = 110;
+const CHART_PAD = { top: 8, right: 6, bottom: 20, left: 22 };
+const CHART_MAX = 10;
+const WEEK_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+const CHART_Y_TICKS = [0, 5, 10] as const;
+const CHART_SERIES: readonly (readonly number[])[] = [
+  [3, 5, 4, 7, 6, 8, 9],
+  [6, 5, 7, 6, 8, 7, 9],
+  [2, 3, 2, 4, 3, 5, 4],
+  [8, 7, 9, 8, 10, 9, 10],
+  [1, 2, 1, 3, 2, 3, 2],
+  [4, 3, 5, 4, 6, 5, 7],
+];
+const CHART_SERIES_STROKES = [
+  'stroke-chart-1',
+  'stroke-chart-2',
+  'stroke-chart-3',
+  'stroke-chart-4',
+  'stroke-chart-5',
+  'stroke-chart-6',
+] as const;
+
+function chartX(i: number): number {
+  const plotW = CHART_W - CHART_PAD.left - CHART_PAD.right;
+  return CHART_PAD.left + (i * plotW) / (WEEK_LABELS.length - 1);
+}
+
+function chartY(v: number): number {
+  const plotH = CHART_H - CHART_PAD.top - CHART_PAD.bottom;
+  return CHART_PAD.top + plotH - (v / CHART_MAX) * plotH;
+}
+
+function seriesPoints(values: readonly number[]): string {
+  return values.map((v, i) => `${chartX(i).toFixed(1)},${chartY(v).toFixed(1)}`).join(' ');
+}
+
 const ROWS = [
   { repo: 'sprintiq/api', prs: 12, linked: '94%', tone: 'good' as const },
   { repo: 'sprintiq/web', prs: 7, linked: '71%', tone: 'warn' as const },
@@ -140,11 +183,68 @@ function Gallery() {
         </Section>
 
         <Section title="Chart series">
-          <div className="flex items-end gap-1">
-            {CHART_SWATCHES.map((c, i) => (
-              <span key={c} className={cn(c, 'block w-8')} style={{ height: 24 + i * 8 }} />
+          <svg
+            viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+            className="w-full max-w-md"
+            role="img"
+            aria-label="Sample series over a week, for reviewing series separation"
+          >
+            {CHART_Y_TICKS.map((t) => (
+              <g key={t}>
+                <line
+                  x1={CHART_PAD.left}
+                  x2={CHART_W - CHART_PAD.right}
+                  y1={chartY(t)}
+                  y2={chartY(t)}
+                  className="stroke-chart-grid"
+                  strokeWidth={1}
+                />
+                <text
+                  x={CHART_PAD.left - 4}
+                  y={chartY(t) + 3}
+                  textAnchor="end"
+                  className="fill-chart-axis text-[10px]"
+                >
+                  {t}
+                </text>
+              </g>
             ))}
-          </div>
+
+            {CHART_SERIES.map((values, i) => (
+              <polyline
+                key={CHART_SERIES_STROKES[i]}
+                points={seriesPoints(values)}
+                fill="none"
+                className={CHART_SERIES_STROKES[i]}
+                strokeWidth={1.75}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            ))}
+
+            {/* A measured zero for one day — still drawn, never left the same
+                colour as the grid it sits on (see chart-empty in index.css). */}
+            <rect
+              x={chartX(3) - 5}
+              y={chartY(0) - 4}
+              width={10}
+              height={4}
+              rx={1}
+              className="fill-chart-empty"
+            />
+
+            {WEEK_LABELS.map((label, i) => (
+              <text
+                key={label}
+                x={chartX(i)}
+                y={CHART_H - 6}
+                textAnchor="middle"
+                className="fill-chart-axis text-[10px]"
+              >
+                {label}
+              </text>
+            ))}
+          </svg>
           <div className="flex flex-wrap gap-3 text-xs text-fg-subtle">
             {CHART_SWATCHES.map((c, i) => (
               <span key={c} className="flex items-center gap-1.5">
@@ -152,6 +252,20 @@ function Gallery() {
                 Series {i + 1}
               </span>
             ))}
+          </div>
+        </Section>
+
+        <Section title="Status callouts">
+          <div className="space-y-2">
+            <div className="rounded-md border border-success-border bg-success-bg p-3 text-sm text-success-fg">
+              On track — no drift detected against baseline.
+            </div>
+            <div className="rounded-md border border-warning-border bg-warning-bg p-3 text-sm text-warning-fg">
+              At risk — check linkage coverage before trusting this figure.
+            </div>
+            <div className="rounded-md border border-danger-border bg-danger-bg p-3 text-sm text-danger-fg">
+              Blocked — sync is failing, contact an admin.
+            </div>
           </div>
         </Section>
 
@@ -179,7 +293,7 @@ function Gallery() {
         <Section title="Navigation">
           <div className="w-56 space-y-1">
             <NavItem to="/_styleguide" active>Active item</NavItem>
-            <NavItem to="/_styleguide/never">Inactive item</NavItem>
+            <NavItem to="/_styleguide" active={false}>Inactive item</NavItem>
           </div>
         </Section>
 
@@ -198,7 +312,9 @@ function Gallery() {
 export function StyleguidePage() {
   return (
     <div className="grid min-h-screen grid-cols-2">
-      <Gallery />
+      <div className="light">
+        <Gallery />
+      </div>
       <div className="dark">
         <Gallery />
       </div>
