@@ -32,7 +32,7 @@ export const DASHBOARD_REGISTRY: {
   /**
    * Subsections of one dashboard, rendered as nested nav under the parent.
    *
-   * Only Developer Activity has these today. They are children rather than
+   * Only Engineering Activity has these today. They are children rather than
    * four peer entries because they share one window, one dataset and one
    * purpose — listing them flat would read as four boards and grow the
    * sidebar by four permanent items (DASHBOARDS.md §4.4).
@@ -109,10 +109,14 @@ export const DASHBOARD_REGISTRY: {
       'Most-active projects (commits + LOC across mapped repos) by day/week/month.',
     roles: ALL_ROLES,
   },
+  // Renamed from "Developer Activity" on 2026-08-31. The `key`s deliberately
+  // keep the old name: they are role-assignment identifiers, not display text,
+  // and rewriting them would silently drop any per-tenant assignment override
+  // stored against them. Only `title` and `path` are user-facing.
   {
     key: 'developer-activity',
-    title: 'Developer Activity',
-    path: '/developer-activity/overview',
+    title: 'Engineering Activity',
+    path: '/engineering-activity/overview',
     description:
       'Team activity, the watchlist, one developer’s profile, and the review queue.',
     roles: ALL_ROLES,
@@ -120,28 +124,28 @@ export const DASHBOARD_REGISTRY: {
       {
         key: 'developer-activity-overview',
         title: 'Overview',
-        path: '/developer-activity/overview',
+        path: '/engineering-activity/overview',
         description:
           'Team-shaped totals, the daily commit series, and data-health coverage.',
       },
       {
         key: 'developer-activity-watchlist',
         title: 'Watchlist',
-        path: '/developer-activity/watchlist',
+        path: '/engineering-activity/watchlist',
         description:
           'Who has shown no tracked signal lately, and who is committing outside the plan. A prompt to ask, not a verdict.',
       },
       {
         key: 'developer-activity-developer',
         title: 'Developer',
-        path: '/developer-activity/developer',
+        path: '/engineering-activity/developer',
         description:
           'One developer’s commits, repos, PRs and assigned work — activity context, never a ranking.',
       },
       {
         key: 'developer-activity-pr-status',
         title: 'PR Status',
-        path: '/developer-activity/pr-status',
+        path: '/engineering-activity/pr-status',
         description:
           'Pull requests waiting on review and how review load is spread.',
       },
@@ -154,7 +158,7 @@ export const DASHBOARD_REGISTRY: {
     description: 'Repositories ranked by commit/LOC volume.',
     roles: ALL_ROLES,
   },
-  // Team Capacity was retired into Developer Activity §Watchlist (2026-08-25).
+  // Team Capacity was retired into Engineering Activity §Watchlist (2026-08-25).
   // It answered "who has no PR activity in this window" — the same question,
   // over a narrower signal set, that the Watchlist's recency buckets answer
   // over commits, PRs opened, merges and reviews together. Two routes for one
@@ -383,7 +387,7 @@ export class InsightsController {
   }
 
   /**
-   * Developer Activity §Overview — team-shaped totals, the daily commit series
+   * Engineering Activity §Overview — team-shaped totals, the daily commit series
    * with its contributors, and both coverage figures.
    *
    * Carries no per-developer roster on purpose: the Watchlist owns people, and
@@ -407,7 +411,7 @@ export class InsightsController {
   }
 
   /**
-   * Developer Activity §Watchlist — recency buckets and the planning gap.
+   * Engineering Activity §Watchlist — recency buckets and the planning gap.
    *
    * A prompt to ask a question, never a conclusion about a person. Both
    * coverage figures ride along because an unmatched Jira assignee and a
@@ -430,7 +434,7 @@ export class InsightsController {
   }
 
   /**
-   * Developer Activity §PR Status — the review queue and how load is spread.
+   * Engineering Activity §PR Status — the review queue and how load is spread.
    *
    * Reports no cycle-time percentiles: those are Efficiency's, over a
    * merged-only denominator (DASHBOARDS.md §4.4.4).

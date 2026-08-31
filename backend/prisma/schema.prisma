@@ -256,6 +256,19 @@ model Story {
   releases         String[]  @default([]) // Jira fixVersion names
   assigneeLogin    String?
   assigneeName     String?
+  /// The assignee's Atlassian account email, when Jira discloses it.
+  ///
+  /// The strong rung of the Jira↔GitHub identity bridge (DATA-MODEL.md §3.1):
+  /// people commit under their corporate address and hold their Atlassian
+  /// account under the same one, so an exact match here is worth far more than
+  /// the display-name inference it supersedes.
+  ///
+  /// **Routinely null, and that is not an error.** Jira Cloud omits
+  /// `emailAddress` from the assignee object unless the instance's user-profile
+  /// visibility permits it (Atlassian's post-2019 GDPR default is to hide it).
+  /// Null therefore means "Jira would not tell us", never "this person has no
+  /// email" — matching falls back to the name rungs, exactly as before.
+  assigneeEmail    String?
   priority         String?
   // When the item was created in JIRA — distinct from `createdAt` below, which
   // is when this row was inserted (i.e. the backfill's run date). lead_time
@@ -272,6 +285,8 @@ model Story {
   @@index([tenantId, projectKey])
   @@index([tenantId, epicKey])
   @@index([tenantId, sprintExternalId])
+  // The identity bridge looks assignees up BY email, so it is a predicate.
+  @@index([tenantId, assigneeEmail])
   @@map("planning_story")
 }
 
@@ -586,6 +601,43 @@ model DeveloperIdentity {
   @@unique([tenantId, sourceSystem, sourceKey])
   @@index([tenantId, canonicalDeveloperId])
   @@map("correlation_developer_identity")
+}
+
+/// A developer deliberately kept off the Watchlist's attention buckets.
+///
+/// The Watchlist reports who has shown no tracked signal lately. That question
+/// has ordinary answers the platform cannot see — approved leave, a new joiner
+/// who has not landed a first commit, a secondment, a sabbatical — and every
+/// one of them renders identically to disengagement. SprintIQ has no HR feed
+/// and will not infer one, so the exclusion is an explicit human statement
+/// entered by an admin, not a derived fact.
+///
+/// Deliberately NOT a soft delete: an excluded developer keeps counting in
+/// every commit, PR and metric figure. The exclusion suppresses one thing —
+/// being listed as someone to go ask about — and the board still discloses the
+/// count and the reasons, because a silently shortened list is how a roster
+/// review loses the person it should have surfaced.
+model WatchlistExclusion {
+  id                   String    @id
+  tenantId             String
+  /// The developer this covers, as `DeveloperIdentity.canonicalDeveloperId`.
+  canonicalDeveloperId String
+  /// leave | new_joiner | secondment | other — shown on the board, never blank.
+  reason               String
+  /// Free-text context for the reason. Displayed to admins only.
+  note                 String?
+  /// When the exclusion lapses. Required: an exclusion with no end date is how
+  /// someone drops off the roster permanently without anyone deciding to.
+  expiresAt            DateTime
+  /// Who entered it — this is a human judgement and it carries a name.
+  createdByUserId      String
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  /// One live exclusion per developer; re-excluding updates the existing row.
+  @@unique([tenantId, canonicalDeveloperId])
+  @@index([tenantId, expiresAt])
+  @@map("watchlist_exclusion")
 }
 
 // ---------------------------------------------------------------------------

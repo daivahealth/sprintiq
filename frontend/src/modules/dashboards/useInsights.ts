@@ -704,6 +704,14 @@ export interface WatchlistDeveloper {
   assignedOpenItems?: number;
 }
 
+/** A possible identity match, shown for a person to read — never applied. */
+export interface MatchSuggestion {
+  candidate: string;
+  candidateName: string;
+  /** `token_subset` is stronger evidence than `substring`. */
+  basis: 'token_subset' | 'substring';
+}
+
 export interface WatchlistView {
   developers: WatchlistDeveloper[];
   counts: Record<WatchlistBucket, number>;
@@ -713,6 +721,25 @@ export interface WatchlistView {
     displayName: string;
     reason: string;
     expiresAt: string;
+  }[];
+  /**
+   * Committers nothing linked automatically, each with the names that might be
+   * them. Optional: an API deployed before this shipped sends no such field.
+   */
+  unlinked?: {
+    developer: string;
+    displayName: string;
+    suggestions: MatchSuggestion[];
+  }[];
+  /**
+   * Accounts GitHub anonymized on deprovision. Reported but never bucketed —
+   * "no tracked activity" against a decommissioned account would invite
+   * someone to go check on a person who has left.
+   */
+  inactiveAccounts?: {
+    developer: string;
+    prsAuthored: number;
+    lastSignal: { type: SignalType; at: string } | null;
   }[];
   assigneeCoverage: JiraAssigneeCoverage;
   thresholds: {

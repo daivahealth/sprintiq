@@ -1,10 +1,56 @@
 import { useEffect, type ReactNode } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useMe } from "../../lib/api/useMe";
 import { useAuthStore } from "../../lib/stores/auth-store";
-import { useAssignments } from "../../modules/dashboards/useInsights";
+import {
+  useAssignments,
+  type DashboardAssignment,
+} from "../../modules/dashboards/useInsights";
 import { ThemeToggle } from "../theme-toggle";
 import { NavItem, Spinner } from "../ui";
+
+/**
+ * One nav entry, plus its subsections when it has any.
+ *
+ * Children are revealed only while the section is active, rather than sitting
+ * open permanently: Engineering Activity's four subpages would otherwise grow
+ * the sidebar by four items for every reader, including the ones who never
+ * open it. `children` is optional throughout — an API deployed before the
+ * section existed sends none, and the nav must render exactly as it did then.
+ */
+function NavSection({ item }: { item: DashboardAssignment }) {
+  const { pathname } = useLocation();
+  const children = item.children ?? [];
+  // Match on the parent path's directory, not the entry's own `path` — that
+  // points at the default child (`/engineering-activity/overview`), so comparing
+  // against it would collapse the children the moment you opened any other tab.
+  const sectionRoot = item.path.split("/").slice(0, 2).join("/");
+  const inSection =
+    children.length > 0 &&
+    (pathname === sectionRoot || pathname.startsWith(`${sectionRoot}/`));
+
+  return (
+    <div>
+      <NavItem
+        to={item.path}
+        end={item.path === "/"}
+        title={item.description}
+        active={inSection || undefined}
+      >
+        {item.title}
+      </NavItem>
+      {inSection && (
+        <div className="mt-1 space-y-0.5 border-l border-border pl-3">
+          {children.map((child) => (
+            <NavItem key={child.key} to={child.path} title={child.description}>
+              {child.title}
+            </NavItem>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -57,14 +103,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
         </p>
         <nav className="space-y-1">
           {nav.map((item) => (
-            <NavItem
-              key={item.key}
-              to={item.path}
-              end={item.path === "/"}
-              title={item.description}
-            >
-              {item.title}
-            </NavItem>
+            <NavSection key={item.key} item={item} />
           ))}
           {assignments.isLoading && (
             <p className="px-3 py-2 text-xs text-fg-faint">Loading…</p>

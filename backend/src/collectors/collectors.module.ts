@@ -17,6 +17,7 @@ import {
 } from './sources/github/github-source-client';
 import { GithubClient } from './sources/github/github.client';
 import { GithubCollector } from './sources/github/github.collector';
+import { JiraAssigneeEmailReconcilerService } from './sources/jira/jira-assignee-email-reconciler.service';
 import { JiraStoryDateReconcilerService } from './sources/jira/jira-story-date-reconciler.service';
 import { JiraClient } from './sources/jira/jira.client';
 import { JiraCollector } from './sources/jira/jira.collector';
@@ -64,6 +65,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     JiraClient,
     JiraCollector,
     JiraStoryDateReconcilerService,
+    JiraAssigneeEmailReconcilerService,
     CollectorSchedulerService,
     BackfillSchedulerService,
     CollectionProgressService,
@@ -76,6 +78,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubPrReconcilerService,
     GithubReviewReconcilerService,
     JiraStoryDateReconcilerService,
+    JiraAssigneeEmailReconcilerService,
     CollectionProgressService,
   ],
 })

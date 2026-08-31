@@ -8,6 +8,7 @@ import { CatalogController } from './catalog.controller';
 import { DashboardsController } from './dashboards.controller';
 import { DashboardsService } from './dashboards.service';
 import { InsightsController } from './insights.controller';
+import { WatchlistExclusionsController } from './watchlist-exclusions.controller';
 
 /** BC-13 Dashboards & Reporting (read-model / BFF) + entity catalogs. */
 @Module({
@@ -20,7 +21,12 @@ import { InsightsController } from './insights.controller';
     // BC-13 never calls a source API itself (api/README.md §0).
     ConnectionsModule,
   ],
-  controllers: [DashboardsController, CatalogController, InsightsController],
+  controllers: [
+    DashboardsController,
+    CatalogController,
+    InsightsController,
+    WatchlistExclusionsController,
+  ],
   providers: [DashboardsService],
   exports: [DashboardsService],
 })

@@ -16,7 +16,7 @@ import { CurrentLensNote } from './CurrentLensNote';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
 /**
- * Developer Activity §Developer (DASHBOARDS.md §4.4.3).
+ * Engineering Activity §Developer (DASHBOARDS.md §4.4.3).
  *
  * One person's context, evidence-first. Two things the original design carried
  * are deliberately absent:

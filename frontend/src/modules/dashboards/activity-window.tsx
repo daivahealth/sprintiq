@@ -6,7 +6,7 @@ import type { ActivityWindow } from './useInsights';
 /**
  * The activity boards' shared range vocabulary.
  *
- * One copy, used by both Developer Activity and Project Activity. They select
+ * One copy, used by both Engineering Activity and Project Activity. They select
  * from the same five ranges against the same backend mapping, and a second
  * copy is how the two drift apart — which matters more here than anywhere,
  * since this file's whole subject is ranges that mean exactly what they say.

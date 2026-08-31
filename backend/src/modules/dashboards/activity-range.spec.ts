@@ -30,7 +30,12 @@ describe('resolveActivityRange', () => {
     });
 
     it('ignores from/to when the window is a preset', () => {
-      const range = resolveActivityRange('day', '2026-01-01', '2026-01-31', NOW);
+      const range = resolveActivityRange(
+        'day',
+        '2026-01-01',
+        '2026-01-31',
+        NOW,
+      );
       expect(range.windowDays).toBe(1);
     });
   });

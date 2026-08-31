@@ -23,6 +23,12 @@ describe('CorrelationSchedulerService', () => {
         unresolved: 0,
         ambiguous: 0,
       }),
+      resolveJiraAssignees: jest.fn().mockResolvedValue({
+        observed: 0,
+        matched: 0,
+        unmatched: 0,
+        ambiguous: 0,
+      }),
     } as unknown as jest.Mocked<DeveloperIdentityService>;
     prisma = { tenant: { findMany: jest.fn().mockResolvedValue([]) } };
     service = new CorrelationSchedulerService(
@@ -43,6 +49,31 @@ describe('CorrelationSchedulerService', () => {
     expect(correlation.reconcileOrphans).toHaveBeenCalledTimes(2);
     expect(correlation.reconcileOrphans).toHaveBeenCalledWith('tenant-a');
     expect(correlation.reconcileOrphans).toHaveBeenCalledWith('tenant-b');
+  });
+
+  it('resolves Jira assignees after the GitHub pass, per tenant', async () => {
+    // Order is load-bearing: the Jira arm matches against the canonical ids
+    // the GitHub pass mints, so running it first would match against an empty
+    // roster and record every assignee as unmatched — which the Watchlist
+    // would then publish as a collapsed match rate.
+    prisma.tenant.findMany.mockResolvedValue([{ id: 'tenant-a' }]);
+
+    await service.sweep();
+
+    expect(identities.resolveJiraAssignees).toHaveBeenCalledWith('tenant-a');
+    const githubCall = identities.resolveTenant.mock.invocationCallOrder[0];
+    const jiraCall =
+      identities.resolveJiraAssignees.mock.invocationCallOrder[0];
+    expect(jiraCall).toBeGreaterThan(githubCall);
+  });
+
+  it('skips the Jira pass when the GitHub pass failed, rather than matching against a stale roster', async () => {
+    prisma.tenant.findMany.mockResolvedValue([{ id: 'tenant-a' }]);
+    identities.resolveTenant.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(service.sweep()).resolves.toBeUndefined();
+
+    expect(identities.resolveJiraAssignees).not.toHaveBeenCalled();
   });
 
   it("one tenant's failure does not abort the sweep for the rest", async () => {

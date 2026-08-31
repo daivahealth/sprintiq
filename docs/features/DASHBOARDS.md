@@ -54,17 +54,17 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 | **Productivity** | `/productivity` | `dashboards/productivity` | weekly throughput: items + points (Jira) and merged PRs + LOC (GitHub) — team-level |
 | **Efficiency** | `/efficiency` | `dashboards/efficiency` | PR cycle p50/p85, story cycle p50/p85, **traceability both directions** |
 | **Project Activity** | `/project-activity` | `dashboards/project-activity` | most-active projects by **commits + LOC across all mapped repos** (delivery graph), Today/7/30/90-day/12-month windows; unlinked repos bucketed honestly |
-| **Developer Activity** | `/developer-activity/*` | `dashboards/developer-activity/{overview,watchlist,pr-status}` + `dashboards/developer-activity` | **Four subpages under one shell** (§4.4): Overview (team-shaped), Watchlist (people), Developer (one profile), PR Status (review queue). One window, shared across tabs — activity context, never a ranking |
+| **Engineering Activity** | `/engineering-activity/*` | `dashboards/developer-activity/{overview,watchlist,pr-status}` + `dashboards/developer-activity` | **Four subpages under one shell** (§4.4): Overview (team-shaped), Watchlist (people), Developer (one profile), PR Status (review queue). One window, shared across tabs — activity context, never a ranking |
 | **Top Repos** | `/top-repos` | `dashboards/metrics` (groupBy=repo, fixed) | Repos ranked by Changed LOC, top 20 by default with a "show all N repos" expansion — repo-level ranking only, never individual |
 Top Repos forces its `groupBy` (via `useBatchMetrics`'s explicit override) and hides the Scope Bar's Group-by toggle (`ScopeBar`'s `showGroupBy={false}`) — it is a dedicated single-purpose screen, not a configurable view like Delivery Explorer.
 
-**Team Capacity was retired into Developer Activity §Watchlist on 2026-08-25.** It answered "who has no PR activity in this window" over a `groupBy=developer` metrics read. The Watchlist answers the same question over a strictly wider signal set — commits, PRs opened, merges and reviews together — so keeping both meant two routes, two nav entries and two different answers to one question, differing only in which signals each happened to look at. `/team-capacity` now redirects to `/developer-activity/watchlist`; the registry entry is gone.
+**Team Capacity was retired into Engineering Activity §Watchlist on 2026-08-25.** It answered "who has no PR activity in this window" over a `groupBy=developer` metrics read. The Watchlist answers the same question over a strictly wider signal set — commits, PRs opened, merges and reviews together — so keeping both meant two routes, two nav entries and two different answers to one question, differing only in which signals each happened to look at. `/team-capacity` now redirects to `/engineering-activity/watchlist`; the registry entry is gone.
 
 ### 4.1 Two boards, one person: stating each board's denominator
 
-Delivery Explorer (`groupBy=developer`) and Developer Activity both answer "what did this person do", and they will not agree — by design. They must therefore each say what they count, because an unexplained gap between them reads as a bug in the data:
+Delivery Explorer (`groupBy=developer`) and Engineering Activity both answer "what did this person do", and they will not agree — by design. They must therefore each say what they count, because an unexplained gap between them reads as a bug in the data:
 
-| | Delivery Explorer, grouped by developer | Developer Activity |
+| | Delivery Explorer, grouped by developer | Engineering Activity |
 |---|---|---|
 | Unit | pull requests | commits |
 | Included | **merged only** | commits landed in the window; PRs in **all states** |
@@ -72,7 +72,7 @@ Delivery Explorer (`groupBy=developer`) and Developer Activity both answer "what
 | Window edges | rolling UTC (`now − days`) | IST calendar-aligned (`istWindowFloor`) |
 | LOC means | PR diff size | commit diff size |
 
-PR diff size is not the sum of its commits (rebases and merge bases see to that), so the two LOC figures are different measurements, not a reconciliation to chase. Developer Activity reports `prsMerged` beside `prsAuthored` so the PR-count difference is visible on the page rather than inferred by comparing screens.
+PR diff size is not the sum of its commits (rebases and merge bases see to that), so the two LOC figures are different measurements, not a reconciliation to chase. Engineering Activity reports `prsMerged` beside `prsAuthored` so the PR-count difference is visible on the page rather than inferred by comparing screens.
 
 **Neither board may rank individuals.** Delivery Explorer sorts by Changed LOC descending for every grouping *except* developer, where rows are alphabetical — sorting people by lines changed is precisely the leaderboard CLAUDE.md forbids and that Team Capacity is deliberately built to avoid. LOC is change-volume context, never a productivity score.
 
@@ -82,7 +82,7 @@ Every window and every bucket in the app is **IST calendar-aligned**, via `istWi
 
 This was three conventions until they were unified: the Scope Bar sent a rolling `now − days×86400000`, the activity boards bucketed by IST day, and Productivity bucketed weeks on the **UTC** Sunday. (The activity boards' own `windowFrom` kept computing the retired rolling form for `FreshnessNote` long after this was written — so the note judged a range up to a day wider than the one the board had actually queried. It now calls the shared `istWindowFloor` like everything else.) "Last 7 days" therefore denoted three different ranges depending on the board, differing by up to a full day at each edge, and a PR merged after 18:30 IST was filed under tomorrow on one screen and today on another. Adding a new window or bucket means reusing these helpers, not writing another date expression.
 
-The Developer Activity section additionally accepts a **custom range**: two IST calendar dates, inclusive at both ends, resolved by `istDayStart` / `istDayEnd` / `istDaySpan` (backend `common/time.ts`, mirrored in `frontend/src/lib/utils.ts`). Inclusive at both ends is what keeps it the same definition — a hand-picked seven days and the "7 days" preset resolve to the same instants and return the same numbers. The same reason `istDayAxis` takes the day to end on: a chart hardcoded to today drew a closed April–June range as an unbroken row of zeros.
+The Engineering Activity section additionally accepts a **custom range**: two IST calendar dates, inclusive at both ends, resolved by `istDayStart` / `istDayEnd` / `istDaySpan` (backend `common/time.ts`, mirrored in `frontend/src/lib/utils.ts`). Inclusive at both ends is what keeps it the same definition — a hand-picked seven days and the "7 days" preset resolve to the same instants and return the same numbers. The same reason `istDayAxis` takes the day to end on: a chart hardcoded to today drew a closed April–June range as an unbroken row of zeros.
 
 ### 4.1.2 Sprints Jira still calls active
 
@@ -137,7 +137,7 @@ The points answer is still shown, labelled, so the cost of the estimating gap is
 
 Any board that counts commits must disclose how many of them can be attributed to a person at all. GitHub resolves a commit's account only when its email is verified there, so a commit routinely arrives with a name, an email, and no login (DATA-MODEL.md §3, api/README.md §12 #22). This matters on screen because **"0 commits" and "commits we cannot attribute" look identical and mean opposite things**:
 
-- **Developer Activity** names the identities behind its figures. When commits were recovered through a non-login identity it says so; when the total is zero and nothing was recovered, it says the likely cause rather than presenting the zero as a finding.
+- **Engineering Activity** names the identities behind its figures. When commits were recovered through a non-login identity it says so; when the total is zero and nothing was recovered, it says the likely cause rather than presenting the zero as a finding.
 - **Project Activity** shows `unattributedCommits` per row and a window-level coverage note. Those commits *are* counted in `commits`/`locChanged` but cannot be counted in `contributors` — without the disclosure the row reports more work than people to do it.
 - **The developer picker lists people with no matched GitHub account**, marked "no linked account", rather than omitting them. Omitting them is what made their work look like nobody's.
 
@@ -156,9 +156,11 @@ All boards sit on the **Scope Bar** (projects/repos/time, URL-synced, graph cros
 
 The last row is the substantive one: those three are **Jira-only** metrics. Forecasting is `avg velocity of recent closed sprints ÷ remaining backlog` — sprints, points and backlog items, with no repository dimension to filter by at all; narrowing it by repo would require mapping stories through `pr_implements_story` and would silently drop every unlinked story, making the forecast *wrong* rather than narrower. Time range is equally meaningless there: the forecast samples the **last 3 closed sprints**, not a rolling day window, so a `30d` selector implies control over a sampling decision it doesn't have.
 
-### 4.4 Developer Activity: four subpages, one dataset
+### 4.4 Engineering Activity: four subpages, one dataset
 
-Developer Activity is one section at `/developer-activity/*` with four subpages — Overview, Watchlist, Developer, PR Status — under a shell that owns the title, the tab strip and **the window**. The window lives in the URL (`?window=`) and is shared across tabs, so switching from Overview to PR Status keeps the range you were reading and there is exactly **one** `FreshnessNote` on screen rather than four boards each vouching for their own copy of the same range. The sidebar keeps one entry that expands to its four children while the section is active (`DASHBOARD_REGISTRY[].children`), rather than four permanent peer entries.
+**Renamed from "Developer Activity" on 2026-08-31, display and route only.** The API paths stay `/api/dashboards/developer-activity/*`, the registry `key`s stay `developer-activity*`, and the frontend directory, service and component keep their old names. That divergence is deliberate, not an unfinished rename: the frontend and backend deploy separately here, so renaming the endpoints would 404 every panel in the section on a skewed deploy, and the registry keys are role-assignment identifiers that per-tenant overrides are stored against. `/developer-activity/*` redirects to the new route, preserving the subpage **and** the query string — the range lives in the URL, so a redirect that dropped it would show a shared link real numbers for a range nobody asked for. The **Developer** subpage, the `?developer=` endpoint and `DeveloperActivityView` keep the word *developer* because they genuinely describe one person, not the section.
+
+Engineering Activity is one section at `/engineering-activity/*` with four subpages — Overview, Watchlist, Developer, PR Status — under a shell that owns the title, the tab strip and **the window**. The window lives in the URL (`?window=`) and is shared across tabs, so switching from Overview to PR Status keeps the range you were reading and there is exactly **one** `FreshnessNote` on screen rather than four boards each vouching for their own copy of the same range. The sidebar keeps one entry that expands to its four children while the section is active (`DASHBOARD_REGISTRY[].children`), rather than four permanent peer entries.
 
 **The window is a range.** Alongside the five presets the section offers a **custom** interval — any two IST dates — because every preset ends today, so a closed past period cannot be looked at in isolation: the range containing a repository's active June also contains the dormant months that dilute it. Presets remain unchanged on the wire (`?window=week`); a custom range travels as `?window=custom&from=&to=` and is carried across tab switches like the preset is. Three figures on these pages are **current state that cannot be time-travelled** — Jira assignment, the open-PR queue, and live exclusions — and on a range ending in the past each says so on screen rather than passing as historical.
 
@@ -243,6 +245,61 @@ The same caveat governs a range that ends in the past. Jira assignment is read a
 
 **Jira rows share a table with commit attribution, so every commit-facing read is now scoped.** `aliasesFor`, `attributionIndex`, `listDevelopers` and `attributionCoverage` all filter `sourceSystem: 'github'`. Without that, a Jira `accountId` would enter `AttributionIndex.byLogin` — the map commit attribution is looked up in — and would widen a developer's commit query with an identifier that means nothing to git. There is a test asserting each of the four stays scoped.
 
+#### 4.4.6 One name per person, and the unlinked shown with candidates
+
+**A developer had as many names as systems they appear in.** The same human read as `Ram-Kumar_athma` in the picker, `RamKumar AK` on a Jira-derived figure, and `saravanakumar_athma` — an EMU shortcode presented as a name — wherever git `user.name` won. `attributionIndex().displayNames` now resolves one name through a ladder ordered by how curated each source is, measured across the reference tenant's 89 linked developers:
+
+| Rung | Source | Why here |
+|---|---|---|
+| 1 | **Jira display name** | Human-entered in the system that tracks people. Complete for every linked developer, correctly spaced ("Gnanesh Gowda NS", "Pavan Kumar Reddy Gaddam"). |
+| 2 | **GitHub login, de-EMU'd** | `Ram-Kumar_athma` → "Ram Kumar". Equally clean, but 14 of 111 GitHub entities have no login. |
+| 3 | **git author name** | Whatever was in a config file — a proper name, or `animesh.khatua`, or the login itself (`Jana-M_athma`), so it is rendered through the login treatment when it carries a shortcode. |
+| 4 | canonical id | Always something. |
+
+**Not derived from the org email**, despite that being the natural identity key: local parts mangle the label. `vijaykumar.yadav01@` gives "Vijaykumar Yadav01"; `sivaganeshsagar.yedumalla@` loses every word boundary. An email is a good key and a poor name.
+
+The canonical **id** is untouched — only what is rendered changes, so links and bookmarked `?developer=` URLs keep resolving.
+
+**Unlinked developers are listed with the names that might be them.** Anyone who committed in the window with no Jira account matched appears on the Watchlist with up to three candidates, drawn from two pools because the tenant has two distinct failure modes: *Jira assignees* (for a genuinely unlinked person) and *other GitHub developers* (for a stray fragment — `Junaid Haneef`, committing from a personal Gmail, belongs to the already-linked `Mohammed-Junaid-Haneef_athma`).
+
+**Both signals require containment, not overlap, and that is the whole safety argument:**
+
+```
+Junaid Haneef      vs Mohammed Junaid Haneef → {junaid,haneef} ⊂ {mohammed,junaid,haneef}  ✓
+Vijay Kumar Yadav  vs Sanjay Kumar Yadav     → shares {kumar,yadav}, neither contains the other  ✗
+```
+
+Plain overlap scores those two identically at 2/3. That is precisely how one colleague's work gets credited to another, and it is why the matcher that is *allowed to merge* (`resolveJiraIdentity`) never uses resemblance at all. A `substring` rung catches compacted spellings token comparison misses (`Ram Kumar` inside `RamKumar AK`), floored at 5 characters so a short name cannot match half the roster.
+
+**Nothing here writes.** Suggestions are displayed for a person to recognise their colleague — a judgement the matcher deliberately refuses to make, since no threshold makes `Junaid Haneef` → `Mohammed Junaid Haneef` safe to apply automatically. Where several names fit, **all** are shown: that is what stops a reader treating a coin flip as an answer. Confirming a suggestion is a separate, deliberate action that does not exist yet.
+
+Measured on the reference tenant, all four unlinked developers receive their correct candidate:
+
+| Unlinked | Suggested | Basis |
+|---|---|---|
+| Junaid Haneef | Mohammed Junaid Haneef | token subset |
+| nithin | Nithin N | token subset |
+| saravanakumar | Saravanakumar N | token subset |
+| Ram Kumar | RamKumar AK | substring |
+
+#### 4.4.7 Accounts that are not people
+
+Three kinds of entity reach the identity map without a colleague behind them, and each one landed in the Watchlist's attention buckets before it was handled. The failure is the same every time — the board asks someone to go check on a person who does not exist — but the causes are different enough that they need separate treatment:
+
+| Kind | Example | Treatment |
+|---|---|---|
+| **Automation** | `dependabot[bot]`, `Copilot`, `github-actions[bot]` | Excluded from buckets and head-counts (§4.4.5) |
+| **Deprovisioned accounts** | `1a824967e10493200d5a7ee2d91b87_athma` | Excluded from buckets, **listed separately** |
+| **Misconfigured git** | `379031`, from `a379031@CORPLPM000257.local` | Left in the roster — a real person, odd config |
+
+**Deprovisioned accounts are reported, not filtered.** When an Enterprise Managed User is removed, GitHub replaces the readable login with a long hex string and keeps the enterprise shortcode. On the reference tenant there are **five**, and they were sorting to the very top of "no tracked activity" — 22 developers in that bucket, of whom 5 were decommissioned accounts. One carries **159 pull requests**; another 83.
+
+That PR count is the reason they are listed rather than dropped. An account with 159 merged pull requests behind it did real delivery work whose history someone may still want attributed, and a roster that quietly removes a whole category of account is one nobody can audit — the same principle that makes the exclusion list (§4.4.2) visible rather than silent. They appear in an **Inactive / deprovisioned accounts** card stating what they are, with the note that their commits and pull requests still count in every total: this removes them from head-counts of *people*, not from the work.
+
+**Detection is deliberately narrow.** The predicate is 20 or more characters of *pure* hex before the trailing shortcode. `deadbeef` is a login someone could have chosen; `cafe1234_athma` likewise; `379031` is an employee number belonging to a real developer whose git config points at a laptop hostname. All three stay in the roster. The asymmetry is intentional — a false negative costs one odd-looking row, while a false positive quietly removes a real person from a board whose entire purpose is noticing people, so the rule errs toward keeping them.
+
+**Misconfigured git is a person, not a ghost.** `379031` commits as `a379031@CORPLPM000257.local` — a machine hostname, not a mail domain — and stays in the buckets, because there is someone behind it. It resolves itself the moment they set `user.email` to their corporate address, which also makes their commits attributable (§4.2). Naming it here so it is not mistaken for the deprovisioned case it superficially resembles.
+
 ### Honest-math notes
 - Velocity/health treat `Done/Closed/Resolved` as done (tenant-tunable constant); committed = items currently attached to the sprint (scope-change history is a follow-up, so mid-sprint additions inflate "committed").
 - Forecast is deliberately simple (average velocity ÷ remaining estimated points, average closed-sprint length for dating) and **labels unestimated items as excluded** rather than guessing.
@@ -276,7 +333,7 @@ There are **two distinct freshness signals and every board carries both**, which
 
 The second is the one that matters with poll-only ingestion on a 4-hour default: a page rendered a second ago can be sitting on hours-old facts. It reports **completeness, not contact** — it previously read `Data as of {lastSyncAt}`, which is when the collector last called the API, and a connection deep in a backfill calls the API every five minutes while being eighty pages behind. The note renders distinct states rather than one timestamp: complete through T, *still backfilling* (no completeness yet), and failing/never-synced (frozen at an unknown age).
 
-**It judges the window on screen, not the whole dataset.** Collection is a range — `[collectedBackTo, collectedThroughAt]` — and a board showing `[from, now]` is complete iff `collectedBackTo <= from`. So a "last 7 days" board over a complete last 7 days says nothing at all, even mid-way through a 12-month backfill; only a board whose window genuinely reaches past the collected history reports a shortfall, and it names the date that history starts. `ScopeBar` passes its `from` (and none when `showTime={false}`); Project and Developer Activity pass their own window toggle's start; Sprint Health and Sprint Risk have no time range and get the plain statement. This matters beyond tidiness: a warning that fires on correct numbers for days teaches people to ignore the warnings that aren't. It is mounted in the shared `ScopeBar`, so the four boards that build their own `FilterBar` instead — Sprint Health, Sprint Risk, Project Activity, Developer Activity — mount `FreshnessNote` explicitly. Sprint Health, Sprint Risk and Developer Activity previously showed **neither** signal.
+**It judges the window on screen, not the whole dataset.** Collection is a range — `[collectedBackTo, collectedThroughAt]` — and a board showing `[from, now]` is complete iff `collectedBackTo <= from`. So a "last 7 days" board over a complete last 7 days says nothing at all, even mid-way through a 12-month backfill; only a board whose window genuinely reaches past the collected history reports a shortfall, and it names the date that history starts. `ScopeBar` passes its `from` (and none when `showTime={false}`); Project and Engineering Activity pass their own window toggle's start; Sprint Health and Sprint Risk have no time range and get the plain statement. This matters beyond tidiness: a warning that fires on correct numbers for days teaches people to ignore the warnings that aren't. It is mounted in the shared `ScopeBar`, so the four boards that build their own `FilterBar` instead — Sprint Health, Sprint Risk, Project Activity, Engineering Activity — mount `FreshnessNote` explicitly. Sprint Health, Sprint Risk and Engineering Activity previously showed **neither** signal.
 
 ## 9. Next increments (ordered)
 

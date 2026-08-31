@@ -9,7 +9,7 @@ import { WINDOW_DAYS, windowLabel } from './activity-window';
 import type { ActivityWindow } from './useInsights';
 
 /**
- * What the Developer Activity section is reading: one of the five shared
+ * What the Engineering Activity section is reading: one of the five shared
  * presets, or an arbitrary interval.
  *
  * The presets deliberately keep their own type. `ActivityWindow` is the
@@ -29,7 +29,7 @@ export const DEFAULT_RANGE: ActivityRange = { kind: 'preset', window: 'week' };
 
 const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** The query params every Developer Activity endpoint takes. */
+/** The query params every Engineering Activity endpoint takes. */
 export function rangeParams(range: ActivityRange): URLSearchParams {
   const params = new URLSearchParams();
   if (range.kind === 'preset') {

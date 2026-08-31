@@ -13,7 +13,7 @@ import { CurrentLensNote } from './CurrentLensNote';
 import { EmptyWindowNote, formatDayKey, useSectionRange } from './window';
 
 /**
- * Developer Activity §Overview — team-shaped (DASHBOARDS.md §4.4.1).
+ * Engineering Activity §Overview — team-shaped (DASHBOARDS.md §4.4.1).
  *
  * Carries no per-developer roster. The Watchlist owns people; the original
  * design rendered the same roster on both pages, which made two screens out of

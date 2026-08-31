@@ -12,7 +12,7 @@ import { CurrentLensNote } from './CurrentLensNote';
 import { useSectionRange } from './window';
 
 /**
- * Developer Activity §PR Status (DASHBOARDS.md §4.4.4).
+ * Engineering Activity §PR Status (DASHBOARDS.md §4.4.4).
  *
  * Owns what is actionable now: which changes are waiting, and how review load
  * is spread. It deliberately reports NO cycle-time percentiles — those are

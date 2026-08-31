@@ -5,12 +5,16 @@ import {
   DeveloperIdentityService,
   JiraAssigneeCoverage,
 } from '../correlation/developer-identity.service';
-import { isBotDeveloper } from '../correlation/developer-identity.util';
+import {
+  isAnonymizedAccount,
+  isBotDeveloper,
+  type MatchSuggestion,
+} from '../correlation/developer-identity.util';
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
 
 /**
- * Read models for the Developer Activity section (DASHBOARDS.md §4.4).
+ * Read models for the Engineering Activity section (DASHBOARDS.md §4.4).
  *
  * Its own service rather than more of `InsightsService`, which is already past
  * 1,800 lines: these four pages share one vocabulary — a person, their last
@@ -72,6 +76,31 @@ export interface WatchlistView {
    */
   committingWithoutAssignedWork: WatchlistDeveloper[];
   excluded: WatchlistExclusionView[];
+  /**
+   * Developers nothing linked automatically, each with the names that might be
+   * them. Suggestions only — displayed for a person to read, never applied
+   * (DASHBOARDS.md §4.4.6).
+   */
+  unlinked: {
+    developer: string;
+    displayName: string;
+    suggestions: MatchSuggestion[];
+  }[];
+  /**
+   * Accounts GitHub anonymized on deprovision — reported, never bucketed.
+   *
+   * Shown rather than filtered for the same reason the exclusion list is
+   * published: a roster that quietly drops a category of account is one nobody
+   * can audit. But they are kept out of the attention buckets, because
+   * "no tracked activity" against a decommissioned account invites someone to
+   * go check on a person who has left (DASHBOARDS.md §4.4.7).
+   */
+  inactiveAccounts: {
+    developer: string;
+    /** PRs authored, ever — evidence the account did real work before it went. */
+    prsAuthored: number;
+    lastSignal: LastSignal | null;
+  }[];
   /** How far the Jira↔GitHub bridge reaches. Published, never assumed. */
   assigneeCoverage: JiraAssigneeCoverage;
   thresholds: {
@@ -376,6 +405,7 @@ export class DeveloperActivityService {
       to,
     );
 
+    const anonymized: string[] = [];
     const developers: WatchlistDeveloper[] = [];
     for (const [developer, displayName] of index.displayNames) {
       if (excludedIds.has(developer)) {
@@ -386,6 +416,13 @@ export class DeveloperActivityService {
       // would eventually have surfaced under "no tracked activity", inviting
       // someone to go ask a robot how it was getting on.
       if (isBotDeveloper(developer)) {
+        continue;
+      }
+      // Same shape of error, different cause: an account GitHub anonymized on
+      // deprovision has no person behind it to check on. Collected below and
+      // reported separately rather than dropped.
+      if (isAnonymizedAccount(developer)) {
+        anonymized.push(developer);
         continue;
       }
       const lastSignal = lastSignals.get(developer) ?? null;
@@ -410,6 +447,47 @@ export class DeveloperActivityService {
     // Alphabetical, always. These are people, and any volume ordering here
     // would turn a prompt-to-ask into the leaderboard CLAUDE.md forbids.
     developers.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    // Only for people who actually committed in the window: suggesting matches
+    // for someone with no activity is noise about a person nobody is looking
+    // at, and the list is meant to be short enough to act on.
+    const unlinkedDevelopers = developers.filter(
+      (dev) =>
+        windowCommitters.has(dev.developer) &&
+        !assignees.byDeveloper.has(dev.developer),
+    );
+    const suggestions = await this.identities.suggestionsFor(
+      tenantId,
+      unlinkedDevelopers.map((dev) => ({
+        developer: dev.developer,
+        displayName: dev.displayName,
+      })),
+    );
+    const unlinked = unlinkedDevelopers.map((dev) => ({
+      developer: dev.developer,
+      displayName: dev.displayName,
+      suggestions: suggestions.get(dev.developer) ?? [],
+    }));
+
+    // PR counts are the one fact that makes a deprovisioned account worth
+    // looking at: an account with 83 merged PRs behind it did real work whose
+    // history someone may still want attributed. Counted over ALL time, not
+    // the window — by definition these have no recent activity, and a window
+    // figure would render every one of them as a uniform zero.
+    const inactiveAccounts = await Promise.all(
+      anonymized.sort().map(async (developer) => ({
+        developer,
+        prsAuthored: await this.prisma.pullRequest.count({
+          where: { tenantId, authorLogin: developer },
+        }),
+        lastSignal: (() => {
+          const signal = lastSignals.get(developer);
+          return signal
+            ? { type: signal.type, at: signal.at.toISOString() }
+            : null;
+        })(),
+      })),
+    );
 
     const counts: Record<WatchlistBucket, number> = {
       active: 0,
@@ -445,6 +523,8 @@ export class DeveloperActivityService {
           expiresAt: row.expiresAt.toISOString(),
         }))
         .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+      unlinked,
+      inactiveAccounts,
       assigneeCoverage: this.identities.bridgeCoverage(
         windowCommitters,
         assignees,

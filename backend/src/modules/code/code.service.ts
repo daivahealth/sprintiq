@@ -527,7 +527,7 @@ export class CodeService implements OnModuleInit {
  * person's properly-attributed commits onto this developer's page.
  *
  * With neither list set the predicate is empty, which reads every author — that
- * is what Project Activity wants, and what Developer Activity must never send.
+ * is what Project Activity wants, and what Engineering Activity must never send.
  */
 function authorPredicate(filters: CommitFilters): Prisma.CommitWhereInput {
   const logins = filters.authorLogins ?? [];

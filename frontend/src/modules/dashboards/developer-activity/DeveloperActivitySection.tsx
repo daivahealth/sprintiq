@@ -12,7 +12,11 @@ import {
 } from './window';
 
 /**
- * Shell for the four Developer Activity subpages (DASHBOARDS.md §4.4).
+ * Shell for the four Engineering Activity subpages (DASHBOARDS.md §4.4).
+ *
+ * The section was renamed from "Developer Activity" on 2026-08-31. The rename
+ * is display-and-route only: the directory, this component and the API paths
+ * still say `developer-activity`, deliberately (see DASHBOARDS.md §4.4).
  *
  * Owns the three things all four share: the title, the tab strip, and the
  * window. Keeping the window here rather than on each page is what makes the
@@ -73,7 +77,7 @@ export function DeveloperActivitySection() {
     <div className="mx-auto max-w-6xl space-y-6">
       <div>
         <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">
-          Developer Activity
+          Engineering Activity
         </h2>
         <p className="text-sm text-fg-subtle">
           Team activity, the watchlist, one developer’s profile, and the review
@@ -82,7 +86,7 @@ export function DeveloperActivitySection() {
       </div>
 
       <div className="border-b border-border">
-        <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Developer Activity sections">
+        <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Engineering Activity sections">
           {TABS.map((tab) => (
             <NavLink
               key={tab.to}
