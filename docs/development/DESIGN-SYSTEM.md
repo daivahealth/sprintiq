@@ -44,10 +44,10 @@ Computed pairs against the ≥4.5:1 floor (WCAG relative luminance):
 
 | Pair | Light | Dark |
 |---|---|---|
-| `success-fg` on `success-bg` | 5.41 | 6.85 |
+| `success-fg` on `success-bg` | 5.42 | 6.84 |
 | `warning-fg` on `warning-bg` | 5.41 | 8.19 |
 | `danger-fg` on `danger-bg` | 7.03 | 6.95 |
-| `on-brand` on `brand` | 5.27 | 6.02 |
+| `on-brand` on `brand` | 5.28 | 6.02 |
 
 `src/design-system.test.ts` asserts this floor on every build. If a new value fails, change the value, not the threshold.
 
@@ -74,7 +74,7 @@ Self-hosted **Inter Variable** (`font-sans`) + **JetBrains Mono Variable** (`fon
 | Role | Classes |
 |---|---|
 | Page title | `text-xl font-bold tracking-[-0.035em]` |
-| Section head | `text-[11px] font-bold uppercase tracking-[0.14em]` |
+| Section head | `text-[11px] font-bold uppercase tracking-[0.12em]` |
 | Metric value | `text-[28px] font-bold tracking-[-0.045em] tabular-nums` |
 | Body / table cell | `text-sm` |
 | Table header | `text-[10px] font-bold uppercase tracking-[0.12em] text-fg-muted` |
@@ -115,10 +115,10 @@ One file per primitive, barrel-exported from `ui/index.ts` (`import { Button, Ca
 | `Input`, `Field` | — | `Input` is squared (`rounded-sm`) with a `border-border-strong` border and a sienna focus ring (`focus:border-brand focus:ring-brand/20`). |
 | `FilterBar` | — | The scope/filter-bar shell, previously copy-pasted 5×; a rule beneath (`border-b border-border`) rather than a bordered box. |
 | `SegmentedControl<T>` | — | Generic toggle group (time-range, group-by, activity-window pickers were 3 independent copies). Ruled track (`border border-border-strong`); the active segment sits on solid ink (`bg-fg text-canvas`) rather than a tint. |
-| `TableHeadRow`, `TableBodyRow` | `hoverable` (body row) | `TableHeadRow` gains the ink rule (`border-b-2 border-rule`) and the caps/tracking header type, in `fg-muted`. `TableBodyRow` keeps a hairline `border-border-subtle` divider; `hoverable` uses `bg-subtle`. Deliberately **not** a full `DataTable`: the app's four tables (`MetricRowsTable`, `WorkItemsTable`, the Users grid, Sync Status's tables) have genuinely different shapes (fixed `colgroup`, CSS-grid fake table, sticky scrolling heads) that a generic config surface would fight more than it'd save. |
+| `TableHeadRow`, `TableBodyRow` | `hoverable` (body row) | `TableHeadRow` gains the ink rule (`border-b-2 border-rule`) and the caps/tracking header type, in `fg-muted`. `TableBodyRow` keeps a hairline `border-border-subtle` divider; `hoverable` (default `true`) applies `hover:bg-subtle`. Deliberately **not** a full `DataTable`: the app's four tables (`MetricRowsTable`, `WorkItemsTable`, the Users grid, Sync Status's tables) have genuinely different shapes (fixed `colgroup`, CSS-grid fake table, sticky scrolling heads) that a generic config surface would fight more than it'd save. |
 | `ProvenanceNote` | — | The `computed {timeAgo}` / lineage-source footer, previously copy-pasted 7×. Color/type unchanged by the re-skin (see Typography, above). Each call site still supplies its own sentence — the four distinct loading/error copy variants across dashboards were preserved as `label`/`fallback` props on `LoadingCard`/`ErrorCard` (`modules/dashboards/widgets.tsx`) rather than collapsed to one string. |
 | `NavItem` | — | Wraps `react-router`'s `NavLink` with the active/inactive token classes, replacing 4 duplicated blocks in `DashboardLayout`. Active state is now a `bg-brand-fg text-brand-muted` tint block, squared. |
-| `Skeleton`, `StatusDot` | `StatusDot` `tone` | `Skeleton` for first-load placeholders (`bg-muted`, squared). `StatusDot` for the PR-linkage/status dots previously hand-rolled per call site — now square (`rounded-none`), 7px (`h-1.5 w-1.5`/`h-2 w-2` depending on `size`). |
+| `Skeleton`, `StatusDot` | `StatusDot` `tone` | `Skeleton` for first-load placeholders (`bg-muted`, squared). `StatusDot` for the PR-linkage/status dots previously hand-rolled per call site — now square (`rounded-none`), `size="sm"` at `h-1.5 w-1.5` (6px, the default) or `size="md"` at `h-2 w-2` (8px). |
 | `Spinner` | — | Color only through the re-skin; still `rounded-full` (see Shape, above) — a spinner is a circle. |
 
 ### `/_styleguide` — the style gallery
@@ -143,7 +143,7 @@ Motion character, matched to the direction — confident and still:
 
 | Where | What | Duration |
 |---|---|---|
-| Popovers | opacity + 2px y | 120ms |
+| Popovers | opacity + 4px y (+ scale 0.98→1) | 120ms |
 | KPI values on range change | settle (opacity + 1px y) | 180ms |
 | Tab / segment change | rule wipe (`scaleX`) | 150ms |
 | Hover, focus | plain CSS `transition` | 150ms |
