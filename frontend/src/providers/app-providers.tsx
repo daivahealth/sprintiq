@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MotionConfig } from 'framer-motion';
+import { MotionConfig } from 'motion/react';
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { BrowserRouter } from 'react-router-dom';
