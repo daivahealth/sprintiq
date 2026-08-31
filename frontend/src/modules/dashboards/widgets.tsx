@@ -1,3 +1,4 @@
+import { motion } from 'motion/react';
 import {
   Badge,
   Card,
@@ -23,9 +24,18 @@ export function Stat({
 }) {
   return (
     <div className="rounded-lg border border-border bg-subtle p-3">
-      <div className="text-[28px] font-bold tracking-[-0.045em] tabular-nums text-fg">
+      <motion.div
+        // Re-keyed on the value so a changed figure animates in rather than
+        // swapping silently: when the range changes, every number on the page
+        // changes at once, and a still swap reads as nothing having happened.
+        key={String(value)}
+        initial={{ opacity: 0, y: 1 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        className="text-[28px] font-bold tracking-[-0.045em] tabular-nums text-fg"
+      >
         {value}
-      </div>
+      </motion.div>
       <div className="text-xs text-fg-subtle">{label}</div>
       {hint && <div className="mt-0.5 text-[11px] text-fg-faint">{hint}</div>}
     </div>

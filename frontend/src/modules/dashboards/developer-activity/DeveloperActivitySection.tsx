@@ -1,3 +1,4 @@
+import { motion } from 'motion/react';
 import { NavLink, Outlet, useSearchParams } from 'react-router-dom';
 import { FilterBar } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
@@ -94,14 +95,26 @@ export function DeveloperActivitySection() {
               title={tab.title}
               className={({ isActive }) =>
                 cn(
-                  'whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition',
+                  'relative whitespace-nowrap px-3 py-2 text-sm font-medium transition',
                   isActive
-                    ? 'border-brand text-brand'
-                    : 'border-transparent text-fg-muted hover:border-border-strong hover:text-fg-secondary',
+                    ? 'text-brand-muted'
+                    : 'text-fg-muted hover:text-fg-secondary',
                 )
               }
             >
-              {tab.label}
+              {({ isActive }) => (
+                <>
+                  {tab.label}
+                  {isActive && (
+                    <motion.span
+                      initial={{ scaleX: 0 }}
+                      animate={{ scaleX: 1 }}
+                      transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
+                      className="absolute inset-x-0 -bottom-px h-0.5 origin-left bg-brand"
+                    />
+                  )}
+                </>
+              )}
             </NavLink>
           ))}
         </nav>
