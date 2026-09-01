@@ -1,4 +1,11 @@
-import { istDateKey, istWeekKey, istWindowFloor } from './time';
+import {
+  istDateKey,
+  istDayEnd,
+  istDaySpan,
+  istDayStart,
+  istWeekKey,
+  istWindowFloor,
+} from './time';
 
 /**
  * These four helpers are now the app's single definition of "when" — every
@@ -40,5 +47,45 @@ describe('IST time helpers', () => {
   it('agrees with itself: a window floor is the start of its own IST day', () => {
     const now = new Date('2026-08-14T09:00:00.000Z');
     expect(istDateKey(istWindowFloor(1, now))).toBe(istDateKey(now));
+  });
+});
+
+/**
+ * The custom-range half of the same definition: a user-picked range arrives as
+ * two IST calendar-date keys and must resolve to the same instants a preset
+ * would. If these drift from `istWindowFloor`, a hand-picked week and the
+ * "7 days" preset return different numbers for the same seven days.
+ */
+describe('IST calendar-date range helpers', () => {
+  it('starts a day at IST midnight, which is 18:30Z the day before', () => {
+    expect(istDayStart('2026-04-01').toISOString()).toBe(
+      '2026-03-31T18:30:00.000Z',
+    );
+  });
+
+  it('ends a day at its last instant, not at the next midnight', () => {
+    // Inclusive: a commit at 23:59 IST on the To date is inside the range.
+    expect(istDayEnd('2026-06-30').toISOString()).toBe(
+      '2026-06-30T18:29:59.999Z',
+    );
+  });
+
+  it('counts a span inclusively at both ends', () => {
+    // Apr 30 + May 31 + Jun 30.
+    expect(istDaySpan('2026-04-01', '2026-06-30')).toBe(91);
+    // A single day is one day, not zero.
+    expect(istDaySpan('2026-08-25', '2026-08-25')).toBe(1);
+    expect(istDaySpan('2026-08-19', '2026-08-25')).toBe(7);
+  });
+
+  it('agrees with the preset floor: 7 hand-picked days === the 7-day window', () => {
+    const now = new Date('2026-08-25T09:00:00.000Z');
+    const todayKey = istDateKey(now);
+    const startKey = istDateKey(istWindowFloor(7, now));
+
+    expect(istDayStart(startKey).toISOString()).toBe(
+      istWindowFloor(7, now).toISOString(),
+    );
+    expect(istDaySpan(startKey, todayKey)).toBe(7);
   });
 });

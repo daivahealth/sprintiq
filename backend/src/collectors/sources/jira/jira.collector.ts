@@ -657,7 +657,22 @@ export class JiraCollector extends BaseSourceCollector {
     const status = fields.status as
       { name?: string; statusCategory?: { key?: string } } | undefined;
     const assignee = fields.assignee as
-      { name?: string; accountId?: string; displayName?: string } | undefined;
+      | {
+          name?: string;
+          accountId?: string;
+          displayName?: string;
+          /**
+           * Present only when the instance's user-profile visibility permits
+           * it — Atlassian's post-2019 GDPR default on Cloud is to omit the
+           * field entirely. Read rather than required: where it arrives it is
+           * the strong rung of the identity bridge (DATA-MODEL.md §3.1), and
+           * where it doesn't, matching falls back to the display name exactly
+           * as before. The search already requests the whole `assignee` field
+           * (`BASE_SEARCH_FIELDS`), so this costs no extra call.
+           */
+          emailAddress?: string;
+        }
+      | undefined;
     const priority = fields.priority as { name?: string } | undefined;
     const fixVersions = fields.fixVersions;
 
@@ -681,6 +696,7 @@ export class JiraCollector extends BaseSourceCollector {
         : undefined,
       assigneeLogin: assignee?.name ?? assignee?.accountId ?? undefined,
       assigneeName: assignee?.displayName ?? undefined,
+      assigneeEmail: assignee?.emailAddress ?? undefined,
       priority: priority?.name ?? undefined,
       sourceCreatedAt:
         typeof fields.created === 'string' ? fields.created : undefined,

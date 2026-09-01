@@ -24,6 +24,7 @@ import { GithubCommitReconcilerService } from '../../collectors/sources/github/g
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../../collectors/sources/github/github-review-reconciler.service';
+import { JiraAssigneeEmailReconcilerService } from '../../collectors/sources/jira/jira-assignee-email-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../../collectors/sources/jira/jira-story-date-reconciler.service';
 import { CollectionProgressService } from '../../collectors/scheduler/collection-progress.service';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
@@ -106,6 +107,7 @@ export class ConfigurationsController {
     private readonly prReconciler: GithubPrReconcilerService,
     private readonly reviewReconciler: GithubReviewReconcilerService,
     private readonly storyDateReconciler: JiraStoryDateReconcilerService,
+    private readonly assigneeEmailReconciler: JiraAssigneeEmailReconcilerService,
     private readonly correlation: CorrelationService,
     private readonly identities: DeveloperIdentityService,
     private readonly connections: ConnectionsService,
@@ -300,6 +302,28 @@ export class ConfigurationsController {
   }
 
   /**
+   * One-off maintenance: fills in `story.assigneeEmail` for work items ingested
+   * before the assignee's email was read (api/README.md §12 #46). That address
+   * is the strong rung of the Jira↔GitHub identity bridge (DATA-MODEL.md §3.1),
+   * so this is what turns display-name guessing into an exact match.
+   *
+   * Same watermark trap as the story dates above — a re-walk produces identical
+   * idempotency keys and is dropped as a duplicate — but keyed on the ASSIGNEE
+   * rather than the story, since an email is a fact about a person: one issue
+   * per distinct assignee teaches us the address for every issue they hold.
+   *
+   * `emailsWithheld: true` in the response means Jira answered and disclosed
+   * nobody's address. That is not a failure of this endpoint: Jira Cloud hides
+   * `emailAddress` unless user-profile visibility permits it, so it is a
+   * setting to change, and until it is the bridge keeps using display names.
+   */
+  @Roles(Role.ADMIN)
+  @Post('jira/reconcile-assignee-emails')
+  async reconcileAssigneeEmails(@CurrentUser() user: AuthUser) {
+    return this.assigneeEmailReconciler.reconcile(user.tenantId);
+  }
+
+  /**
    * One-off maintenance: re-attempts Jira↔GitHub correlation for PRs already
    * flagged as orphans (see `CorrelationService.reconcileOrphans` for why a
    * PR ingested before its Jira story existed needs this instead of
@@ -317,7 +341,7 @@ export class ConfigurationsController {
    *
    * Needed because GitHub attributes a commit only when its email is verified
    * on an account — otherwise the commit lands with a name and email and no
-   * login, and Developer Activity reports "0 commits" for someone who has been
+   * login, and Engineering Activity reports "0 commits" for someone who has been
    * committing all month. Runs on the correlation sweep too; this is the
    * button for applying it immediately. Pure in-database matching, no external
    * API calls, safe to re-run.

@@ -32,6 +32,42 @@ export function istWindowFloor(days: number, now: Date = new Date()): Date {
 }
 
 /**
+ * The UTC instant at which an IST calendar date (`YYYY-MM-DD`) begins.
+ *
+ * The offset is written into the string rather than added afterwards so this
+ * cannot drift from `istMidnightUtc` — both mean "00:00 in IST", and IST has no
+ * DST, so the literal is exact for every date.
+ */
+export function istDayStart(key: string): Date {
+  return new Date(`${key}T00:00:00.000+05:30`);
+}
+
+/**
+ * The LAST instant of an IST calendar date — the inclusive upper bound of a
+ * range ending on that day.
+ *
+ * Inclusive because a user picking "to 30 June" means the whole of 30 June;
+ * bounding at the next midnight instead would silently swallow the first
+ * moment of 1 July.
+ */
+export function istDayEnd(key: string): Date {
+  return new Date(istDayStart(key).getTime() + 86_400_000 - 1);
+}
+
+/**
+ * Days covered by an IST date range, counting BOTH ends — the same convention
+ * as `istWindowFloor`, where a 7-day window covers today plus the six before
+ * it. A range's `windowDays` is computed here so the presets and a hand-picked
+ * range of the same length report the same number.
+ */
+export function istDaySpan(fromKey: string, toKey: string): number {
+  const days =
+    (istDayStart(toKey).getTime() - istDayStart(fromKey).getTime()) /
+    86_400_000;
+  return Math.round(days) + 1;
+}
+
+/**
  * The IST calendar date (YYYY-MM-DD) of the Sunday starting the week a moment
  * falls in — the weekly bucket key for throughput metrics.
  *

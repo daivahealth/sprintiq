@@ -77,6 +77,21 @@ SprintIQ is not a surveillance tool — and RBAC enforces it:
 - A developer sees their *own* detail; managers see team aggregates and supportive (not punitive) individual context where role-appropriate.
 - Anti-vanity by design: e.g., LOC is never surfaced as a productivity score.
 
+### 5.1 The Watchlist, and its exclusions
+
+Engineering Activity §Watchlist (DASHBOARDS.md §4.4.2) is the one surface that names individuals for a manager's attention, so it carries constraints the other boards do not:
+
+- **It reports recency, not volume.** Cards show the last signal's type and when — never a commit count, which would invite the comparison between two named people that §5 forbids.
+- **It states its own thresholds, and it states its own blind spot.** Absence of a tracked signal is not absence of work; pairing, design, support and review outside GitHub all leave nothing behind. The guardrail banner saying so is part of the page's specification, not decoration on it.
+- **Ordering is alphabetical.** Every bucket, always.
+
+**Exclusions are an explicit human statement.** SprintIQ has no HR feed, so approved leave, a first week and a secondment are invisible to it and render identically to disengagement (api/README.md §12 #44). Rather than infer them, `watchlist_exclusion` records an admin's statement with a reason from a closed set, **who entered it**, and a **mandatory expiry capped at 180 days** — an open-ended exclusion is how a person drops off the roster permanently without anyone deciding to.
+
+`{GET,PUT,DELETE} /api/dashboards/watchlist-exclusions[/{developer}]` is **admin-only** and audited by the global mutating-request interceptor (§8), so both the exclusion and its author are on the record. Two properties keep this from becoming quiet filtering:
+
+1. **An exclusion suppresses one thing only** — appearing in an attention bucket. The developer keeps counting in every commit, PR and metric figure.
+2. **The exclusion list is published on the board, with reasons.** A shortened roster whose filter is invisible is how a review loses the person it should have surfaced. With none configured the page says exactly that, rather than implying leave was checked.
+
 ---
 
 ## 6. Agent authorization & governance

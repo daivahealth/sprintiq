@@ -6,11 +6,20 @@ export function NavItem({
   to,
   end,
   title,
+  active,
   children,
 }: {
   to: string;
   end?: boolean;
   title?: string;
+  /**
+   * Force the active styling regardless of the URL match.
+   *
+   * For a section parent whose `to` points at its default child: on any other
+   * subpage the link doesn't match, so the parent would render inactive while
+   * the reader is plainly inside it.
+   */
+  active?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -21,7 +30,9 @@ export function NavItem({
       className={({ isActive }) =>
         cn(
           'block rounded-md px-3 py-2 text-sm font-medium transition',
-          isActive ? 'bg-brand-fg text-brand' : 'text-fg-muted hover:bg-subtle',
+          active ?? isActive
+            ? 'bg-brand-fg text-brand'
+            : 'text-fg-muted hover:bg-subtle',
         )
       }
     >

@@ -75,6 +75,17 @@ export class CorrelationSchedulerService {
             `Identity sweep (tenant ${tenant.id}): recovered ${result.recovered}, ${result.unresolved} unresolved, ${result.ambiguous} ambiguous of ${result.observed}.`,
           );
         }
+        // Strictly after the GitHub pass in the same try: the Jira arm matches
+        // against the canonical ids that pass mints, so running it first (or
+        // after a failure) would match against a stale or empty roster and
+        // record every assignee as unmatched — which the Watchlist would then
+        // publish as a collapsed match rate.
+        const jira = await this.identities.resolveJiraAssignees(tenant.id);
+        if (jira.unmatched > 0 || jira.ambiguous > 0) {
+          this.logger.log(
+            `Jira assignee sweep (tenant ${tenant.id}): ${jira.matched} matched, ${jira.unmatched} unmatched, ${jira.ambiguous} ambiguous of ${jira.observed}.`,
+          );
+        }
       } catch (error) {
         this.logger.error(
           `Identity sweep failed for tenant ${tenant.id}: ${

@@ -165,6 +165,13 @@ export interface PlanningStoryPayload {
   releases?: string[]; // Jira fixVersion names
   assigneeLogin?: string;
   assigneeName?: string;
+  /**
+   * The assignee's Atlassian account email, where Jira discloses it — the
+   * strong rung of the Jira↔GitHub identity bridge (DATA-MODEL.md §3.1).
+   * Routinely absent on Jira Cloud, which hides it unless profile visibility
+   * permits; absent means "not disclosed", never "no email".
+   */
+  assigneeEmail?: string;
   priority?: string;
   /**
    * When the item was created IN THE SOURCE SYSTEM (Jira's `fields.created`) —

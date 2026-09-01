@@ -66,7 +66,7 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 | `team` | `id`, `tenant_id`, `org_id`, `name` | Primary aggregation unit for metrics. |
 | `user` | `id`, `tenant_id`, `email` (**globally unique**), `display_name`, `status`, `sso_subject?`, `roles[]` | Platform users (the people who log in). Email is globally unique — a user belongs to exactly one tenant, so login resolves the tenant from the user (ADR-0006). |
 | `role` / `user_role` | RBAC | Roles: developer, team_lead, scrum_master, eng_manager, product_owner, cto, exec, admin. |
-| `developer_identity` | `id`, `tenant_id`, `source_system`, `source_key`, `source_login?`, `email?`, `name?`, `canonical_developer_id`, `confidence`, `method`, `evidence` (JSONB), `linked_user_id?` | **Identity resolution**: maps many source identities (Git author, Jira account, SSO) to one canonical developer. Implemented for GitHub as `correlation_developer_identity`, owned by BC-5 — see the note below. |
+| `developer_identity` | `id`, `tenant_id`, `source_system`, `source_key`, `source_login?`, `email?`, `name?`, `canonical_developer_id`, `confidence`, `method`, `evidence` (JSONB), `linked_user_id?` | **Identity resolution**: maps many source identities (Git author, Jira account, SSO) to one canonical developer. Implemented as `correlation_developer_identity`, owned by BC-5 — GitHub (§3) and Jira assignees (§3.1); SSO is still open. |
 | `developer` | `id`, `tenant_id`, `display_name`, `primary_team_id?` | Canonical person referenced by the graph & metrics. May or may not be a platform `user`. **Not yet implemented** — `developer_identity.canonical_developer_id` is the canonical person today (a login, or the git name/email where no account was matched). |
 | `tenant_configuration` | `id`, `tenant_id`, `namespace` (`github`, `jira`, `llm`, `notifications`, `metrics`, `security`), `key`, `values` (JSONB), `secret_refs` (JSONB), `status` | Tenant-wide admin settings and policy defaults. Secret values are never stored here; only references to vault/KMS/env secret names. |
 | `connection` | `id`, `tenant_id`, `source_system`, `name`, `config`, `secret_ref` (OAuth/app-install/PAT token), `webhook_secret_ref`, `sync_cursors` (JSONB), `rate_limit_state`, `status`, `last_sync_at`, `sync_lag`, `last_error`, `last_error_at` | BC-0 registry; one per Jira instance / GitHub org / etc. Holds collector credentials, webhook secrets, and per-entity poll cursors (all secrets by reference). `last_error` records why the most recent pass failed and is cleared on the next clean one — without it a rejected pass is indistinguishable from an idle healthy one, since both collect zero events and both stamp `last_sync_at`. |
@@ -89,6 +89,36 @@ A git identity and a GitHub account are not the same thing. GitHub populates `co
 Matching is deliberately **not fuzzy** — no edit distance, no token subsets, no initials expansion. Attributing one colleague's commits to another is a worse failure than leaving them unattributed, so a name normalizing to more than one login resolves to nothing and is queued as an `ambiguous_identity` orphan. Machine addresses (`noreply@github.com`, `*@users.noreply.github.com`, `*[bot]*`) are excluded from email matching entirely; treating one as a person's address would merge everyone who ever used it.
 
 Resolution is pure in-database work over already-collected facts — no external API calls, so the collector boundary is untouched — and idempotent, so it re-derives rather than accumulating. It runs on the 30-minute correlation sweep and on demand via `POST /admin/configurations/correlation/resolve-identities`. Re-running matters: a developer is unresolvable until their first PR supplies a login, so the schedule is what turns a new joiner's back-catalogue of commits from nobody's into theirs.
+
+### 3.1 The Jira arm (`source_system = 'jira'`)
+
+Added 2026-08-25 (api/README.md §12 #40). Until then `source_system` was a hardcoded `'github'` despite the column existing for `github | jira | sso`, so a person's **commits** and their **assigned work** had no join between them — which is what Engineering Activity §Watchlist needs to report work happening outside the plan (DASHBOARDS.md §4.4.5).
+
+`resolveJiraAssignees` observes the distinct `(assignee_login, assignee_name)` pairs on `planning_story` and matches them into the canonical ids the GitHub pass has already minted. It therefore runs **strictly after** that pass in the same sweep: against an empty or stale roster it would resolve nothing and record every assignee as unmatched, which the board then publishes as a collapsed match rate.
+
+**The ladder, strongest evidence first:**
+
+| Rung | Method | Confidence | Basis |
+|---|---|---|---|
+| 1 | `email_exact` | 0.95 | `story.assignee_email` equals an address the person is already known to commit under. A fact about a key unique per human, not an inference. |
+| 2 | `name_normalized` | 0.8 | The Jira **display name** normalizes to exactly one canonical developer. |
+| 3 | `name_normalized` | 0.8 | The **account reference** does — Jira Server instances often use the corporate username; on Cloud it is an opaque `accountId` that never matches. |
+| — | `unresolved` | 0 | Left as `jira:<ref>`, namespaced so it can never collide with a GitHub login, and orphaned for review. |
+
+Rung 1 is the one worth having, and it exists **only where the instance discloses the address**. Jira Cloud omits `emailAddress` from the assignee object unless user-profile visibility permits it (Atlassian's post-2019 GDPR default is to hide it), so `story.assignee_email` is routinely null and the ladder degrades to rungs 2–3 — which is exactly the behaviour that shipped before emails were collected. Null means *"Jira would not tell us"*, never *"this person has no email"*.
+
+The email index is built from **resolved GitHub identities**, not raw commit rows, so an address the GitHub pass recovered counts too: someone committing as `357486@corp.example` whose git name matched their login is reachable under that numeric address. Two exclusions are load-bearing — **machine addresses** (a platform is not a person) and **any address seen under more than one canonical developer** (a shared team mailbox would otherwise fuse those colleagues).
+
+Ambiguity on the name rungs is orphaned rather than guessed, for a sharper reason than on the GitHub side: a coin flip here credits one person's tickets to another *and* reports the wronged party as working off-plan.
+
+**Existing rows need the reconciler, not a re-walk.** The Jira envelope's idempotency key derives from the issue's `updated` timestamp, so re-collecting an unchanged issue produces an identical key and is dropped as a duplicate before the projector sees it. `POST /admin/configurations/jira/reconcile-assignee-emails` fills them in, keyed on the **assignee** rather than the story — an email is a fact about a person, so one issue per distinct assignee teaches us the address for every issue they hold (~217 assignees across ~6,000 stories is 3 requests, not 60). That keying also bounds the failure case: on an instance that withholds emails, a story-keyed reconciler on the 10-minute schedule would re-ask about every assigned story forever.
+
+Two invariants follow, and both are enforced in code:
+
+- **A Jira `source_key` never becomes a bare canonical id.** An unmatched assignee gets `jira:<ref>`, namespaced so it cannot collide with a GitHub login — without which `resolveJiraIdentity({login: 'octocat'})` would silently *become* the developer `octocat`.
+- **Every read that answers "whose commit is this" filters `source_system = 'github'`.** `aliasesFor`, `attributionIndex`, `listDevelopers` and `attributionCoverage` share this table; unfiltered, a Jira `accountId` would enter `AttributionIndex.byLogin` (the map commit attribution is looked up in) and would widen a developer's commit query with an identifier git has never seen. Tested per-read (api/README.md §12 #41).
+
+Because the bridge is the weak link, everything derived from it publishes `assigneeCoverage` and distinguishes **unmatched** (`null`) from **nothing assigned** (`false`). Those look identical on screen and are opposite findings — a data gap versus the finding itself.
 
 ---
 

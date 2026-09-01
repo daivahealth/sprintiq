@@ -102,6 +102,17 @@ export class PlanningService implements OnModuleInit {
       releases: p.releases ?? [],
       assigneeLogin: p.assigneeLogin ?? null,
       assigneeName: p.assigneeName ?? null,
+      // Written unconditionally with the rest of the assignee, and deliberately
+      // NOT preserved across an event that omits it the way `sourceCreatedAt`
+      // below is. The two look similar and are not: a creation date belongs to
+      // the ISSUE and never changes, so keeping a known one is strictly better.
+      // This email belongs to whoever is assigned RIGHT NOW. Retaining it when
+      // an event doesn't carry one would leave the previous assignee's address
+      // attached after a reassignment — and the identity bridge would then
+      // credit their work to the wrong person, the worst failure this feature
+      // has. Losing an email to intermittent visibility only costs a fallback
+      // to name matching; the reconciler restores it.
+      assigneeEmail: p.assigneeEmail ?? null,
       priority: p.priority ?? null,
       resolvedAt: p.resolvedAt ? new Date(p.resolvedAt) : null,
     };
