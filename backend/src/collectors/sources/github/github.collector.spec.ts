@@ -29,14 +29,27 @@ function baseConnection(overrides: Partial<Connection> = {}): Connection {
   } as Connection;
 }
 
+/**
+ * A PR inside the default backfill window, expressed relative to now.
+ *
+ * `baseConnection()` sets no `config.backfillSince`, so the collector recomputes
+ * its floor as `now - DEFAULT_BACKFILL_DAYS` on every tick. A pinned literal
+ * here therefore has a shelf life: this fixture read `2026-06-01`, the floor
+ * reached that date on 2026-08-30, and nine tests began failing on a clock tick
+ * rather than a code change — asserting nothing about the collector from then
+ * on, since the walk stopped at the floor before enriching anything.
+ */
 function pull(overrides: Partial<GithubPull>): GithubPull {
+  const withinWindow = new Date(
+    Date.now() - 30 * 24 * 60 * 60 * 1000,
+  ).toISOString();
   return {
     number: 1,
     title: 't',
     state: 'open',
     merged_at: null,
-    created_at: '2026-06-01T00:00:00.000Z',
-    updated_at: '2026-06-01T00:00:00.000Z',
+    created_at: withinWindow,
+    updated_at: withinWindow,
     ...overrides,
   };
 }
