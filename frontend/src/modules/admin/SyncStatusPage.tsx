@@ -104,7 +104,7 @@ function StatCard({
     <div className="rounded-lg border border-border bg-surface p-4">
       <p
         className={cn(
-          "text-2xl font-semibold tracking-[-0.03em] tabular-nums",
+          "text-[28px] font-bold tracking-[-0.045em] tabular-nums",
           danger ? "text-danger-fg" : "text-fg",
         )}
       >
@@ -220,7 +220,12 @@ function HistoryRow({ run }: { run: SyncRunHistoryEntry }) {
         {run.status === "success" ? (
           <Badge tone="good">success</Badge>
         ) : run.status === "error" ? (
-          <Badge tone="bad">{run.errorMessage ? `error: ${run.errorMessage}` : "error"}</Badge>
+          <span className="flex items-center gap-1.5">
+            <Badge tone="bad">error</Badge>
+            {run.errorMessage && (
+              <span className="text-xs text-fg-muted">{run.errorMessage}</span>
+            )}
+          </span>
         ) : run.status === "skipped" ? (
           <span title={run.errorMessage ?? undefined}>
             <Badge tone="neutral">skipped</Badge>
@@ -259,7 +264,7 @@ function SourceSection({ source }: { source: SourceSyncStatus }) {
                 due connections processed this tick
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-2 w-full overflow-hidden rounded-none bg-muted">
               <div
                 className="h-full bg-brand transition-all"
                 style={{
@@ -533,7 +538,7 @@ export function SyncStatusPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h2 className="text-xl font-semibold tracking-[-0.02em] text-fg">Sync Status</h2>
+        <h2 className="text-xl font-bold tracking-[-0.035em] text-fg">Sync Status</h2>
         <p className="text-sm text-fg-subtle">
           Data transfer/backfill progress from GitHub and Jira — each source syncs
           independently on its own configurable interval (Configuration screen, default every 4
@@ -574,7 +579,7 @@ export function SyncStatusPage() {
               connections up top instead of making the admin open each source
               tab to find them. */}
           {query.data.summary.failing.length > 0 && (
-            <Card className="space-y-1 border-danger-border">
+            <Card className="space-y-1 border-danger">
               <h3 className="text-sm font-semibold text-danger-fg">
                 {query.data.summary.failing.length} connection
                 {query.data.summary.failing.length === 1 ? "" : "s"} failing

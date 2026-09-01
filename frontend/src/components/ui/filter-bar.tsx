@@ -8,7 +8,7 @@ export function FilterBar({
   return (
     <div
       className={cn(
-        'flex flex-wrap items-end gap-3 rounded-xl border border-border bg-surface p-4',
+        'flex flex-wrap items-end gap-3 border-b border-border pb-4',
         className,
       )}
       {...props}

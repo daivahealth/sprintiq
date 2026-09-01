@@ -8,7 +8,7 @@ export function TableHeadRow({
   return (
     <tr
       className={cn(
-        'border-b border-border text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-faint',
+        'border-b-2 border-rule text-left text-[10px] font-bold uppercase tracking-[0.12em] text-fg-muted',
         className,
       )}
       {...props}

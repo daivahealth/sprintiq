@@ -29,9 +29,9 @@ export function NavItem({
       title={title}
       className={({ isActive }) =>
         cn(
-          'block rounded-md px-3 py-2 text-sm font-medium transition',
+          'block rounded-sm px-3 py-2 text-sm font-medium transition',
           active ?? isActive
-            ? 'bg-brand-fg text-brand'
+            ? 'bg-brand-fg text-brand-muted'
             : 'text-fg-muted hover:bg-subtle',
         )
       }

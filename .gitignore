@@ -5,6 +5,9 @@
 .claude/settings.local.json
 .claude/launch.json
 
+# Brainstorm scratch (mockups served to the browser during design sessions)
+.superpowers/
+
 # Node (sub-projects carry their own lockfiles; nothing node-y at repo root)
 /node_modules/
 /package-lock.json

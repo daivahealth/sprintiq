@@ -356,7 +356,7 @@ export function AdminConfigurationsPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold tracking-[-0.02em] text-fg">
+          <h2 className="text-2xl font-bold tracking-[-0.035em] text-fg">
             Configuration
           </h2>
           <p className="mt-1 text-sm text-fg-subtle">
@@ -387,7 +387,7 @@ export function AdminConfigurationsPage() {
                 onClick={() => setActive(section.namespace)}
                 className={
                   selectedSection
-                    ? 'flex w-full items-center justify-between rounded-md bg-brand-fg px-3 py-2 text-left text-sm font-medium text-brand'
+                    ? 'flex w-full items-center justify-between rounded-md bg-brand-fg px-3 py-2 text-left text-sm font-medium text-brand-muted'
                     : 'flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-medium text-fg-muted hover:bg-muted'
                 }
               >
@@ -396,7 +396,7 @@ export function AdminConfigurationsPage() {
                   {dirty ? (
                     <span
                       title="Unsaved changes"
-                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
+                      className="h-1.5 w-1.5 shrink-0 rounded-none bg-warning"
                     />
                   ) : null}
                 </span>
@@ -527,7 +527,9 @@ export function AdminConfigurationsPage() {
                           {isStoredSecurely ? (
                             <Badge tone="good">Stored securely</Badge>
                           ) : (
-                            <Badge>Not stored — falls back to server env var if set</Badge>
+                            <span className="text-xs text-fg-subtle">
+                              Not stored — falls back to server env var if set
+                            </span>
                           )}
                         </div>
                         {catalog.data?.secretsStoreEnabled === false ? (

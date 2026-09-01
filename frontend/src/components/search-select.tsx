@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '../lib/utils';
 import { Spinner } from './ui';
@@ -173,7 +173,7 @@ export function SearchSelect({
                     onClick={() => handleSelect(option)}
                     className={cn(
                       'block w-full truncate px-3 py-1.5 text-left hover:bg-subtle',
-                      v === value && 'bg-brand-fg font-medium text-brand',
+                      v === value && 'bg-brand-fg font-medium text-brand-muted',
                     )}
                   >
                     {optionLabel(option)}

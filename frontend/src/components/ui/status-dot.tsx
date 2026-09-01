@@ -21,7 +21,7 @@ export function StatusDot({
   return (
     <span
       className={cn(
-        'inline-block rounded-full',
+        'inline-block rounded-none',
         size === 'sm' ? 'h-1.5 w-1.5' : 'h-2 w-2',
         TONE_CLASS[tone],
         className,

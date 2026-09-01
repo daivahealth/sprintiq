@@ -38,6 +38,7 @@ export default {
           subtle: 'rgb(var(--border-subtle) / <alpha-value>)',
           strong: 'rgb(var(--border-strong) / <alpha-value>)',
         },
+        rule: 'rgb(var(--rule) / <alpha-value>)',
 
         success: {
           DEFAULT: 'rgb(var(--success) / <alpha-value>)',
@@ -72,6 +73,23 @@ export default {
           axis: 'rgb(var(--chart-axis) / <alpha-value>)',
           empty: 'rgb(var(--chart-empty) / <alpha-value>)',
         },
+      },
+
+      // Editorial contrast is a squared language. Remapping the scale here
+      // re-shapes the ~48 hardcoded `rounded-*` utilities across the page
+      // modules without editing a single one of them. `full` is left alone —
+      // its call sites are reviewed individually in the sweep.
+      borderRadius: {
+        none: '0px',
+        sm: '1px',
+        DEFAULT: '2px',
+        md: '2px',
+        lg: '3px',
+        xl: '4px',
+        '2xl': '6px',
+        '3xl': '8px',
+        '4xl': '10px',
+        full: '9999px',
       },
     },
   },

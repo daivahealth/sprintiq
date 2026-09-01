@@ -23,6 +23,7 @@ import {
 } from '../modules/dashboards/boards';
 import { DeliveryDashboard } from '../modules/dashboards/DeliveryDashboard';
 import { TopRepos } from '../modules/dashboards/TopRepos';
+import { StyleguidePage } from '../modules/styleguide/StyleguidePage';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const authed = useAuthStore((s) => s.isAuthenticated());
@@ -76,6 +77,12 @@ function RequireRole({
 export function AppRouter() {
   return (
     <Routes>
+      {/* Design-system review surface. Dev builds only, and deliberately
+          outside RequireAuth/DashboardLayout so it renders with no backend
+          and no login — it exists to show the primitives, not the app. */}
+      {import.meta.env.DEV ? (
+        <Route path="/_styleguide" element={<StyleguidePage />} />
+      ) : null}
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<Page><DeliveryDashboard /></Page>} />
       <Route path="/sprint-health" element={<Page><SprintHealthBoard /></Page>} />

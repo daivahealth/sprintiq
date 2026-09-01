@@ -52,7 +52,7 @@ export function AdminUsersPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold tracking-[-0.02em] text-fg">
+          <h2 className="text-2xl font-bold tracking-[-0.035em] text-fg">
             Users & Roles
           </h2>
           <p className="mt-1 text-sm text-fg-subtle">
@@ -72,7 +72,7 @@ export function AdminUsersPage() {
 
       <div className="overflow-x-auto rounded-lg border border-border bg-surface">
         <div className="min-w-[760px]">
-          <div className="grid grid-cols-[minmax(220px,1.2fr)_minmax(160px,0.8fr)_minmax(420px,2fr)] border-b border-border bg-subtle px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-faint">
+          <div className="grid grid-cols-[minmax(220px,1.2fr)_minmax(160px,0.8fr)_minmax(420px,2fr)] border-b-2 border-rule bg-subtle px-4 py-3 text-[10px] font-bold uppercase tracking-[0.12em] text-fg-muted">
             <span>User</span>
             <span>Status</span>
             <span>Roles</span>

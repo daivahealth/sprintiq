@@ -68,7 +68,7 @@ export function WatchlistPage() {
     <div className="space-y-6">
       {/* Not decoration. This page names people, and the sentence that stops it
           being read as a performance verdict has to be the first thing on it. */}
-      <div className="rounded-md border border-brand-muted bg-brand-fg p-3 text-sm text-brand">
+      <div className="rounded-md border border-brand-muted bg-brand-fg p-3 text-sm text-brand-muted">
         A prompt to go ask a question — not a conclusion about anyone’s
         performance. Absence of a tracked signal is not absence of work: pairing,
         design, support and review outside GitHub all leave nothing here. Share

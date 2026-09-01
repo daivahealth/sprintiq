@@ -11,7 +11,7 @@ import { SearchSelect } from '../../../components/search-select';
 import { timeAgo } from '../../../lib/utils';
 import { CommitChart } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
-import { BarList, ErrorCard, LoadingCard, Stat } from '../widgets';
+import { BarList, ErrorCard, LoadingCard, Stat, TypeBadge } from '../widgets';
 import { CurrentLensNote } from './CurrentLensNote';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
@@ -336,8 +336,12 @@ function AssignedWork({
                       </span>
                     )}
                   </td>
-                  <td className="py-2.5 pr-4 text-fg-muted">{item.type}</td>
-                  <td className="py-2.5 pr-4 text-fg-muted">{item.status}</td>
+                  <td className="py-2.5 pr-4">
+                    <TypeBadge type={item.type} />
+                  </td>
+                  <td className="py-2.5 pr-4">
+                    <Badge tone="neutral">{item.status}</Badge>
+                  </td>
                   <td className="max-w-md truncate py-2.5 text-fg-secondary" title={item.title}>
                     {item.title}
                   </td>

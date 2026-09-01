@@ -95,7 +95,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-sm font-bold text-on-brand">
             IQ
           </span>
-          <span className="text-lg font-semibold tracking-[-0.01em] text-fg">SprintIQ</span>
+          <span className="text-lg font-bold tracking-[-0.025em] text-fg">SprintIQ</span>
         </div>
         {/* Active tenant — one tenant's data at a time. */}
         <p className="mb-6 truncate px-2 text-xs font-medium text-fg-faint">

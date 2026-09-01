@@ -5,7 +5,7 @@ import { cn } from '../../lib/utils';
 type BadgeTone = 'neutral' | 'good' | 'warn' | 'bad';
 
 const badgeVariants = cva(
-  'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+  'inline-flex items-center rounded-sm px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]',
   {
     variants: {
       tone: {

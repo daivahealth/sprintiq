@@ -17,11 +17,11 @@ export function SegmentedControl<T extends string | number>({
   return (
     <div>
       {label && (
-        <span className="mb-1 block text-xs font-medium text-fg-subtle">
+        <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.12em] text-fg-muted">
           {label}
         </span>
       )}
-      <div className="flex overflow-hidden rounded-md border border-border-strong">
+      <div className="flex overflow-hidden rounded-sm border border-border-strong">
         {options.map((opt) => (
           <button
             key={opt.value}
@@ -30,7 +30,7 @@ export function SegmentedControl<T extends string | number>({
             className={cn(
               'px-3 py-2 text-sm transition',
               value === opt.value
-                ? 'bg-brand text-on-brand'
+                ? 'bg-fg text-canvas'
                 : 'bg-surface text-fg-muted hover:bg-subtle',
               optionClassName,
             )}

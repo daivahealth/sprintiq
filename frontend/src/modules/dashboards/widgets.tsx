@@ -1,3 +1,4 @@
+import { motion } from 'motion/react';
 import {
   Badge,
   Card,
@@ -23,9 +24,18 @@ export function Stat({
 }) {
   return (
     <div className="rounded-lg border border-border bg-subtle p-3">
-      <div className="text-2xl font-semibold tracking-[-0.03em] tabular-nums text-fg">
+      <motion.div
+        // Re-keyed on the value so a changed figure animates in rather than
+        // swapping silently: when the range changes, every number on the page
+        // changes at once, and a still swap reads as nothing having happened.
+        key={String(value)}
+        initial={{ opacity: 0, y: 1 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        className="text-[28px] font-bold tracking-[-0.045em] tabular-nums text-fg"
+      >
         {value}
-      </div>
+      </motion.div>
       <div className="text-xs text-fg-subtle">{label}</div>
       {hint && <div className="mt-0.5 text-[11px] text-fg-faint">{hint}</div>}
     </div>
@@ -220,7 +230,20 @@ export function WorkItemsTable({ items }: { items: WorkItemView[] }) {
   );
 }
 
-function TypeBadge({ type }: { type: string }) {
+/**
+ * Work-item type as a colour-coded badge.
+ *
+ * Exported because the Developer page's assigned-work table renders the same
+ * Jira items as `WorkItemsTable` does; two treatments of one attribute is how
+ * the two surfaces start reading as though they disagree.
+ *
+ * Type is safe to colour by name — the values are a closed set the collector
+ * normalizes (story · bug · task · spike · subtask · epic). Status is not, and
+ * is deliberately left uncoloured: status *names* are per-project and unbounded
+ * ("ACCEPTED IN UAT"), which is why `Story.statusCategory` exists for anything
+ * that needs to classify them.
+ */
+export function TypeBadge({ type }: { type: string }) {
   const tone =
     type === 'bug'
       ? 'bad'
