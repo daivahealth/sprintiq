@@ -111,6 +111,16 @@ export interface WatchlistView {
   computedAt: string;
 }
 
+/** One person's tracked signals in the window. Context, never a score. */
+export interface ActiveDeveloper {
+  /** Canonical developer id — what `?developer=` resolves against. */
+  developer: string;
+  displayName: string;
+  commits: number;
+  prsOpened: number;
+  prsMerged: number;
+}
+
 export interface OverviewView {
   totals: {
     commits: number;
@@ -123,6 +133,12 @@ export interface OverviewView {
     /** Committing with nothing assigned; null when the bridge matched nobody. */
     committingWithoutAssignedWork: number | null;
   };
+  /**
+   * Everyone with a signal in the window, alphabetical. Exactly the set
+   * `totals.developersWithSignal` counts, so the list and the tile can never
+   * disagree about the same window.
+   */
+  activeDevelopers: ActiveDeveloper[];
   /** Commits per IST day, with that day's contributors for the drill-down. */
   days: {
     date: string;
@@ -265,6 +281,13 @@ export class DeveloperActivityService {
     const byDay = new Map<string, DayAcc>();
     const withSignal = new Set<string>();
     const committers = new Set<string>();
+    // Window totals per person, accumulated from the same passes the day
+    // buckets already make — the roster costs no extra query.
+    const commitsByDeveloper = new Map<string, number>();
+    const prsByDeveloper = new Map<
+      string,
+      { opened: number; merged: number }
+    >();
 
     for (const c of commits) {
       const day = istDateKey(c.committedAt ?? c.authoredAt);
@@ -277,6 +300,10 @@ export class DeveloperActivityService {
       const person = attributeCommit(c, index);
       if (person) {
         acc.byDeveloper.set(person, (acc.byDeveloper.get(person) ?? 0) + 1);
+        commitsByDeveloper.set(
+          person,
+          (commitsByDeveloper.get(person) ?? 0) + 1,
+        );
         withSignal.add(person);
         committers.add(person);
       } else {
@@ -291,7 +318,14 @@ export class DeveloperActivityService {
         prsMerged += 1;
       }
       if (pr.authorLogin) {
-        withSignal.add(index.byLogin.get(pr.authorLogin) ?? pr.authorLogin);
+        const person = index.byLogin.get(pr.authorLogin) ?? pr.authorLogin;
+        withSignal.add(person);
+        const acc = prsByDeveloper.get(person) ?? { opened: 0, merged: 0 };
+        acc.opened += 1;
+        if (pr.mergedAt) {
+          acc.merged += 1;
+        }
+        prsByDeveloper.set(person, acc);
       }
     }
 
@@ -324,6 +358,11 @@ export class DeveloperActivityService {
         prsMerged,
         committingWithoutAssignedWork: withoutAssignedWork,
       },
+      activeDevelopers: activeDeveloperRoster(
+        commitsByDeveloper,
+        prsByDeveloper,
+        index.displayNames,
+      ),
       days: [...byDay.entries()]
         .map(([date, acc]) => ({
           date,
@@ -977,6 +1016,45 @@ export function planningGapDevelopers(
   return [...committers].filter(
     (person) => matched.has(person) && (openAssigned.get(person) ?? 0) === 0,
   );
+}
+
+/**
+ * Who showed a tracked signal in the window, with what they did.
+ *
+ * The union of commit authors and PR authors — deliberately the same set that
+ * produces `totals.developersWithSignal`, so the list *explains* the number
+ * printed above it rather than being a second, quietly different definition of
+ * "active". A roster built from committers alone would be shorter than its own
+ * headline count.
+ *
+ * Sorted alphabetically, never by volume (CLAUDE.md). The UI's "Most commits"
+ * toggle is the reader's explicit act and is never persisted — the same rule
+ * the day drill-down follows (DASHBOARDS.md §4.1.3).
+ *
+ * Absent signals are zeros, not missing keys: a PR-only contributor belongs on
+ * the roster, and a blank cell reads as absent data rather than as none.
+ */
+export function activeDeveloperRoster(
+  commitsByDeveloper: ReadonlyMap<string, number>,
+  prsByDeveloper: ReadonlyMap<string, { opened: number; merged: number }>,
+  displayNames: ReadonlyMap<string, string>,
+): ActiveDeveloper[] {
+  const everyone = new Set([
+    ...commitsByDeveloper.keys(),
+    ...prsByDeveloper.keys(),
+  ]);
+  return [...everyone]
+    .map((developer) => {
+      const prs = prsByDeveloper.get(developer);
+      return {
+        developer,
+        displayName: displayNames.get(developer) ?? developer,
+        commits: commitsByDeveloper.get(developer) ?? 0,
+        prsOpened: prs?.opened ?? 0,
+        prsMerged: prs?.merged ?? 0,
+      };
+    })
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
 /**

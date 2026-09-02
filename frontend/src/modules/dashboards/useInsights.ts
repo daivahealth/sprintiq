@@ -667,6 +667,16 @@ export interface ActivityDay {
   unattributedCommits: number;
 }
 
+/** One person's tracked signals in the window. Context, never a score. */
+export interface ActiveDeveloper {
+  /** Canonical developer id — what `?developer=` resolves against. */
+  developer: string;
+  displayName: string;
+  commits: number;
+  prsOpened: number;
+  prsMerged: number;
+}
+
 export interface DeveloperOverviewView {
   totals: {
     commits: number;
@@ -677,6 +687,12 @@ export interface DeveloperOverviewView {
     /** Null when the bridge matched nobody — never render null as zero. */
     committingWithoutAssignedWork: number | null;
   };
+  /**
+   * Everyone with a signal in the window, alphabetical from the API. Exactly
+   * the set `totals.developersWithSignal` counts, so the roster and the tile
+   * cannot disagree about the same window.
+   */
+  activeDevelopers: ActiveDeveloper[];
   days: ActivityDay[];
   attribution: {
     commitsInScope: number;

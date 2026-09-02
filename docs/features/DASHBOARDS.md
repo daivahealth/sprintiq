@@ -180,11 +180,19 @@ Two things the mockups asked for are **not built, because the data does not exis
 
 #### 4.4.1 Overview — team-shaped
 
-Four tiles (commits · developers with a signal `N of M` · PRs opened, `N` merged · committing without assigned work), the commit timeline, and a **data-health card** carrying both coverage figures.
+The **active-developer roster**, four tiles (commits · developers with a signal `N of M` · PRs opened, `N` merged · committing without assigned work), the commit timeline, and a **data-health card** carrying both coverage figures.
+
+**The roster is the names behind the tile above it** (added 2026-09-02). `activeDevelopers[]` is the union of commit authors and PR authors in the window — *exactly* the set `totals.developersWithSignal` counts, computed from it, so the list and the count can never disagree about the same window. Each row carries that person's commits, PRs opened and PRs merged, and links to their Developer page. Zero is rendered as `0`, never as a blank: a PR-only contributor belongs on the roster and an empty cell reads as missing data.
+
+**It is a roster, not a league table.** The API returns it alphabetically; the **"Most commits"** toggle is the reader's explicit act and is never persisted — the same treatment, for the same reason, as the timeline drill-down (§4.1.3). No positions, no totals row, no default that orders people by output. CLAUDE.md's no-ranking rule is what this is answering to, and the shape of the answer is: sorting is available because a reader asked for it, and never applied on their behalf.
+
+**This is the one roster Overview carries, and it is deliberately not the Watchlist's.** An earlier design rendered the Watchlist's roster here as well, which made two screens out of one dataset; that removal stands. The two answer different questions: the Watchlist asks *who to go ask about* (recency buckets, assignment gaps), this asks *who was working*. Anything about attention or absence belongs there, not here.
 
 **The timeline is one widget doing the work of two.** Each bar is an IST day; selecting one opens that day's contributors inline, each linking to their Developer page. This is where §4.1.3's daily log went, and every rule from it survives: alphabetical ordering by default, the recorded owner-requested **"Most commits"** toggle as the reader's explicit act only, `+N unattributed` per day, and the empty-window note that names the interval it measured (from the server's `windowDays`, never the requested key) and offers the next range up.
 
-**No per-developer roster and no project breakdown.** People are the Watchlist's; projects are Project Activity's.
+**Every link out of this page carries the range.** The roster and the timeline drill-down both build `?developer=…` *through the current range params*. A bare `?developer=` drops the window and `parseRange` falls back to the default, landing the reader on real numbers for a range they never chose — the one failure this section exists to prevent. The drill-down did exactly that until 2026-09-02.
+
+**No project breakdown.** Projects are Project Activity's.
 
 #### 4.4.2 Watchlist — people, and the two lenses on them
 

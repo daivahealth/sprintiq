@@ -1,11 +1,91 @@
 import {
   WATCHLIST_ACTIVE_WITHIN_WORKING_DAYS,
   WATCHLIST_QUIET_WITHIN_WORKING_DAYS,
+  activeDeveloperRoster,
   bucketFor,
   planningGapDevelopers,
   signalScanRange,
   workingDaysAgo,
 } from './developer-activity.service';
+
+describe('activeDeveloperRoster', () => {
+  const names = new Map([
+    ['dev-a', 'Zara Ahmed'],
+    ['dev-b', 'Amit Bose'],
+  ]);
+
+  it('is the union of commit authors and PR authors, not just committers', () => {
+    // The roster exists to explain the "Developers with a signal" tile, and
+    // that tile counts anyone with a commit OR a PR. A roster built from
+    // committers alone would be shorter than the number printed above it —
+    // two figures on one screen disagreeing about the same window.
+    const roster = activeDeveloperRoster(
+      new Map([['dev-a', 3]]),
+      new Map([['dev-b', { opened: 2, merged: 1 }]]),
+      names,
+    );
+
+    expect(roster.map((r) => r.developer).sort()).toEqual(['dev-a', 'dev-b']);
+  });
+
+  it('orders alphabetically by display name, never by volume', () => {
+    // CLAUDE.md: no volume ranking. Sorting by commits is the reader's
+    // explicit act in the UI (§4.1.3), never what the API hands over.
+    const roster = activeDeveloperRoster(
+      new Map([
+        ['dev-a', 99],
+        ['dev-b', 1],
+      ]),
+      new Map(),
+      names,
+    );
+
+    expect(roster.map((r) => r.displayName)).toEqual([
+      'Amit Bose',
+      'Zara Ahmed',
+    ]);
+  });
+
+  it('counts PRs opened and merged separately', () => {
+    const roster = activeDeveloperRoster(
+      new Map([['dev-b', 4]]),
+      new Map([['dev-b', { opened: 5, merged: 2 }]]),
+      names,
+    );
+
+    expect(roster[0]).toEqual({
+      developer: 'dev-b',
+      displayName: 'Amit Bose',
+      commits: 4,
+      prsOpened: 5,
+      prsMerged: 2,
+    });
+  });
+
+  it('reports zero rather than omitting a signal the person does not have', () => {
+    // A reviewer-only or PR-only contributor still belongs on the roster. An
+    // absent key would render as a blank cell and read as missing data.
+    const roster = activeDeveloperRoster(
+      new Map(),
+      new Map([['dev-a', { opened: 1, merged: 0 }]]),
+      names,
+    );
+
+    expect(roster[0].commits).toBe(0);
+    expect(roster[0].prsMerged).toBe(0);
+  });
+
+  it('falls back to the canonical id when no display name resolved', () => {
+    // Same rule as the day drill-down: never render an empty name cell.
+    const roster = activeDeveloperRoster(
+      new Map([['dev-unknown', 1]]),
+      new Map(),
+      names,
+    );
+
+    expect(roster[0].displayName).toBe('dev-unknown');
+  });
+});
 
 describe('workingDaysAgo', () => {
   it('skips weekends, so a Friday commit is not stale by Monday', () => {
