@@ -5,20 +5,56 @@ import {
   Card,
   ProvenanceNote,
   SegmentedControl,
+  TableBodyRow,
+  TableHeadRow,
 } from '../../../components/ui';
 import { timeAgo } from '../../../lib/utils';
-import { useDeveloperOverview, type ActivityDay } from '../useInsights';
+import {
+  useDeveloperOverview,
+  type ActiveDeveloper,
+  type ActivityDay,
+} from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
 import { CurrentLensNote } from './CurrentLensNote';
-import { EmptyWindowNote, formatDayKey, useSectionRange } from './window';
+import {
+  EmptyWindowNote,
+  formatDayKey,
+  rangeParams,
+  useSectionRange,
+  type ActivityRange,
+} from './window';
+
+/**
+ * A link to one person's page that carries the window with it.
+ *
+ * The range lives in the URL, so a bare `?developer=` drops it and `parseRange`
+ * falls back to the default — landing the reader on real numbers for a range
+ * they did not choose. That is the one failure this section is built to
+ * prevent, so every link out of it goes through here.
+ */
+function developerHref(developer: string, range: ActivityRange): string {
+  const params = rangeParams(range);
+  params.set('developer', developer);
+  return `../developer?${params.toString()}`;
+}
 
 /**
  * Engineering Activity §Overview — team-shaped (DASHBOARDS.md §4.4.1).
  *
- * Carries no per-developer roster. The Watchlist owns people; the original
- * design rendered the same roster on both pages, which made two screens out of
- * one dataset. What lives here instead is the team total, the shape of the
- * window, and how far the numbers can be trusted.
+ * The team total, the shape of the window, how far the numbers can be trusted
+ * — and, since 2026-09-02, who was working in it.
+ *
+ * That roster was deliberately absent before: an earlier design rendered the
+ * *Watchlist's* roster here too, which made two screens out of one dataset.
+ * This one is a different question and stays on the near side of that line.
+ * The Watchlist asks **who to go ask about** — recency buckets, assignment
+ * gaps, people you may need to check on. This asks **who was working**, and is
+ * simply the names behind the "Developers with a signal" tile it sits above.
+ * Same window, same set, one is the count and the other the list.
+ *
+ * It is not a ranking. Alphabetical by default, with "Most commits" as the
+ * reader's explicit act — the identical treatment the day drill-down gets, and
+ * for the identical reason (DASHBOARDS.md §4.1.3).
  */
 export function OverviewPage() {
   const { range, setRange } = useSectionRange();
@@ -33,6 +69,8 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-6">
+      <ActiveDevelopers developers={d.activeDevelopers} range={range} />
+
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat
           label="Commits"
@@ -74,6 +112,7 @@ export function OverviewPage() {
 
       <CommitTimeline
         days={d.days}
+        range={range}
         emptyState={
           <EmptyWindowNote
             range={range}
@@ -170,6 +209,107 @@ export function OverviewPage() {
 }
 
 /**
+ * Who was working in this window, and what they did.
+ *
+ * The names behind the "Developers with a signal" tile — the union of commit
+ * authors and PR authors, which is exactly what that tile counts. Every row
+ * opens that person's page with the window carried across.
+ *
+ * Sorting by commits is available and is never the default: the API hands this
+ * over alphabetically and the toggle is the reader's explicit act, never
+ * persisted (DASHBOARDS.md §4.1.3, CLAUDE.md's no-ranking rule). There are no
+ * positions, medals or totals — a row is what one person did, not where they
+ * placed.
+ */
+function ActiveDevelopers({
+  developers,
+  range,
+}: {
+  developers: ActiveDeveloper[];
+  range: ActivityRange;
+}) {
+  const [sort, setSort] = useState<'name' | 'commits'>('name');
+
+  // Nothing to show is the empty-window case, which CommitTimeline already
+  // explains properly below. A second empty card would say it twice.
+  if (developers.length === 0) {
+    return null;
+  }
+
+  const rows =
+    sort === 'commits'
+      ? [...developers].sort(
+          (a, b) =>
+            b.commits - a.commits || a.displayName.localeCompare(b.displayName),
+        )
+      : developers;
+
+  return (
+    <Card className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-fg">Active developers</h3>
+          <p className="text-xs text-fg-subtle">
+            {developers.length} with a commit or PR in this window — select one
+            for their profile
+          </p>
+        </div>
+        <SegmentedControl
+          label="Sort"
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: 'name', label: 'A–Z' },
+            { value: 'commits', label: 'Most commits' },
+          ]}
+        />
+      </div>
+
+      <div className="max-h-96 overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-surface">
+            <TableHeadRow>
+              <th className="py-2 pr-4">Developer</th>
+              <th className="py-2 pr-4">Commits</th>
+              <th className="py-2 pr-4">PRs opened</th>
+              <th className="py-2">PRs merged</th>
+            </TableHeadRow>
+          </thead>
+          <tbody>
+            {rows.map((dev) => (
+              <TableBodyRow key={dev.developer}>
+                <td className="py-2.5 pr-4">
+                  <Link
+                    to={developerHref(dev.developer, range)}
+                    className="font-medium text-fg-secondary hover:text-brand-muted"
+                  >
+                    {dev.displayName}
+                  </Link>
+                </td>
+                <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
+                  {dev.commits}
+                </td>
+                <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
+                  {dev.prsOpened}
+                </td>
+                <td className="py-2.5 tabular-nums text-fg-muted">
+                  {dev.prsMerged}
+                </td>
+              </TableBodyRow>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <ProvenanceNote>
+        Activity context, never a ranking. Commits attributed to a known
+        developer only — see data health below for what that leaves out.
+      </ProvenanceNote>
+    </Card>
+  );
+}
+
+/**
  * Commits per day, where each bar opens that day's contributors.
  *
  * This one widget replaces two. The board this section replaced rendered a
@@ -184,9 +324,11 @@ export function OverviewPage() {
  */
 function CommitTimeline({
   days,
+  range,
   emptyState,
 }: {
   days: ActivityDay[];
+  range: ActivityRange;
   emptyState: React.ReactNode;
 }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -268,7 +410,7 @@ function CommitTimeline({
             {developers.map((dev) => (
               <Link
                 key={dev.developer}
-                to={`../developer?developer=${encodeURIComponent(dev.developer)}`}
+                to={developerHref(dev.developer, range)}
                 className="rounded bg-muted px-1.5 py-0.5 text-xs text-fg-secondary hover:bg-border"
               >
                 {dev.displayName}
