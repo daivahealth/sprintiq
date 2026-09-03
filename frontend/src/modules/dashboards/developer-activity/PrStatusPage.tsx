@@ -54,16 +54,33 @@ export function PrStatusPage() {
           value={d.totals.neverReviewed}
           hint="open, no review of any kind"
         />
+        {/* The only windowed tile of the four, so it is the one that must keep
+            saying so. The bot count used to REPLACE "this window" rather than
+            join it, which dropped the page's single per-tile marker of what the
+            filter touches — and dropped it precisely on the tenants that have
+            bot reviews, which is most of them. */}
         <Stat
           label="Reviews given"
           value={d.totals.reviewsGiven}
           hint={
             d.totals.botReviews > 0
-              ? `${d.totals.botReviews} bot reviews excluded`
+              ? `this window · ${d.totals.botReviews} bot reviews excluded`
               : 'by people, this window'
           }
         />
       </div>
+
+      {/* Sits with the tiles it explains, not at the foot of the page.
+          Three of the four above are the queue as it stands now and do not
+          move when the window changes; without this, changing the range and
+          watching them sit still reads as a broken filter. */}
+      <p className="text-xs text-fg-subtle">
+        <span className="text-fg-secondary">Open, waiting and never-reviewed
+        are the queue as it stands now</span> — not limited to the selected
+        window, because a change opened months ago and still unreviewed is the
+        most actionable row here and a date filter is exactly what would hide
+        it. Reviews given and review load do use the window.
+      </p>
 
       <CurrentLensNote
         range={range}
@@ -224,11 +241,11 @@ export function PrStatusPage() {
         </p>
       </Card>
 
+      {/* The windowing explanation moved up to the tiles it describes; keeping
+          a second copy here would be the same sentence twice on one page. */}
       <ProvenanceNote>
-        Open pull requests are not limited to the selected window — a change
-        opened months ago and still unreviewed is the most actionable row here,
-        and a date filter is exactly what would hide it. Reviews given and PRs
-        raised do use the window. Computed {timeAgo(d.computedAt)}.
+        A review-capacity signal, never a measure of the people who opened the
+        changes. Computed {timeAgo(d.computedAt)}.
       </ProvenanceNote>
     </div>
   );
