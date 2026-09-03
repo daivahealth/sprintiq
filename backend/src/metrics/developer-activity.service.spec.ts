@@ -3,6 +3,7 @@ import {
   WATCHLIST_QUIET_WITHIN_WORKING_DAYS,
   activeDeveloperRoster,
   bucketFor,
+  monthCollected,
   planningGapDevelopers,
   signalScanRange,
   workingDaysAgo,
@@ -210,5 +211,51 @@ describe('signalScanRange', () => {
     expect(bucketFor(juneCommit, new Date('2026-08-25T10:00:00Z'))).toBe(
       'no_signal',
     );
+  });
+});
+
+/**
+ * Whether a month on the 12-month trend rests on data we actually collected.
+ *
+ * The distinction the chart is built around: a month with no commits collected
+ * and a month with no commits are opposite findings, and plotting the first as
+ * a zero asserts the second. Same null-is-not-zero rule the Overview's
+ * "Committing, nothing assigned" tile already follows.
+ */
+describe('monthCollected', () => {
+  it('accepts a month starting on or after the collection floor', () => {
+    const floor = new Date('2026-03-01T00:00:00.000Z');
+    expect(monthCollected('2026-04', floor)).toBe(true);
+    expect(monthCollected('2026-09', floor)).toBe(true);
+  });
+
+  it('rejects a month that ended before collection ever reached it', () => {
+    const floor = new Date('2026-03-01T00:00:00.000Z');
+    expect(monthCollected('2026-01', floor)).toBe(false);
+  });
+
+  it('rejects the month the floor falls inside, because it is only part-walked', () => {
+    // The backfill reached 14 March, so March's first fortnight is missing.
+    // Counting it would under-report a month the chart presents as whole —
+    // conservative here means the caption explains one absent bar, not that a
+    // half-collected March reads as a real dip.
+    const floor = new Date('2026-03-14T09:00:00.000Z');
+    expect(monthCollected('2026-03', floor)).toBe(false);
+    expect(monthCollected('2026-04', floor)).toBe(true);
+  });
+
+  it('accepts a month starting exactly at the floor', () => {
+    // IST midnight on 1 March, which is 18:30Z on 28 February.
+    const floor = new Date('2026-02-28T18:30:00.000Z');
+    expect(monthCollected('2026-03', floor)).toBe(true);
+  });
+
+  it('treats an unknown floor as collected rather than blanking the chart', () => {
+    // `collectedBackTo` is null when any active connection has walked nowhere,
+    // which means "we do not know how deep history goes" — not "there is no
+    // history". Dimming all twelve months would report a certainty we lack in
+    // the opposite direction; the null travels in the payload instead, and the
+    // caption says the depth is unknown.
+    expect(monthCollected('2020-01', null)).toBe(true);
   });
 });

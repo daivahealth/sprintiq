@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
-import { istDateKey } from '../common/time';
+import {
+  istDateKey,
+  istMonthEnd,
+  istMonthStart,
+  lastIstMonths,
+} from '../common/time';
 import {
   DeveloperIdentityService,
   JiraAssigneeCoverage,
@@ -203,6 +208,60 @@ export interface PrStatusView {
   computedAt: string;
 }
 
+/** Months on the Overview trend. A year, fixed — not the section's window. */
+export const TREND_MONTHS = 12;
+
+export interface TrendMonth {
+  /** IST calendar month, `YYYY-MM`. */
+  month: string;
+  commits: number;
+  additions: number;
+  deletions: number;
+  /** Additions + deletions — the same "changed LOC" every other board reports. */
+  locChanged: number;
+  /**
+   * Whether collection had reached this month at all.
+   *
+   * `false` means the figures beside it are not a measurement, and the chart
+   * must break its line rather than plot them: a month the backfill never
+   * walked yields zero, and drawing that zero asserts nobody committed.
+   */
+  collected: boolean;
+}
+
+export interface MonthlyTrendView {
+  /** Oldest month first — the order the chart plots. */
+  months: TrendMonth[];
+  /**
+   * How deep collection reaches, from the connection watermarks. `null` means
+   * no floor is known (some active connection has walked nowhere), which is
+   * why every month can still be marked collected while the number itself
+   * says the depth is unverified.
+   */
+  collectedBackTo: string | null;
+  computedAt: string;
+}
+
+/**
+ * Whether a trend month rests on collected data.
+ *
+ * A month counts only if collection reached its FIRST instant. The month a
+ * backfill stopped inside is part-walked, and a part-walked month rendered as
+ * a whole one is a dip that never happened.
+ *
+ * An unknown floor (`null`) is treated as collected: it means "we do not know
+ * how deep history goes", not "there is no history", and dimming all twelve
+ * months would overstate our ignorance as confidently as a zero overstates our
+ * knowledge. The null rides along in the payload so the caption can say so.
+ */
+export function monthCollected(
+  month: string,
+  collectedBackTo: Date | null,
+): boolean {
+  if (!collectedBackTo) return true;
+  return istMonthStart(month).getTime() >= collectedBackTo.getTime();
+}
+
 export interface AssignedItem {
   key: string;
   projectKey: string;
@@ -388,6 +447,70 @@ export class DeveloperActivityService {
       assigneeCoverage: coverage,
       truncated,
       windowDays,
+      computedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Commit and changed-LOC volume per IST calendar month, over the last year.
+   *
+   * A fixed 12-month window on purpose: it is a trend, and a trend that
+   * resizes with the section's range selector cannot be compared to itself
+   * between two visits. The controller passes no range for the same reason.
+   *
+   * **Aggregated in the database, never listed.** `listCommitsPage` caps its
+   * read and reports `truncated` because its rows get summed; a year-long
+   * version of that read would hit the cap on any busy tenant and quietly
+   * under-report the oldest months — the exact failure that cap exists to
+   * disclose. Twelve `aggregate` calls count and sum in Postgres instead: no
+   * rows cross the wire, no ceiling, nothing to truncate.
+   *
+   * Figures on a month with `collected: false` are a floor, not a measurement
+   * — whatever happens to have been walked so far. The flag, not the number,
+   * is what a consumer must read.
+   */
+  async monthlyTrend(
+    repos: string[],
+    collectedBackTo: Date | null,
+    now: Date = new Date(),
+  ): Promise<MonthlyTrendView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const months = lastIstMonths(TREND_MONTHS, now);
+
+    const buckets = await Promise.all(
+      months.map((month) =>
+        this.prisma.commit.aggregate({
+          where: {
+            tenantId,
+            ...(repos.length > 0 ? { repoFullName: { in: repos } } : {}),
+            // By committer date, matching `listCommitsPage` — the two diverge
+            // on a rebase, and a trend bucketed differently from the day series
+            // above it would disagree with it about the same month.
+            committedAt: {
+              gte: istMonthStart(month),
+              lte: istMonthEnd(month),
+            },
+          },
+          _count: { _all: true },
+          _sum: { additions: true, deletions: true },
+        }),
+      ),
+    );
+
+    return {
+      months: months.map((month, i) => {
+        const additions = buckets[i]._sum.additions ?? 0;
+        const deletions = buckets[i]._sum.deletions ?? 0;
+        return {
+          month,
+          commits: buckets[i]._count._all,
+          additions,
+          deletions,
+          locChanged: additions + deletions,
+          collected: monthCollected(month, collectedBackTo),
+        };
+      }),
+      collectedBackTo: collectedBackTo?.toISOString() ?? null,
       computedAt: new Date().toISOString(),
     };
   }

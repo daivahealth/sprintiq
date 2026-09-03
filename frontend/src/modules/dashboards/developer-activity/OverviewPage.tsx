@@ -9,8 +9,10 @@ import {
   TableHeadRow,
 } from '../../../components/ui';
 import { timeAgo } from '../../../lib/utils';
+import { MonthlyTrendChart, type TrendMetric } from '../MonthlyTrendChart';
 import {
   useDeveloperOverview,
+  useMonthlyTrend,
   type ActiveDeveloper,
   type ActivityDay,
 } from '../useInsights';
@@ -126,6 +128,8 @@ export function OverviewPage() {
           />
         }
       />
+
+      <MonthlyTrend />
 
       <Card className="space-y-3">
         <h3 className="text-sm font-medium text-fg-muted">Data health</h3>
@@ -312,6 +316,81 @@ function ActiveDevelopers({
       </ProvenanceNote>
     </Card>
   );
+}
+
+/**
+ * The last year in months, commits or changed LOC.
+ *
+ * Everything else on this page answers "what happened in the window you
+ * picked". This one answers "what has the year looked like", and its 12 months
+ * are fixed — a trend that resized with the selector could not be compared
+ * against itself between two visits. That difference is the thing most likely
+ * to be misread here, so the subtitle states it rather than relying on the
+ * heading, and the widget sits below the windowed ones instead of among them.
+ *
+ * Team totals only, with no per-developer breakdown: a monthly LOC line per
+ * person is the vanity ranking CLAUDE.md rules out, and LOC is never a
+ * productivity score.
+ */
+function MonthlyTrend() {
+  const [metric, setMetric] = useState<TrendMetric>('commits');
+  const query = useMonthlyTrend();
+
+  if (query.isLoading) return <LoadingCard />;
+  if (query.isError) return <ErrorCard error={query.error} />;
+  if (!query.data) return null;
+
+  const { months, collectedBackTo } = query.data;
+
+  return (
+    <Card className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-fg">Last 12 months</h3>
+          <p className="text-xs text-fg-subtle">
+            One point per calendar month (IST) — a fixed year, not the window
+            selected above
+          </p>
+        </div>
+        <SegmentedControl
+          label="Metric"
+          value={metric}
+          onChange={setMetric}
+          options={[
+            { value: 'commits', label: 'Commits' },
+            { value: 'loc', label: 'Lines of code' },
+          ]}
+        />
+      </div>
+
+      <MonthlyTrendChart months={months} metric={metric} />
+
+      <ProvenanceNote>
+        {months.some((m) => !m.collected) ? (
+          <>
+            Shaded months predate collection — the line breaks rather than
+            plotting them as zero, which would assert nobody committed.
+            Collected back to {formatMonthBoundary(collectedBackTo)}.{' '}
+          </>
+        ) : collectedBackTo === null ? (
+          <>
+            How far back collection reaches is not yet established, so the
+            earliest months may be incomplete.{' '}
+          </>
+        ) : null}
+        Team totals, never a ranking. Changed LOC is volume, not productivity.
+      </ProvenanceNote>
+    </Card>
+  );
+}
+
+/** The collection floor as a month and year, for the trend's caption. */
+function formatMonthBoundary(iso: string | null): string {
+  if (!iso) return 'an unknown point';
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: 'long',
+    year: 'numeric',
+  });
 }
 
 /**

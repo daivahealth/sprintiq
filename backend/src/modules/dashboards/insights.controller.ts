@@ -13,6 +13,7 @@ import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
 import { CodeService } from '../code/code.service';
+import { ConnectionsService } from '../connections/connections.service';
 import { ACTIVITY_WINDOWS, resolveActivityRange } from './activity-range';
 import { parseList } from './catalog.controller';
 
@@ -174,6 +175,9 @@ export class InsightsController {
     private readonly devActivity: DeveloperActivityService,
     private readonly correlation: CorrelationService,
     private readonly code: CodeService,
+    // Read-only, for the collection watermark the 12-month trend needs to tell
+    // an empty month from an unwalked one. BC-13 never reaches a source itself.
+    private readonly connections: ConnectionsService,
   ) {}
 
   /** Dashboards visible to the current user's roles (role-based assignment). */
@@ -408,6 +412,25 @@ export class InsightsController {
       range.windowDays,
     );
     return { window, ...view };
+  }
+
+  /**
+   * Engineering Activity §Overview — commit and changed-LOC volume per month
+   * over the last year.
+   *
+   * Takes no window parameter: it is a trend, and one that resized with the
+   * section's range selector could not be compared against itself between two
+   * visits. The 12 months are fixed and the widget says so on screen.
+   *
+   * The collection watermark is read here rather than inside the metrics
+   * service so BC-8 keeps its hands off connection tables — the same
+   * composition the freshness endpoint does, and the reason a month the
+   * backfill never reached can be drawn as a gap instead of a zero.
+   */
+  @Get('developer-activity/monthly-trend')
+  async developerActivityMonthlyTrend(@CurrentUser() user: AuthUser) {
+    const freshness = await this.connections.getDataFreshness(user.tenantId);
+    return this.devActivity.monthlyTrend([], freshness.collectedBackTo);
   }
 
   /**
