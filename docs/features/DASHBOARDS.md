@@ -180,7 +180,9 @@ Two things the mockups asked for are **not built, because the data does not exis
 
 #### 4.4.1 Overview — team-shaped
 
-The **active-developer roster**, four tiles (commits · developers with a signal `N of M` · PRs opened, `N` merged · committing without assigned work), the commit timeline, and a **data-health card** carrying both coverage figures.
+Four tiles (commits · developers with a signal `N of M` · PRs opened, `N` merged · committing without assigned work), the **active-developer roster**, the commit timeline, and a **data-health card** carrying both coverage figures — in that order.
+
+**The order is deliberate.** Totals first, then who they were. Putting the roster above the tiles invites a reader to add the rows up and expect the total: they will not match, because unattributed commits count in the total and sit on nobody's row (see the data-health card), and that mental arithmetic is the first step toward reading the list as a scoreboard.
 
 **The roster is the names behind the tile above it** (added 2026-09-02). `activeDevelopers[]` is the union of commit authors and PR authors in the window — *exactly* the set `totals.developersWithSignal` counts, computed from it, so the list and the count can never disagree about the same window. Each row carries that person's commits, PRs opened and PRs merged, and links to their Developer page. Zero is rendered as `0`, never as a blank: a PR-only contributor belongs on the roster and an empty cell reads as missing data.
 

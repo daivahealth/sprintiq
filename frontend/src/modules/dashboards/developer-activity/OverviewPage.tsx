@@ -69,8 +69,6 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-6">
-      <ActiveDevelopers developers={d.activeDevelopers} range={range} />
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat
           label="Commits"
@@ -109,6 +107,13 @@ export function OverviewPage() {
         range={range}
         lens="The Jira assignment behind “Committing, nothing assigned”"
       />
+
+      {/* Below the totals, not above them: the tiles say how much happened in
+          this window, and the roster then says who that was. Reading the names
+          first invites totting them up into the total yourself — which is both
+          wrong (unattributed commits are in the total and on nobody's row) and
+          the arithmetic a ranking is made of. */}
+      <ActiveDevelopers developers={d.activeDevelopers} range={range} />
 
       <CommitTimeline
         days={d.days}
