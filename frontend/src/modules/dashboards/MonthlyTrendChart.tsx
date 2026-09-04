@@ -1,7 +1,8 @@
-import { formatCompact } from '../../lib/utils';
+import { formatCompact, istTodayKey } from '../../lib/utils';
 import {
   collectedRuns,
   monthAxisLabel,
+  splitProvisional,
   trendTicks,
   type TrendMonth,
 } from './monthly-trend';
@@ -53,6 +54,12 @@ export function MonthlyTrendChart({
   const y = (v: number) => PAD.top + plotH - (v / top) * plotH;
 
   const runs = collectedRuns(months);
+  // Derived here rather than sent by the API: which month is in progress is a
+  // calendar fact, and reading it off the clock means an older backend that
+  // never heard of the distinction still gets the honest rendering.
+  const partialMonth =
+    months.find((m) => m.month === istTodayKey().slice(0, 7))?.month ?? null;
+  const { solid, provisional } = splitProvisional(runs, partialMonth);
   // The same splitter with the flag inverted, so a gap anywhere on the axis is
   // shaded correctly rather than only the leading stretch the backfill
   // currently produces.
@@ -121,7 +128,7 @@ export function MonthlyTrendChart({
         {/* One polyline per contiguous collected run: the break at the
             backfill edge is made of absence, not painted over a point that is
             already on the path. */}
-        {runs.map((run) => (
+        {solid.map((run) => (
           <polyline
             key={run[0].point.month}
             points={run
@@ -135,24 +142,59 @@ export function MonthlyTrendChart({
           />
         ))}
 
+        {/* The month still running, dashed: a few days of data drawn at the
+            same width as thirty otherwise reads as a real fall. */}
+        {provisional && (
+          <polyline
+            points={provisional
+              .map((p) => `${x(p.index).toFixed(1)},${y(value(p.point)).toFixed(1)}`)
+              .join(' ')}
+            fill="none"
+            className={metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2'}
+            strokeWidth={2}
+            strokeDasharray="4 3"
+            strokeLinecap="round"
+            opacity={0.7}
+          />
+        )}
+
         {/* Markers carry the exact figures; only collected months get one, so
             there is nothing to hover on a month we did not measure. */}
-        {runs.flat().map((p) => (
-          <circle
-            key={p.point.month}
-            cx={x(p.index)}
-            cy={y(value(p.point))}
-            r={3}
-            className={metric === 'commits' ? 'fill-chart-1' : 'fill-chart-2'}
-          >
-            <title>
-              {monthAxisLabel(p.point.month, undefined)} ·{' '}
-              {p.point.commits.toLocaleString()} commit
-              {p.point.commits === 1 ? '' : 's'} ·{' '}
-              {p.point.locChanged.toLocaleString()} LOC changed
-            </title>
-          </circle>
-        ))}
+        {runs.flat().map((p) => {
+          // Hollow for the month in progress — the marker itself says the
+          // value is not final, so the shape survives being read without the
+          // caption underneath it.
+          const isPartial = p.point.month === partialMonth;
+          // Class names are written out rather than composed, so Tailwind's
+          // scanner can see them: a stroke class built by joining a prefix to
+          // a variable compiles to nothing and the marker loses its colour.
+          // The design-system suite enforces this repo-wide.
+          const solidTone =
+            metric === 'commits' ? 'fill-chart-1' : 'fill-chart-2';
+          const hollowTone =
+            metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2';
+          return (
+            <circle
+              key={p.point.month}
+              cx={x(p.index)}
+              cy={y(value(p.point))}
+              r={isPartial ? 3.5 : 3}
+              // The page background, so the ring reads as hollow rather than
+              // as a differently-coloured dot.
+              fill={isPartial ? 'rgb(var(--surface))' : undefined}
+              strokeWidth={isPartial ? 2 : 0}
+              className={isPartial ? hollowTone : solidTone}
+            >
+              <title>
+                {monthAxisLabel(p.point.month, undefined)}
+                {isPartial ? ' (month to date)' : ''} ·{' '}
+                {p.point.commits.toLocaleString()} commit
+                {p.point.commits === 1 ? '' : 's'} ·{' '}
+                {p.point.locChanged.toLocaleString()} LOC changed
+              </title>
+            </circle>
+          );
+        })}
 
         {/* x labels — twelve fit across this width, so every month is named. */}
         {months.map((m, i) => (

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   collectedRuns,
   monthAxisLabel,
+  splitProvisional,
   trendTicks,
   type TrendMonth,
 } from './monthly-trend';
@@ -161,5 +162,80 @@ describe('monthAxisLabel', () => {
 
   it('labels the first month with its year, having nothing before it', () => {
     expect(monthAxisLabel('2025-10', undefined)).toBe('Oct 25');
+  });
+});
+
+/**
+ * The month still in progress.
+ *
+ * The API's window always ends with the current IST month, which on the 3rd is
+ * three days of data drawn the same width as thirty. On real numbers that put
+ * 177 commits next to a ~4,000 baseline and the line dived to the floor — a
+ * calendar artifact that reads as a collapse in delivery.
+ *
+ * The same error the backfill floor is guarded against at the other end of the
+ * axis: a partial month drawn as a whole one. Here the point is kept rather
+ * than dropped, and marked provisional instead.
+ */
+describe('splitProvisional', () => {
+  const runs = () =>
+    collectedRuns([
+      month('2026-07'),
+      month('2026-08'),
+      month('2026-09'),
+    ]);
+
+  it('peels the in-progress month off the solid path', () => {
+    const { solid } = splitProvisional(runs(), '2026-09');
+    expect(solid.map((r) => r.map((p) => p.point.month))).toEqual([
+      ['2026-07', '2026-08'],
+    ]);
+  });
+
+  it('returns the provisional link as the last complete month plus the partial one', () => {
+    // Two points, because a dashed segment needs somewhere to start: the
+    // reader has to see the line reach the provisional value, not just a
+    // marker floating clear of the path.
+    const { provisional } = splitProvisional(runs(), '2026-09');
+    expect(provisional?.map((p) => p.point.month)).toEqual([
+      '2026-08',
+      '2026-09',
+    ]);
+  });
+
+  it('leaves the path untouched when no month is in progress', () => {
+    const { solid, provisional } = splitProvisional(runs(), null);
+    expect(solid.map((r) => r.length)).toEqual([3]);
+    expect(provisional).toBeNull();
+  });
+
+  it('ignores a partial month that is not on the axis', () => {
+    const { solid, provisional } = splitProvisional(runs(), '2026-12');
+    expect(solid.map((r) => r.length)).toEqual([3]);
+    expect(provisional).toBeNull();
+  });
+
+  it('draws no dangling link when the partial month stands alone after a gap', () => {
+    // Its predecessor was never collected, so there is no measured point to
+    // draw the segment from. The marker alone carries it.
+    const isolated = collectedRuns([
+      month('2026-07'),
+      month('2026-08', false),
+      month('2026-09'),
+    ]);
+    const { solid, provisional } = splitProvisional(isolated, '2026-09');
+
+    expect(solid.map((r) => r.map((p) => p.point.month))).toEqual([
+      ['2026-07'],
+    ]);
+    expect(provisional).toBeNull();
+  });
+
+  it('only ever treats the final point of a run as provisional', () => {
+    // A month mid-axis cannot be in progress, and treating one as such would
+    // punch a dashed hole through settled history.
+    const { solid, provisional } = splitProvisional(runs(), '2026-08');
+    expect(solid.map((r) => r.length)).toEqual([3]);
+    expect(provisional).toBeNull();
   });
 });

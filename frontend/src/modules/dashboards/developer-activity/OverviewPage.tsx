@@ -366,6 +366,14 @@ function MonthlyTrend() {
       <MonthlyTrendChart months={months} metric={metric} />
 
       <ProvenanceNote>
+        {/* The last point is the running month, which on the 3rd is three days
+            of data at the same width as thirty. Drawn solid it read as a
+            collapse in delivery; it is dashed and hollow, and said here too. */}
+        <>
+          The final point is <span className="text-fg-secondary">this month
+          so far</span> — dashed and hollow because it is still filling, not a
+          fall.{' '}
+        </>
         {months.some((m) => !m.collected) ? (
           <>
             Shaded months predate collection — the line breaks rather than

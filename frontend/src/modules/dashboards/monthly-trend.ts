@@ -54,6 +54,48 @@ export function collectedRuns(months: TrendMonth[]): TrendPoint[][] {
 }
 
 /**
+ * Peel the in-progress month off the solid path so it can be drawn as
+ * provisional.
+ *
+ * The API's window always ends with the current IST month, so the last point is
+ * routinely a few days of data occupying the same width as a full one. Drawn
+ * solid it is indistinguishable from a finished month: on real numbers, 177
+ * commits on the 3rd sat beside a ~4,000 baseline and the line dived to the
+ * floor, reading as a collapse in delivery that had not happened.
+ *
+ * This is the same error the backfill floor is guarded against at the other end
+ * of the axis — a partial month drawn as a whole one. There the part-walked
+ * month is excluded outright; here it is kept, because the reader does want the
+ * month so far, and marked instead.
+ *
+ * The provisional link carries TWO points. A dashed segment needs somewhere to
+ * start: without its predecessor the marker floats clear of the path and stops
+ * reading as part of the same series.
+ */
+export function splitProvisional(
+  runs: TrendPoint[][],
+  partialMonth: string | null,
+): { solid: TrendPoint[][]; provisional: TrendPoint[] | null } {
+  if (!partialMonth) return { solid: runs, provisional: null };
+
+  // Only the final point of the final run can be in progress. Anything earlier
+  // is settled history, and punching a dashed hole through it would assert an
+  // incompleteness that does not exist.
+  const last = runs[runs.length - 1];
+  if (!last || last[last.length - 1].point.month !== partialMonth) {
+    return { solid: runs, provisional: null };
+  }
+
+  const solid = [...runs.slice(0, -1), last.slice(0, -1)].filter(
+    (run) => run.length > 0,
+  );
+  // A lone partial month after a gap has no measured predecessor to draw from,
+  // so it gets its marker and no segment.
+  const provisional = last.length >= 2 ? last.slice(-2) : null;
+  return { solid, provisional };
+}
+
+/**
  * Y-axis ticks from zero to a rounded ceiling at or above `max`, in four to six
  * evenly spaced bands.
  *
