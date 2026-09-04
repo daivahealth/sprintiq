@@ -22,6 +22,7 @@ describe('activeDeveloperRoster', () => {
     // two figures on one screen disagreeing about the same window.
     const roster = activeDeveloperRoster(
       new Map([['dev-a', 3]]),
+      new Map(),
       new Map([['dev-b', { opened: 2, merged: 1 }]]),
       names,
     );
@@ -38,6 +39,7 @@ describe('activeDeveloperRoster', () => {
         ['dev-b', 1],
       ]),
       new Map(),
+      new Map(),
       names,
     );
 
@@ -50,6 +52,7 @@ describe('activeDeveloperRoster', () => {
   it('counts PRs opened and merged separately', () => {
     const roster = activeDeveloperRoster(
       new Map([['dev-b', 4]]),
+      new Map(),
       new Map([['dev-b', { opened: 5, merged: 2 }]]),
       names,
     );
@@ -58,6 +61,9 @@ describe('activeDeveloperRoster', () => {
       developer: 'dev-b',
       displayName: 'Amit Bose',
       commits: 4,
+      additions: 0,
+      deletions: 0,
+      locChanged: 0,
       prsOpened: 5,
       prsMerged: 2,
     });
@@ -67,6 +73,7 @@ describe('activeDeveloperRoster', () => {
     // A reviewer-only or PR-only contributor still belongs on the roster. An
     // absent key would render as a blank cell and read as missing data.
     const roster = activeDeveloperRoster(
+      new Map(),
       new Map(),
       new Map([['dev-a', { opened: 1, merged: 0 }]]),
       names,
@@ -80,6 +87,7 @@ describe('activeDeveloperRoster', () => {
     // Same rule as the day drill-down: never render an empty name cell.
     const roster = activeDeveloperRoster(
       new Map([['dev-unknown', 1]]),
+      new Map(),
       new Map(),
       names,
     );
@@ -257,5 +265,72 @@ describe('monthCollected', () => {
     // the opposite direction; the null travels in the payload instead, and the
     // caption says the depth is unknown.
     expect(monthCollected('2020-01', null)).toBe(true);
+  });
+});
+
+/**
+ * Changed LOC per person on the Overview roster.
+ *
+ * Volume, never a score — CLAUDE.md is explicit that LOC is not a productivity
+ * measure, so this ships with no sort-by-LOC control and no ordering by it.
+ * It is the same figure the Developer page already shows for one person,
+ * carried onto the roster so the window can be read without opening four pages.
+ */
+describe('activeDeveloperRoster — changed LOC', () => {
+  const names = new Map([
+    ['dev-a', 'Zara Ahmed'],
+    ['dev-b', 'Amit Bose'],
+  ]);
+
+  it('sums additions and deletions per person, and totals them as changed LOC', () => {
+    const roster = activeDeveloperRoster(
+      new Map([['dev-a', 2]]),
+      new Map([['dev-a', { additions: 120, deletions: 45 }]]),
+      new Map(),
+      names,
+    );
+
+    expect(roster[0].additions).toBe(120);
+    expect(roster[0].deletions).toBe(45);
+    // Changed LOC is the SUM, matching every other board. A net of 75 would
+    // report a refactor that removed as much as it added as almost no work.
+    expect(roster[0].locChanged).toBe(165);
+  });
+
+  it('reports zero for someone with PRs but no commits, rather than omitting it', () => {
+    // Same rule the commit count follows: an absent key renders as a blank
+    // cell and reads as missing data, which is a different claim from none.
+    const roster = activeDeveloperRoster(
+      new Map(),
+      new Map(),
+      new Map([['dev-a', { opened: 1, merged: 0 }]]),
+      names,
+    );
+
+    expect(roster[0].locChanged).toBe(0);
+    expect(roster[0].additions).toBe(0);
+  });
+
+  it('still orders alphabetically, never by volume of code changed', () => {
+    // The rule that matters most here. LOC is the most misread number on the
+    // page, and an ordering by it would make the roster a leaderboard by
+    // default — which is what CLAUDE.md forbids.
+    const roster = activeDeveloperRoster(
+      new Map([
+        ['dev-a', 1],
+        ['dev-b', 1],
+      ]),
+      new Map([
+        ['dev-a', { additions: 99_999, deletions: 0 }],
+        ['dev-b', { additions: 1, deletions: 0 }],
+      ]),
+      new Map(),
+      names,
+    );
+
+    expect(roster.map((r) => r.displayName)).toEqual([
+      'Amit Bose',
+      'Zara Ahmed',
+    ]);
   });
 });

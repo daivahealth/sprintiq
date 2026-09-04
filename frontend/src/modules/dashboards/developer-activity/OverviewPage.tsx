@@ -280,6 +280,7 @@ function ActiveDevelopers({
             <TableHeadRow>
               <th className="py-2 pr-4">Developer</th>
               <th className="py-2 pr-4">Commits</th>
+              <th className="py-2 pr-4">Changed LOC</th>
               <th className="py-2 pr-4">PRs opened</th>
               <th className="py-2">PRs merged</th>
             </TableHeadRow>
@@ -298,6 +299,30 @@ function ActiveDevelopers({
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.commits}
                 </td>
+                {/* An API that predates this column sends nothing, and nothing
+                    is not zero: "changed no lines" and "we cannot tell" are
+                    different claims, and only one of them is safe to print
+                    beside a person's name. */}
+                <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
+                  {dev.locChanged === undefined ? (
+                    <span className="text-fg-faint">—</span>
+                  ) : (
+                    <>
+                      {dev.locChanged.toLocaleString()}
+                      {dev.additions !== undefined &&
+                        dev.deletions !== undefined && (
+                          <span className="ml-2 text-xs text-fg-subtle">
+                            <span className="text-success-fg">
+                              +{dev.additions.toLocaleString()}
+                            </span>{' '}
+                            <span className="text-danger-fg">
+                              −{dev.deletions.toLocaleString()}
+                            </span>
+                          </span>
+                        )}
+                    </>
+                  )}
+                </td>
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.prsOpened}
                 </td>
@@ -311,8 +336,10 @@ function ActiveDevelopers({
       </div>
 
       <ProvenanceNote>
-        Activity context, never a ranking. Commits attributed to a known
-        developer only — see data health below for what that leaves out.
+        Activity context, never a ranking. Changed LOC is volume, not
+        productivity — a large number is a large diff, nothing more. Commits
+        attributed to a known developer only — see data health below for what
+        that leaves out.
       </ProvenanceNote>
     </Card>
   );

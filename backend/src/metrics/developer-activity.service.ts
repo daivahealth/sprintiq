@@ -122,6 +122,14 @@ export interface ActiveDeveloper {
   developer: string;
   displayName: string;
   commits: number;
+  /** Lines added across their attributed commits in the window. */
+  additions: number;
+  deletions: number;
+  /**
+   * `additions + deletions` — volume, never a productivity score, and never
+   * an ordering (CLAUDE.md). The same definition every other board reports.
+   */
+  locChanged: number;
   prsOpened: number;
   prsMerged: number;
 }
@@ -343,6 +351,13 @@ export class DeveloperActivityService {
     // Window totals per person, accumulated from the same passes the day
     // buckets already make — the roster costs no extra query.
     const commitsByDeveloper = new Map<string, number>();
+    // Accumulated in the same pass as the commit counts, from rows already in
+    // memory — the roster's LOC column costs no query, exactly as its commit
+    // and PR columns don't.
+    const locByDeveloper = new Map<
+      string,
+      { additions: number; deletions: number }
+    >();
     const prsByDeveloper = new Map<
       string,
       { opened: number; merged: number }
@@ -363,6 +378,13 @@ export class DeveloperActivityService {
           person,
           (commitsByDeveloper.get(person) ?? 0) + 1,
         );
+        const loc = locByDeveloper.get(person) ?? {
+          additions: 0,
+          deletions: 0,
+        };
+        loc.additions += c.additions;
+        loc.deletions += c.deletions;
+        locByDeveloper.set(person, loc);
         withSignal.add(person);
         committers.add(person);
       } else {
@@ -419,6 +441,7 @@ export class DeveloperActivityService {
       },
       activeDevelopers: activeDeveloperRoster(
         commitsByDeveloper,
+        locByDeveloper,
         prsByDeveloper,
         index.displayNames,
       ),
@@ -1159,6 +1182,7 @@ export function planningGapDevelopers(
  */
 export function activeDeveloperRoster(
   commitsByDeveloper: ReadonlyMap<string, number>,
+  locByDeveloper: ReadonlyMap<string, { additions: number; deletions: number }>,
   prsByDeveloper: ReadonlyMap<string, { opened: number; merged: number }>,
   displayNames: ReadonlyMap<string, string>,
 ): ActiveDeveloper[] {
@@ -1169,14 +1193,25 @@ export function activeDeveloperRoster(
   return [...everyone]
     .map((developer) => {
       const prs = prsByDeveloper.get(developer);
+      const loc = locByDeveloper.get(developer);
+      const additions = loc?.additions ?? 0;
+      const deletions = loc?.deletions ?? 0;
       return {
         developer,
         displayName: displayNames.get(developer) ?? developer,
         commits: commitsByDeveloper.get(developer) ?? 0,
+        additions,
+        deletions,
+        // The SUM, as everywhere else. A net figure would report a refactor
+        // that removed as much as it added as very nearly no work at all.
+        locChanged: additions + deletions,
         prsOpened: prs?.opened ?? 0,
         prsMerged: prs?.merged ?? 0,
       };
     })
+    // Alphabetical, and never by `locChanged`. LOC is the most misread number
+    // on this page: ordering by it would make the roster a leaderboard by
+    // default, which is exactly what CLAUDE.md forbids.
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 

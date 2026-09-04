@@ -676,6 +676,18 @@ export interface ActiveDeveloper {
   commits: number;
   prsOpened: number;
   prsMerged: number;
+  /**
+   * Changed LOC (`additions + deletions`) across their attributed commits.
+   *
+   * Optional for the same frontend/backend-skew reason as
+   * `ProjectActivityRow.unattributedCommits`: this build can be serving against
+   * an API deployed before the column existed. Absent means "this API cannot
+   * tell us" and must render as unknown — never as `0`, which would assert the
+   * person changed no lines.
+   */
+  locChanged?: number;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface DeveloperOverviewView {
