@@ -1190,6 +1190,9 @@ export function activeDeveloperRoster(
     ...commitsByDeveloper.keys(),
     ...prsByDeveloper.keys(),
   ]);
+  // Sorted alphabetically, and never by `locChanged`. LOC is the most misread
+  // number on this page: ordering by it would make the roster a leaderboard by
+  // default, which is exactly what CLAUDE.md forbids.
   return [...everyone]
     .map((developer) => {
       const prs = prsByDeveloper.get(developer);
@@ -1209,9 +1212,6 @@ export function activeDeveloperRoster(
         prsMerged: prs?.merged ?? 0,
       };
     })
-    // Alphabetical, and never by `locChanged`. LOC is the most misread number
-    // on this page: ordering by it would make the roster a leaderboard by
-    // default, which is exactly what CLAUDE.md forbids.
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
