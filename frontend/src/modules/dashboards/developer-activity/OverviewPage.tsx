@@ -453,8 +453,17 @@ function CommitTimeline({
     <Card className="space-y-4">
       <Header sort={sort} setSort={setSort} />
 
+      {/* `items-stretch`, never `items-end`. Each bar's height is a PERCENTAGE
+          of its button, and a percentage height resolves to `auto` — zero —
+          whenever the parent's own height is indefinite. Under `items-end` the
+          buttons are not stretched, so their height came from their content,
+          which is the bar itself: a circular dependency that resolved to a
+          160px-tall row of nothing. The bars had never rendered in any theme,
+          which is why the widget read as an unfinished placeholder.
+          Stretching gives each button the row's definite `h-40`, and the
+          button's own `justify-end` still sits the bar on the baseline. */}
       <div
-        className="flex h-40 items-end gap-1 overflow-x-auto"
+        className="flex h-40 items-stretch gap-1 overflow-x-auto"
         role="list"
         aria-label="Commits per day"
       >
@@ -468,7 +477,10 @@ function CommitTimeline({
               onClick={() => setOpen(isOpen ? null : day.date)}
               title={`${formatDayKey(day.date)} — ${day.totalCommits} commits`}
               aria-expanded={isOpen}
-              className="group flex min-w-[10px] flex-1 flex-col justify-end gap-1"
+              // `h-full` belt-and-braces: it pins the height definite even if
+              // the row's alignment is changed again later, so the bars cannot
+              // silently collapse a second time.
+              className="group flex h-full min-w-[10px] flex-1 flex-col justify-end gap-1"
             >
               {/* Full-opacity chart token, not brand at 30%. At 30% alpha
                   over the dark surface the bars sat within a few points of the
