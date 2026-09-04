@@ -470,11 +470,21 @@ function CommitTimeline({
               aria-expanded={isOpen}
               className="group flex min-w-[10px] flex-1 flex-col justify-end gap-1"
             >
+              {/* Full-opacity chart token, not brand at 30%. At 30% alpha
+                  over the dark surface the bars sat within a few points of the
+                  background: the widget rendered a populated week and read as
+                  an empty placeholder, which is exactly how it was reported.
+                  `chart-1` is also what the 12-month chart draws commits in,
+                  so the same quantity is the same colour on both. */}
               <span
                 className={
-                  isOpen
-                    ? 'w-full rounded-sm bg-brand transition'
-                    : 'w-full rounded-sm bg-brand/30 transition group-hover:bg-brand/60'
+                  day.totalCommits === 0
+                    ? // A day with no commits is a flat floor, not a sliver of
+                      // colour that reads as a very small amount of work.
+                      'w-full rounded-sm bg-chart-empty transition'
+                    : isOpen
+                      ? 'w-full rounded-sm bg-chart-1 ring-2 ring-brand-muted transition'
+                      : 'w-full rounded-sm bg-chart-1/80 transition group-hover:bg-chart-1'
                 }
                 style={{
                   height: `${Math.max(2, (day.totalCommits / max) * 100)}%`,
