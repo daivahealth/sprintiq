@@ -45,6 +45,52 @@ export const DASHBOARD_REGISTRY: {
     description: string;
   }[];
 }[] = [
+  // First in the nav (moved 2026-09-04). This array's order IS the sidebar
+  // order — `/assignments` filters by role and hands it over unchanged — so
+  // position here is a product decision, not a listing detail.
+  //
+  // Renamed from "Developer Activity" on 2026-08-31. The `key`s deliberately
+  // keep the old name: they are role-assignment identifiers, not display text,
+  // and rewriting them would silently drop any per-tenant assignment override
+  // stored against them. Only `title` and `path` are user-facing.
+  {
+    key: 'developer-activity',
+    title: 'Engineering Activity',
+    path: '/engineering-activity/overview',
+    description:
+      'Team activity, the watchlist, one developer’s profile, and the review queue.',
+    roles: ALL_ROLES,
+    children: [
+      {
+        key: 'developer-activity-overview',
+        title: 'Overview',
+        path: '/engineering-activity/overview',
+        description:
+          'Team-shaped totals, the daily commit series, and data-health coverage.',
+      },
+      {
+        key: 'developer-activity-watchlist',
+        title: 'Watchlist',
+        path: '/engineering-activity/watchlist',
+        description:
+          'Who has shown no tracked signal lately, and who is committing outside the plan. A prompt to ask, not a verdict.',
+      },
+      {
+        key: 'developer-activity-developer',
+        title: 'Developer',
+        path: '/engineering-activity/developer',
+        description:
+          'One developer’s commits, repos, PRs and assigned work — activity context, never a ranking.',
+      },
+      {
+        key: 'developer-activity-pr-status',
+        title: 'PR Status',
+        path: '/engineering-activity/pr-status',
+        description:
+          'Pull requests waiting on review and how review load is spread.',
+      },
+    ],
+  },
   {
     key: 'delivery',
     title: 'Delivery Explorer',
@@ -109,48 +155,6 @@ export const DASHBOARD_REGISTRY: {
     description:
       'Most-active projects (commits + LOC across mapped repos) by day/week/month.',
     roles: ALL_ROLES,
-  },
-  // Renamed from "Developer Activity" on 2026-08-31. The `key`s deliberately
-  // keep the old name: they are role-assignment identifiers, not display text,
-  // and rewriting them would silently drop any per-tenant assignment override
-  // stored against them. Only `title` and `path` are user-facing.
-  {
-    key: 'developer-activity',
-    title: 'Engineering Activity',
-    path: '/engineering-activity/overview',
-    description:
-      'Team activity, the watchlist, one developer’s profile, and the review queue.',
-    roles: ALL_ROLES,
-    children: [
-      {
-        key: 'developer-activity-overview',
-        title: 'Overview',
-        path: '/engineering-activity/overview',
-        description:
-          'Team-shaped totals, the daily commit series, and data-health coverage.',
-      },
-      {
-        key: 'developer-activity-watchlist',
-        title: 'Watchlist',
-        path: '/engineering-activity/watchlist',
-        description:
-          'Who has shown no tracked signal lately, and who is committing outside the plan. A prompt to ask, not a verdict.',
-      },
-      {
-        key: 'developer-activity-developer',
-        title: 'Developer',
-        path: '/engineering-activity/developer',
-        description:
-          'One developer’s commits, repos, PRs and assigned work — activity context, never a ranking.',
-      },
-      {
-        key: 'developer-activity-pr-status',
-        title: 'PR Status',
-        path: '/engineering-activity/pr-status',
-        description:
-          'Pull requests waiting on review and how review load is spread.',
-      },
-    ],
   },
   {
     key: 'top-repos',

@@ -44,8 +44,11 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 
 ## 4. The common dashboards
 
+**This table's order is the nav's order.** `DASHBOARD_REGISTRY` in `insights.controller.ts` is filtered by role and handed to the sidebar unchanged, so position in that array is a product decision rather than a listing detail — and this table has to be kept in step with it. **Engineering Activity leads from 2026-09-04**; Delivery Explorer, previously first, keeps `/` as its route.
+
 | Dashboard | Route | Reads | Core content |
 |---|---|---|---|
+| **Engineering Activity** | `/engineering-activity/*` | `dashboards/developer-activity/{overview,watchlist,pr-status}` + `dashboards/developer-activity` | **Four subpages under one shell** (§4.4): Overview (team-shaped), Watchlist (people), Developer (one profile), PR Status (review queue). One window, shared across tabs — activity context, never a ranking |
 | **Delivery Explorer** | `/` | `dashboards/metrics` | any metric × scope × groupBy (repo/project/developer/day) table, listed by Changed LOC descending — **except `groupBy=developer`, which is alphabetical** (see §4.1) |
 | **Sprint Health** | `/sprint-health` | `dashboards/sprint-health/active` + `dashboards/sprint-health` | **multi-project default: one card per concurrent active sprint** (each project runs its own lifecycle), ranked worst-pace-first with **cadence-normalized pace** (completion % vs elapsed % of that sprint's own window → on-track/at-risk/behind); click to drill into committed vs completed, code linkage, by-type progress |
 | **Sprint Risk** | `/sprint-risk` | `dashboards/sprint-risk/active` + `dashboards/sprint-risk` | **multi-project default: one risk card per concurrent active sprint**, ranked most-at-risk-first; project picker; click to drill into open items **without linked code** (at-risk pts), open bugs, unestimated work — each row with its PRs. Long item titles stay within the Item column and truncate rather than obscuring adjacent data. |
@@ -54,7 +57,6 @@ Bi-directional tracking primitive: `correlation_link (pr_implements_story)` read
 | **Productivity** | `/productivity` | `dashboards/productivity` | weekly throughput: items + points (Jira) and merged PRs + LOC (GitHub) — team-level |
 | **Efficiency** | `/efficiency` | `dashboards/efficiency` | PR cycle p50/p85, story cycle p50/p85, **traceability both directions** |
 | **Project Activity** | `/project-activity` | `dashboards/project-activity` | most-active projects by **commits + LOC across all mapped repos** (delivery graph), Today/7/30/90-day/12-month windows; unlinked repos bucketed honestly |
-| **Engineering Activity** | `/engineering-activity/*` | `dashboards/developer-activity/{overview,watchlist,pr-status}` + `dashboards/developer-activity` | **Four subpages under one shell** (§4.4): Overview (team-shaped), Watchlist (people), Developer (one profile), PR Status (review queue). One window, shared across tabs — activity context, never a ranking |
 | **Top Repos** | `/top-repos` | `dashboards/metrics` (groupBy=repo, fixed) | Repos ranked by Changed LOC, top 20 by default with a "show all N repos" expansion — repo-level ranking only, never individual |
 Top Repos forces its `groupBy` (via `useBatchMetrics`'s explicit override) and hides the Scope Bar's Group-by toggle (`ScopeBar`'s `showGroupBy={false}`) — it is a dedicated single-purpose screen, not a configurable view like Delivery Explorer.
 
