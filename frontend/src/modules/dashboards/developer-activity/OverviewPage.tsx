@@ -9,8 +9,10 @@ import {
   TableHeadRow,
 } from '../../../components/ui';
 import { timeAgo } from '../../../lib/utils';
+import { MonthlyTrendChart, type TrendMetric } from '../MonthlyTrendChart';
 import {
   useDeveloperOverview,
+  useMonthlyTrend,
   type ActiveDeveloper,
   type ActivityDay,
 } from '../useInsights';
@@ -126,6 +128,8 @@ export function OverviewPage() {
           />
         }
       />
+
+      <MonthlyTrend />
 
       <Card className="space-y-3">
         <h3 className="text-sm font-medium text-fg-muted">Data health</h3>
@@ -276,6 +280,7 @@ function ActiveDevelopers({
             <TableHeadRow>
               <th className="py-2 pr-4">Developer</th>
               <th className="py-2 pr-4">Commits</th>
+              <th className="py-2 pr-4">Changed LOC</th>
               <th className="py-2 pr-4">PRs opened</th>
               <th className="py-2">PRs merged</th>
             </TableHeadRow>
@@ -294,6 +299,30 @@ function ActiveDevelopers({
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.commits}
                 </td>
+                {/* An API that predates this column sends nothing, and nothing
+                    is not zero: "changed no lines" and "we cannot tell" are
+                    different claims, and only one of them is safe to print
+                    beside a person's name. */}
+                <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
+                  {dev.locChanged === undefined ? (
+                    <span className="text-fg-faint">—</span>
+                  ) : (
+                    <>
+                      {dev.locChanged.toLocaleString()}
+                      {dev.additions !== undefined &&
+                        dev.deletions !== undefined && (
+                          <span className="ml-2 text-xs text-fg-subtle">
+                            <span className="text-success-fg">
+                              +{dev.additions.toLocaleString()}
+                            </span>{' '}
+                            <span className="text-danger-fg">
+                              −{dev.deletions.toLocaleString()}
+                            </span>
+                          </span>
+                        )}
+                    </>
+                  )}
+                </td>
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.prsOpened}
                 </td>
@@ -307,11 +336,96 @@ function ActiveDevelopers({
       </div>
 
       <ProvenanceNote>
-        Activity context, never a ranking. Commits attributed to a known
-        developer only — see data health below for what that leaves out.
+        Activity context, never a ranking. Changed LOC is volume, not
+        productivity — a large number is a large diff, nothing more. Commits
+        attributed to a known developer only — see data health below for what
+        that leaves out.
       </ProvenanceNote>
     </Card>
   );
+}
+
+/**
+ * The last year in months, commits or changed LOC.
+ *
+ * Everything else on this page answers "what happened in the window you
+ * picked". This one answers "what has the year looked like", and its 12 months
+ * are fixed — a trend that resized with the selector could not be compared
+ * against itself between two visits. That difference is the thing most likely
+ * to be misread here, so the subtitle states it rather than relying on the
+ * heading, and the widget sits below the windowed ones instead of among them.
+ *
+ * Team totals only, with no per-developer breakdown: a monthly LOC line per
+ * person is the vanity ranking CLAUDE.md rules out, and LOC is never a
+ * productivity score.
+ */
+function MonthlyTrend() {
+  const [metric, setMetric] = useState<TrendMetric>('commits');
+  const query = useMonthlyTrend();
+
+  if (query.isLoading) return <LoadingCard />;
+  if (query.isError) return <ErrorCard error={query.error} />;
+  if (!query.data) return null;
+
+  const { months, collectedBackTo } = query.data;
+
+  return (
+    <Card className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-fg">Last 12 months</h3>
+          <p className="text-xs text-fg-subtle">
+            One point per calendar month (IST) — a fixed year, not the window
+            selected above
+          </p>
+        </div>
+        <SegmentedControl
+          label="Metric"
+          value={metric}
+          onChange={setMetric}
+          options={[
+            { value: 'commits', label: 'Commits' },
+            { value: 'loc', label: 'Lines of code' },
+          ]}
+        />
+      </div>
+
+      <MonthlyTrendChart months={months} metric={metric} />
+
+      <ProvenanceNote>
+        {/* The last point is the running month, which on the 3rd is three days
+            of data at the same width as thirty. Drawn solid it read as a
+            collapse in delivery; it is dashed and hollow, and said here too. */}
+        <>
+          The final point is <span className="text-fg-secondary">this month
+          so far</span> — dashed and hollow because it is still filling, not a
+          fall.{' '}
+        </>
+        {months.some((m) => !m.collected) ? (
+          <>
+            Shaded months predate collection — the line breaks rather than
+            plotting them as zero, which would assert nobody committed.
+            Collected back to {formatMonthBoundary(collectedBackTo)}.{' '}
+          </>
+        ) : collectedBackTo === null ? (
+          <>
+            How far back collection reaches is not yet established, so the
+            earliest months may be incomplete.{' '}
+          </>
+        ) : null}
+        Team totals, never a ranking. Changed LOC is volume, not productivity.
+      </ProvenanceNote>
+    </Card>
+  );
+}
+
+/** The collection floor as a month and year, for the trend's caption. */
+function formatMonthBoundary(iso: string | null): string {
+  if (!iso) return 'an unknown point';
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: 'long',
+    year: 'numeric',
+  });
 }
 
 /**
@@ -366,8 +480,17 @@ function CommitTimeline({
     <Card className="space-y-4">
       <Header sort={sort} setSort={setSort} />
 
+      {/* `items-stretch`, never `items-end`. Each bar's height is a PERCENTAGE
+          of its button, and a percentage height resolves to `auto` — zero —
+          whenever the parent's own height is indefinite. Under `items-end` the
+          buttons are not stretched, so their height came from their content,
+          which is the bar itself: a circular dependency that resolved to a
+          160px-tall row of nothing. The bars had never rendered in any theme,
+          which is why the widget read as an unfinished placeholder.
+          Stretching gives each button the row's definite `h-40`, and the
+          button's own `justify-end` still sits the bar on the baseline. */}
       <div
-        className="flex h-40 items-end gap-1 overflow-x-auto"
+        className="flex h-40 items-stretch gap-1 overflow-x-auto"
         role="list"
         aria-label="Commits per day"
       >
@@ -381,13 +504,26 @@ function CommitTimeline({
               onClick={() => setOpen(isOpen ? null : day.date)}
               title={`${formatDayKey(day.date)} — ${day.totalCommits} commits`}
               aria-expanded={isOpen}
-              className="group flex min-w-[10px] flex-1 flex-col justify-end gap-1"
+              // `h-full` belt-and-braces: it pins the height definite even if
+              // the row's alignment is changed again later, so the bars cannot
+              // silently collapse a second time.
+              className="group flex h-full min-w-[10px] flex-1 flex-col justify-end gap-1"
             >
+              {/* Full-opacity chart token, not brand at 30%. At 30% alpha
+                  over the dark surface the bars sat within a few points of the
+                  background: the widget rendered a populated week and read as
+                  an empty placeholder, which is exactly how it was reported.
+                  `chart-1` is also what the 12-month chart draws commits in,
+                  so the same quantity is the same colour on both. */}
               <span
                 className={
-                  isOpen
-                    ? 'w-full rounded-sm bg-brand transition'
-                    : 'w-full rounded-sm bg-brand/30 transition group-hover:bg-brand/60'
+                  day.totalCommits === 0
+                    ? // A day with no commits is a flat floor, not a sliver of
+                      // colour that reads as a very small amount of work.
+                      'w-full rounded-sm bg-chart-empty transition'
+                    : isOpen
+                      ? 'w-full rounded-sm bg-chart-1 ring-2 ring-brand-muted transition'
+                      : 'w-full rounded-sm bg-chart-1/80 transition group-hover:bg-chart-1'
                 }
                 style={{
                   height: `${Math.max(2, (day.totalCommits / max) * 100)}%`,

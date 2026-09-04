@@ -13,6 +13,7 @@ import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
 import { CodeService } from '../code/code.service';
+import { ConnectionsService } from '../connections/connections.service';
 import { ACTIVITY_WINDOWS, resolveActivityRange } from './activity-range';
 import { parseList } from './catalog.controller';
 
@@ -44,6 +45,52 @@ export const DASHBOARD_REGISTRY: {
     description: string;
   }[];
 }[] = [
+  // First in the nav (moved 2026-09-04). This array's order IS the sidebar
+  // order — `/assignments` filters by role and hands it over unchanged — so
+  // position here is a product decision, not a listing detail.
+  //
+  // Renamed from "Developer Activity" on 2026-08-31. The `key`s deliberately
+  // keep the old name: they are role-assignment identifiers, not display text,
+  // and rewriting them would silently drop any per-tenant assignment override
+  // stored against them. Only `title` and `path` are user-facing.
+  {
+    key: 'developer-activity',
+    title: 'Engineering Activity',
+    path: '/engineering-activity/overview',
+    description:
+      'Team activity, the watchlist, one developer’s profile, and the review queue.',
+    roles: ALL_ROLES,
+    children: [
+      {
+        key: 'developer-activity-overview',
+        title: 'Overview',
+        path: '/engineering-activity/overview',
+        description:
+          'Team-shaped totals, the daily commit series, and data-health coverage.',
+      },
+      {
+        key: 'developer-activity-watchlist',
+        title: 'Watchlist',
+        path: '/engineering-activity/watchlist',
+        description:
+          'Who has shown no tracked signal lately, and who is committing outside the plan. A prompt to ask, not a verdict.',
+      },
+      {
+        key: 'developer-activity-developer',
+        title: 'Developer',
+        path: '/engineering-activity/developer',
+        description:
+          'One developer’s commits, repos, PRs and assigned work — activity context, never a ranking.',
+      },
+      {
+        key: 'developer-activity-pr-status',
+        title: 'PR Status',
+        path: '/engineering-activity/pr-status',
+        description:
+          'Pull requests waiting on review and how review load is spread.',
+      },
+    ],
+  },
   {
     key: 'delivery',
     title: 'Delivery Explorer',
@@ -109,48 +156,6 @@ export const DASHBOARD_REGISTRY: {
       'Most-active projects (commits + LOC across mapped repos) by day/week/month.',
     roles: ALL_ROLES,
   },
-  // Renamed from "Developer Activity" on 2026-08-31. The `key`s deliberately
-  // keep the old name: they are role-assignment identifiers, not display text,
-  // and rewriting them would silently drop any per-tenant assignment override
-  // stored against them. Only `title` and `path` are user-facing.
-  {
-    key: 'developer-activity',
-    title: 'Engineering Activity',
-    path: '/engineering-activity/overview',
-    description:
-      'Team activity, the watchlist, one developer’s profile, and the review queue.',
-    roles: ALL_ROLES,
-    children: [
-      {
-        key: 'developer-activity-overview',
-        title: 'Overview',
-        path: '/engineering-activity/overview',
-        description:
-          'Team-shaped totals, the daily commit series, and data-health coverage.',
-      },
-      {
-        key: 'developer-activity-watchlist',
-        title: 'Watchlist',
-        path: '/engineering-activity/watchlist',
-        description:
-          'Who has shown no tracked signal lately, and who is committing outside the plan. A prompt to ask, not a verdict.',
-      },
-      {
-        key: 'developer-activity-developer',
-        title: 'Developer',
-        path: '/engineering-activity/developer',
-        description:
-          'One developer’s commits, repos, PRs and assigned work — activity context, never a ranking.',
-      },
-      {
-        key: 'developer-activity-pr-status',
-        title: 'PR Status',
-        path: '/engineering-activity/pr-status',
-        description:
-          'Pull requests waiting on review and how review load is spread.',
-      },
-    ],
-  },
   {
     key: 'top-repos',
     title: 'Top Repos',
@@ -174,6 +179,9 @@ export class InsightsController {
     private readonly devActivity: DeveloperActivityService,
     private readonly correlation: CorrelationService,
     private readonly code: CodeService,
+    // Read-only, for the collection watermark the 12-month trend needs to tell
+    // an empty month from an unwalked one. BC-13 never reaches a source itself.
+    private readonly connections: ConnectionsService,
   ) {}
 
   /** Dashboards visible to the current user's roles (role-based assignment). */
@@ -408,6 +416,25 @@ export class InsightsController {
       range.windowDays,
     );
     return { window, ...view };
+  }
+
+  /**
+   * Engineering Activity §Overview — commit and changed-LOC volume per month
+   * over the last year.
+   *
+   * Takes no window parameter: it is a trend, and one that resized with the
+   * section's range selector could not be compared against itself between two
+   * visits. The 12 months are fixed and the widget says so on screen.
+   *
+   * The collection watermark is read here rather than inside the metrics
+   * service so BC-8 keeps its hands off connection tables — the same
+   * composition the freshness endpoint does, and the reason a month the
+   * backfill never reached can be drawn as a gap instead of a zero.
+   */
+  @Get('developer-activity/monthly-trend')
+  async developerActivityMonthlyTrend(@CurrentUser() user: AuthUser) {
+    const freshness = await this.connections.getDataFreshness(user.tenantId);
+    return this.devActivity.monthlyTrend([], freshness.collectedBackTo);
   }
 
   /**
