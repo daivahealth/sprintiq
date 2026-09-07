@@ -61,7 +61,9 @@ export class PlanningService implements OnModuleInit {
     }
   }
 
-  async handleStory(event: DomainEvent<PlanningStoryPayload>): Promise<void> {
+  private async handleStory(
+    event: DomainEvent<PlanningStoryPayload>,
+  ): Promise<void> {
     const p = event.payload;
     const connectionId = event.connectionId ?? '';
 
@@ -161,7 +163,7 @@ export class PlanningService implements OnModuleInit {
    * columns: `plannedReleaseAt` and its provenance are user input and are not
    * in this object at all, so a poll can never overwrite them.
    */
-  async handleVersion(
+  private async handleVersion(
     event: DomainEvent<PlanningVersionPayload>,
   ): Promise<void> {
     const p = event.payload;

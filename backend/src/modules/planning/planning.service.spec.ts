@@ -27,6 +27,26 @@ function storyEvent(
   };
 }
 
+function versionEvent(
+  payload: Partial<PlanningVersionPayload>,
+): DomainEvent<PlanningVersionPayload> {
+  return {
+    type: EventTypes.PLANNING_VERSION_UPSERTED,
+    tenantId: 't1',
+    connectionId: 'c1',
+    sourceEventIds: ['evt_2'],
+    occurredAt: new Date('2026-08-14T00:00:00.000Z'),
+    payload: {
+      externalId: '10042',
+      projectKey: 'ACT',
+      name: 'RC1',
+      released: false,
+      archived: false,
+      ...payload,
+    },
+  };
+}
+
 describe('PlanningService — status-transition timeline', () => {
   let prisma: {
     story: { upsert: jest.Mock };
@@ -228,6 +248,13 @@ describe('PlanningService — version projection', () => {
   };
   let service: PlanningService;
 
+  // handleStory and handleVersion are private and only reachable via the bus
+  // subscription, which is how they run in production — subscribe once and
+  // invoke what got registered, the same way the status-transition block
+  // above does. This also exercises the subscription wiring itself.
+  let handleStory: (e: DomainEvent<PlanningStoryPayload>) => Promise<void>;
+  let handleVersion: (e: DomainEvent<PlanningVersionPayload>) => Promise<void>;
+
   beforeEach(() => {
     prisma = {
       story: { upsert: jest.fn().mockResolvedValue({}) },
@@ -236,28 +263,37 @@ describe('PlanningService — version projection', () => {
       issueStatusHistory: { createMany: jest.fn().mockResolvedValue({}) },
       sprintScopeChange: { createMany: jest.fn().mockResolvedValue({}) },
     };
+    const storyHandlers: ((
+      e: DomainEvent<PlanningStoryPayload>,
+    ) => Promise<void>)[] = [];
+    const versionHandlers: ((
+      e: DomainEvent<PlanningVersionPayload>,
+    ) => Promise<void>)[] = [];
     const bus = {
-      subscribe: jest.fn(),
+      subscribe: jest.fn((type: string, fn: never) => {
+        if (type === EventTypes.PLANNING_VERSION_UPSERTED) {
+          versionHandlers.push(fn);
+        } else {
+          storyHandlers.push(fn);
+        }
+      }),
     } as unknown as EventBus;
 
     service = new PlanningService(prisma as unknown as PrismaService, bus);
     service.onModuleInit();
+    handleStory = storyHandlers[0];
+    handleVersion = versionHandlers[0];
   });
 
   it('writes the version dates and released flag onto the release row', async () => {
-    await service.handleVersion({
-      tenantId: 't1',
-      connectionId: 'c1',
-      payload: {
-        externalId: '10042',
-        projectKey: 'ACT',
-        name: 'RC1',
+    await handleVersion(
+      versionEvent({
         startDate: '2026-08-14',
         releaseDate: '2026-08-22',
         released: true,
         archived: false,
-      },
-    } as DomainEvent<PlanningVersionPayload>);
+      }),
+    );
 
     const arg = prisma.release.upsert.mock.calls[0][0] as {
       where: unknown;
@@ -277,17 +313,7 @@ describe('PlanningService — version projection', () => {
   // silently overwrote it would erase the only copy — Jira has no such field
   // to restore it from.
   it('never touches the user-entered planned date', async () => {
-    await service.handleVersion({
-      tenantId: 't1',
-      connectionId: 'c1',
-      payload: {
-        externalId: '10042',
-        projectKey: 'ACT',
-        name: 'RC1',
-        released: false,
-        archived: false,
-      },
-    } as DomainEvent<PlanningVersionPayload>);
+    await handleVersion(versionEvent({}));
 
     const arg = prisma.release.upsert.mock.calls[0][0] as {
       create: Record<string, unknown>;
@@ -306,17 +332,13 @@ describe('PlanningService — version projection', () => {
   // A fixVersion name seen on an issue still creates the row; the version
   // event fills in the rest. The name path must not blank the dates.
   it('does not clear collected dates when an issue re-asserts the bare name', async () => {
-    await service.handleStory({
-      tenantId: 't1',
-      connectionId: 'c1',
-      payload: {
+    await handleStory(
+      storyEvent({
         externalKey: 'ACT-1',
         projectKey: 'ACT',
-        status: 'Done',
-        title: 'x',
         releases: ['RC1'],
-      },
-    } as DomainEvent<PlanningStoryPayload>);
+      }),
+    );
 
     const call = prisma.release.upsert.mock.calls[0][0] as {
       update: Record<string, unknown>;
