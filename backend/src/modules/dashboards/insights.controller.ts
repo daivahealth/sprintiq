@@ -12,6 +12,7 @@ import { istWindowFloor } from '../../common/time';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
+import { SprintHealthDetailService } from '../../metrics/sprint-health-detail.service';
 import { CodeService } from '../code/code.service';
 import { ConnectionsService } from '../connections/connections.service';
 import { ACTIVITY_WINDOWS, resolveActivityRange } from './activity-range';
@@ -176,6 +177,7 @@ export const DASHBOARD_REGISTRY: {
 export class InsightsController {
   constructor(
     private readonly insights: InsightsService,
+    private readonly detail: SprintHealthDetailService,
     private readonly devActivity: DeveloperActivityService,
     private readonly correlation: CorrelationService,
     private readonly code: CodeService,
@@ -241,13 +243,15 @@ export class InsightsController {
 
   @Get('sprint-health')
   async sprintHealth(@Query('sprint') sprint?: string) {
-    const view = await this.insights.sprintHealth(
-      requireParam(sprint, 'sprint'),
-    );
+    const id = requireParam(sprint, 'sprint');
+    const [view, commitActivity] = await Promise.all([
+      this.insights.sprintHealth(id),
+      this.detail.commitActivity(id),
+    ]);
     if (!view) {
       throw new NotFoundException('Sprint not found.');
     }
-    return view;
+    return { ...view, commitActivity, computedAt: new Date().toISOString() };
   }
 
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */

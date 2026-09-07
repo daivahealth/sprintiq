@@ -6,13 +6,24 @@ import { PlanningModule } from '../modules/planning/planning.module';
 import { DeveloperActivityService } from './developer-activity.service';
 import { InsightsService } from './insights.service';
 import { MetricsService } from './metrics.service';
+import { SprintHealthDetailService } from './sprint-health-detail.service';
 
 /** BC-8 Metrics & Aggregation Engine + dashboard insight read models. */
 @Module({
   // ConnectionsModule: the velocity read needs the collection horizon, which
   // is a property of the connections, to know which sprints predate the data.
   imports: [CodeModule, ConnectionsModule, CorrelationModule, PlanningModule],
-  providers: [MetricsService, InsightsService, DeveloperActivityService],
-  exports: [MetricsService, InsightsService, DeveloperActivityService],
+  providers: [
+    MetricsService,
+    InsightsService,
+    DeveloperActivityService,
+    SprintHealthDetailService,
+  ],
+  exports: [
+    MetricsService,
+    InsightsService,
+    DeveloperActivityService,
+    SprintHealthDetailService,
+  ],
 })
 export class MetricsModule {}

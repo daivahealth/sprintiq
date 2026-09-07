@@ -536,6 +536,22 @@ export class PlanningService implements OnModuleInit {
     };
   }
 
+  /**
+   * One sprint by its source id — a point read on the unique key.
+   *
+   * NOT `listSprints(...).find(...)`: that read is capped at 100 rows, so
+   * scanning it silently reports "not found" for any sprint outside the most
+   * recent hundred. This board is opened from links to closed sprints.
+   */
+  findSprintByExternalId(
+    tenantId: string,
+    externalId: string,
+  ): Promise<Sprint | null> {
+    return this.prisma.sprint.findUnique({
+      where: { tenantId_externalId: { tenantId, externalId } },
+    });
+  }
+
   /** Items committed to a sprint (velocity / health / risk inputs). */
   listItemsForSprint(
     tenantId: string,
