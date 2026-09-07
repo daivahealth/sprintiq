@@ -88,11 +88,12 @@ describe('SprintHealthDetailService.commitActivity', () => {
     jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
 
     planning = {
-      // Only '42' resolves — anything else is "not found", the same way a
-      // real point read on the unique key would answer.
+      // The sprint exists only for tenant 't1' + externalId '42' — the same
+      // point read a real `tenantId_externalId` unique lookup would give:
+      // wrong id OR wrong tenant is the same "not found".
       findSprintByExternalId: jest.fn(
-        async (_tenantId: string, externalId: string) =>
-          externalId === '42' ? defaultSprint() : null,
+        async (tenantId: string, externalId: string) =>
+          tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
       ),
       listSprints: jest.fn().mockResolvedValue([]),
       listItemsForSprint: jest.fn().mockResolvedValue(defaultItems()),
@@ -195,25 +196,73 @@ describe('SprintHealthDetailService.commitActivity', () => {
     );
   });
 
+  // The guard that stops an unmapped project from reading every repo in the
+  // tenant: `listCommitsPage` treats an EMPTY `repos` filter as "no filter",
+  // so when nothing maps to this sprint's project the service must skip the
+  // read entirely rather than pass `repos: []` through.
+  it('reports zero commits and skips the read entirely when no repo maps to the sprint project', async () => {
+    insights.repoToProjects.mockResolvedValue(
+      new Map([['org/other', ['PAY']]]),
+    );
+    const view = await service.commitActivity('42');
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+    expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
+    expect(view).toMatchObject({ commits: 0, repos: [] });
+  });
+
   // Isolation is tested, not assumed. Every read on this service resolves its
   // tenant from the request context and passes it down; none takes one from
   // the caller, so a sprint id alone can never reach another tenant's data.
+  // All six tenant-consuming calls are asserted here, not a sample of them —
+  // Tasks 7-10 add three more methods to this same class and will follow
+  // this file's pattern, so a gap here is a gap copied four times.
   it('scopes every query by the tenant from the request context', async () => {
     tenantContext.requireTenantId.mockReturnValue('t-other');
+    // Made reachable under the OTHER tenant too, so this test proves every
+    // downstream call threads 't-other' rather than merely proving the
+    // sprint lookup got it (the null-return path is covered separately).
+    planning.findSprintByExternalId.mockImplementation(
+      async (tenantId: string, externalId: string) =>
+        tenantId === 't-other' && externalId === '42' ? defaultSprint() : null,
+    );
+
     await service.commitActivity('42');
 
     expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
       't-other',
       '42',
     );
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
     expect(code.listCommitsPage).toHaveBeenCalledWith(
       't-other',
       expect.anything(),
     );
+    expect(identities.attributionIndex).toHaveBeenCalledWith('t-other');
+    expect(prisma.pullRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
   });
 
+  // Models the actual isolation boundary: the point read is scoped by the
+  // REQUESTING tenant, so a sprint that exists — under a DIFFERENT tenant —
+  // is exactly as absent as one that doesn't exist at all. Distinct from
+  // "returns null for a sprint that does not exist" above: here the sprint
+  // is real, just not this tenant's, and the lookup must still be called
+  // with the requester's own tenant id rather than skipped or guessed.
   it('returns null for a sprint id belonging to another tenant', async () => {
-    planning.findSprintByExternalId.mockResolvedValue(null);
-    expect(await service.commitActivity('42')).toBeNull();
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+
+    const view = await service.commitActivity('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(view).toBeNull();
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+    expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
   });
 });
