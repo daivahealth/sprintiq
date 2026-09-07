@@ -67,6 +67,60 @@ export function istDaySpan(fromKey: string, toKey: string): number {
   return Math.round(days) + 1;
 }
 
+/** The IST calendar-month key (YYYY-MM) a UTC instant falls in. */
+export function istMonthKey(date: Date): string {
+  return istDateKey(date).slice(0, 7);
+}
+
+/**
+ * The UTC instant at which an IST calendar month (`YYYY-MM`) begins.
+ *
+ * Delegates to `istDayStart` on the first of the month rather than repeating
+ * the offset literal, so the month and day boundaries cannot drift apart.
+ */
+export function istMonthStart(key: string): Date {
+  return istDayStart(`${key}-01`);
+}
+
+/**
+ * The LAST instant of an IST calendar month — the inclusive upper bound of a
+ * range covering it, for the same reason `istDayEnd` is inclusive: bounding at
+ * the next month's midnight would swallow its first half-hour.
+ */
+export function istMonthEnd(key: string): Date {
+  return new Date(istMonthStart(addIstMonths(key, 1)).getTime() - 1);
+}
+
+/**
+ * The last `count` IST calendar months, **oldest first**, ending with the month
+ * the given moment falls in.
+ *
+ * Oldest-first because the only consumer plots them left-to-right against time.
+ * The day series next to it is newest-first (a list, not a chart) — the two
+ * orders are deliberate, and each says so at its own call site.
+ */
+export function lastIstMonths(count: number, now: Date = new Date()): string[] {
+  const current = istMonthKey(now);
+  return Array.from({ length: count }, (_, i) =>
+    addIstMonths(current, i - (count - 1)),
+  );
+}
+
+/**
+ * Shift a `YYYY-MM` key by whole months, rolling the year over correctly in
+ * both directions — the arithmetic a naive `month ± 1` gets wrong at January
+ * and December.
+ */
+function addIstMonths(key: string, delta: number): string {
+  const [year, month] = key.split('-').map(Number);
+  // Zero-based month arithmetic, so a plain floor/modulo handles the rollover
+  // without special-casing either boundary.
+  const total = year * 12 + (month - 1) + delta;
+  const y = Math.floor(total / 12);
+  const m = total - y * 12 + 1;
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+
 /**
  * The IST calendar date (YYYY-MM-DD) of the Sunday starting the week a moment
  * falls in — the weekly bucket key for throughput metrics.

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import type { Scope } from '../../lib/scope';
 import { rangeParams, type ActivityRange } from './activity-range';
+import type { TrendMonth } from './monthly-trend';
 
 // ---- Response types (mirror backend insights.service.ts) -------------------
 
@@ -675,6 +676,18 @@ export interface ActiveDeveloper {
   commits: number;
   prsOpened: number;
   prsMerged: number;
+  /**
+   * Changed LOC (`additions + deletions`) across their attributed commits.
+   *
+   * Optional for the same frontend/backend-skew reason as
+   * `ProjectActivityRow.unattributedCommits`: this build can be serving against
+   * an API deployed before the column existed. Absent means "this API cannot
+   * tell us" and must render as unknown — never as `0`, which would assert the
+   * person changed no lines.
+   */
+  locChanged?: number;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface DeveloperOverviewView {
@@ -703,6 +716,20 @@ export interface DeveloperOverviewView {
   assigneeCoverage: JiraAssigneeCoverage;
   truncated: boolean;
   windowDays: number;
+  computedAt: string;
+}
+
+/**
+ * Twelve months of commit and changed-LOC volume, oldest first.
+ *
+ * `collected` is the field that matters: a month the backfill never reached
+ * reports zero, and a chart that plots that zero says nobody committed. The
+ * figures on an uncollected month are a floor, not a measurement.
+ */
+export interface MonthlyTrendView {
+  months: TrendMonth[];
+  /** How deep collection reaches. Null means the depth is not yet known. */
+  collectedBackTo: string | null;
   computedAt: string;
 }
 
@@ -812,6 +839,25 @@ export function useDeveloperOverview(range: ActivityRange) {
         `/api/dashboards/developer-activity/overview?${params}`,
       ),
     staleTime: 60_000,
+  });
+}
+
+/**
+ * Commit and changed-LOC volume per month for the last year.
+ *
+ * Takes no range: the trend is a fixed 12 months, deliberately independent of
+ * the section's window selector, so it can be compared against itself between
+ * visits. `staleTime` is an hour rather than the minute the windowed views use
+ * — a monthly bucket does not move at the pace a day's does.
+ */
+export function useMonthlyTrend() {
+  return useQuery({
+    queryKey: ['developer-activity-monthly-trend'],
+    queryFn: () =>
+      api.get<MonthlyTrendView>(
+        '/api/dashboards/developer-activity/monthly-trend',
+      ),
+    staleTime: 3_600_000,
   });
 }
 

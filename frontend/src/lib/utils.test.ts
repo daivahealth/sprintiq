@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatCompact,
   istDayAxis,
   istDayKeyOffset,
   istDaySpan,
@@ -61,5 +62,38 @@ describe('istDayAxis', () => {
     expect(axis).toHaveLength(7);
     expect(axis[0]).toBe('2026-08-19');
     expect(axis[6]).toBe('2026-08-25');
+  });
+});
+
+/**
+ * Axis labels for a metric that spans four orders of magnitude between tenants
+ * — single-digit commits one month, six-figure LOC the next. Full numerals
+ * make the y-axis wider than some of the bars it labels.
+ */
+describe('formatCompact', () => {
+  it('leaves small numbers exactly as they are', () => {
+    // Rounding a commit count to "0.0k" loses the only digit that mattered.
+    expect(formatCompact(0)).toBe('0');
+    expect(formatCompact(7)).toBe('7');
+    expect(formatCompact(999)).toBe('999');
+  });
+
+  it('abbreviates thousands and millions', () => {
+    expect(formatCompact(1000)).toBe('1k');
+    expect(formatCompact(4500)).toBe('4.5k');
+    expect(formatCompact(98_765)).toBe('99k');
+    expect(formatCompact(2_400_000)).toBe('2.4M');
+  });
+
+  it('drops a trailing .0 rather than printing it', () => {
+    // "3.0k" and "3k" are the same number; the axis should say it once.
+    expect(formatCompact(3000)).toBe('3k');
+    expect(formatCompact(1_000_000)).toBe('1M');
+  });
+
+  it('keeps one decimal only below ten of a unit, where it carries meaning', () => {
+    // 4.5k is a distinction worth drawing; 98.8k is noise at axis size.
+    expect(formatCompact(4520)).toBe('4.5k');
+    expect(formatCompact(98_800)).toBe('99k');
   });
 });

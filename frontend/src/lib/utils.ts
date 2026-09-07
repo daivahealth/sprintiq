@@ -119,6 +119,30 @@ export function dayLabelStride(dayCount: number): number {
   return Math.ceil(dayCount / 6);
 }
 
+/**
+ * A count shortened for an axis label: `4.5k`, `99k`, `2.4M`.
+ *
+ * Written out rather than using `Intl.NumberFormat`'s compact notation because
+ * that follows the reader's locale — under `en-IN` it groups in lakh and crore
+ * and renders 2.4 million as "24L". Correct for the locale, but this axis sits
+ * beside `toLocaleString` totals elsewhere on the page, and a unit that changes
+ * with the browser makes two figures on one screen incomparable.
+ *
+ * One decimal only below ten of a unit, where the fraction still separates two
+ * readable quantities. Above that it is noise at label size: "98.8k" and "99k"
+ * point at the same gridline.
+ */
+export function formatCompact(value: number): string {
+  const abs = Math.abs(value);
+  if (abs < 1000) return String(Math.round(value));
+
+  const [divisor, suffix] = abs < 1_000_000 ? [1000, 'k'] : [1_000_000, 'M'];
+  const scaled = value / divisor;
+  // `toFixed` then strip, so 3.0 prints as "3" without a separate branch.
+  const rounded = Math.abs(scaled) < 10 ? scaled.toFixed(1) : scaled.toFixed(0);
+  return `${rounded.replace(/\.0$/, '')}${suffix}`;
+}
+
 /** Hours → compact "Xh"/"Yd Zh" label. */
 export function formatHours(hours: number | null): string {
   if (hours === null) return '—';
