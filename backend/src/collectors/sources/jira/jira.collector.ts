@@ -789,6 +789,7 @@ export class JiraCollector extends BaseSourceCollector {
       | undefined;
     const priority = fields.priority as { name?: string } | undefined;
     const fixVersions = fields.fixVersions;
+    const affectsVersions = fields.versions;
 
     return {
       externalKey: issueKey,
@@ -808,6 +809,11 @@ export class JiraCollector extends BaseSourceCollector {
             .map((v: { name?: string }) => v?.name)
             .filter((n: unknown): n is string => typeof n === 'string')
         : undefined,
+      affectsReleases: Array.isArray(affectsVersions)
+        ? affectsVersions
+            .map((v) => (v as { name?: string }).name)
+            .filter((n): n is string => Boolean(n))
+        : [],
       assigneeLogin: assignee?.name ?? assignee?.accountId ?? undefined,
       assigneeName: assignee?.displayName ?? undefined,
       assigneeEmail: assignee?.emailAddress ?? undefined,

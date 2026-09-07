@@ -109,6 +109,7 @@ export class PlanningService implements OnModuleInit {
       parentKey: p.parentKey ?? null,
       sprintExternalId: p.sprint?.externalId ?? null,
       releases: p.releases ?? [],
+      affectsReleases: p.affectsReleases ?? [],
       assigneeLogin: p.assigneeLogin ?? null,
       assigneeName: p.assigneeName ?? null,
       // Written unconditionally with the rest of the assignee, and deliberately

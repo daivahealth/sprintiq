@@ -163,6 +163,11 @@ export interface PlanningStoryPayload {
   parentKey?: string; // parent story external key (subtasks)
   sprint?: PlanningSprintRef;
   releases?: string[]; // Jira fixVersion names
+  /**
+   * Jira's `versions` (Affects Version/s) — where a defect was FOUND, as
+   * distinct from `releases` (fixVersions), where it will be fixed.
+   */
+  affectsReleases?: string[];
   assigneeLogin?: string;
   assigneeName?: string;
   /**

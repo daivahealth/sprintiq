@@ -393,12 +393,37 @@ describe('JiraCollector.poll', () => {
         'project',
         'parent',
         'fixVersions',
+        'versions',
         'assignee',
         'priority',
         'resolutiondate',
         'created',
         'updated',
       ],
+    });
+  });
+
+  it('requests Affects Version and carries it onto the payload', async () => {
+    // `versions` is Jira's "Affects Version/s" — where a defect was FOUND.
+    // fixVersions answers a different question and must not stand in for it.
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('ACT-9', {
+          summary: 'crash on save',
+          issuetype: { name: 'Bug' },
+          project: { key: 'ACT' },
+          versions: [{ name: 'RC1' }],
+          fixVersions: [{ name: 'RC2' }],
+        }),
+      ],
+    });
+
+    const { envelopes } = await collector.poll(baseConnection());
+
+    const env = envelopes.find((e) => e.eventType.startsWith('planning.issue'));
+    expect(env?.data).toMatchObject({
+      affectsReleases: ['RC1'],
+      releases: ['RC2'],
     });
   });
 

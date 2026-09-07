@@ -345,4 +345,22 @@ describe('PlanningService — version projection', () => {
     };
     expect(call.update).toEqual({});
   });
+
+  it('persists affectsReleases onto the story', async () => {
+    await handleStory(
+      storyEvent({
+        externalKey: 'ACT-9',
+        projectKey: 'ACT',
+        status: 'Open',
+        title: 'crash on save',
+        type: 'bug',
+        affectsReleases: ['RC1'],
+      }),
+    );
+
+    const arg = prisma.story.upsert.mock.calls[0][0] as {
+      update: Record<string, unknown>;
+    };
+    expect(arg.update).toMatchObject({ affectsReleases: ['RC1'] });
+  });
 });

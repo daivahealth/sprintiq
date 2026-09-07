@@ -78,6 +78,9 @@ export const BASE_SEARCH_FIELDS = [
   'project',
   'parent',
   'fixVersions',
+  // Affects Version/s — where a defect was found, as distinct from where it
+  // will be fixed. "Bugs logged against this RC" is this field.
+  'versions',
   'assignee',
   'priority',
   'resolutiondate',
