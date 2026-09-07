@@ -86,6 +86,26 @@ export const BASE_SEARCH_FIELDS = [
 ];
 
 /**
+ * A Jira project version (`fixVersion`), as returned by
+ * `GET /rest/api/3/project/{key}/versions`.
+ *
+ * Note what is NOT here: an actual release date. Jira carries ONE date
+ * (`releaseDate`, "expected to finish") and overwrites it with the release day
+ * when the version is released, so the planned date is destroyed at exactly
+ * the moment you would want to compare against it. That is why the planned
+ * date is user input in SprintIQ (see planning_release.plannedReleaseAt).
+ */
+export interface JiraVersion {
+  id: string;
+  name: string;
+  startDate?: string;
+  releaseDate?: string;
+  released?: boolean;
+  archived?: boolean;
+  overdue?: boolean;
+}
+
+/**
  * Typed Jira Cloud REST v3 client (BC-1). Owns pagination (`nextPageToken`)
  * and rate-limit awareness (429 + `Retry-After`) so the collector never talks
  * to `fetch` directly.
@@ -287,5 +307,38 @@ export class JiraClient {
       startAt += maxResults;
     }
     return entries;
+  }
+
+  /**
+   * `GET /rest/api/3/project/{projectIdOrKey}/versions` — the project's
+   * fixVersions with their dates and released flag. Not paginated.
+   *
+   * Returns `null` (NOT `[]`) on failure, so a transient 401/429 is never
+   * mistaken for "this project has no releases" — which would blank every RC
+   * date on the board while looking like a fact.
+   */
+  async getProjectVersions(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+    projectKey: string,
+  ): Promise<JiraVersion[] | null> {
+    if (!apiToken) {
+      return null;
+    }
+    const url = `${siteUrl.replace(/\/$/, '')}/rest/api/3/project/${encodeURIComponent(projectKey)}/versions`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      this.logger.warn(
+        `Jira version fetch failed (${res.status}) for project ${projectKey}`,
+      );
+      return null;
+    }
+    const list = (await res.json()) as JiraVersion[];
+    return Array.isArray(list) ? list : [];
   }
 }
