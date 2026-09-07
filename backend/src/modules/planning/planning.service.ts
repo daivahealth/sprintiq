@@ -5,8 +5,12 @@ import {
   PlanningSprintRef,
   PlanningStoryPayload,
   PlanningTransitionRef,
+  PlanningVersionPayload,
 } from '../../common/events/contracts';
-import { PLANNING_STORY_EVENT_TYPES } from '../../common/events/event-types';
+import {
+  PLANNING_STORY_EVENT_TYPES,
+  PLANNING_VERSION_EVENT_TYPES,
+} from '../../common/events/event-types';
 import { DomainEvent } from '../../common/events/domain-event';
 import { EventBus } from '../../common/events/event-bus';
 import { newId } from '../../common/id';
@@ -50,11 +54,14 @@ export class PlanningService implements OnModuleInit {
         this.handleStory(e),
       );
     }
+    for (const type of PLANNING_VERSION_EVENT_TYPES) {
+      this.eventBus.subscribe<PlanningVersionPayload>(type, (e) =>
+        this.handleVersion(e),
+      );
+    }
   }
 
-  private async handleStory(
-    event: DomainEvent<PlanningStoryPayload>,
-  ): Promise<void> {
+  async handleStory(event: DomainEvent<PlanningStoryPayload>): Promise<void> {
     const p = event.payload;
     const connectionId = event.connectionId ?? '';
 
@@ -147,6 +154,42 @@ export class PlanningService implements OnModuleInit {
     });
 
     this.logger.debug(`upserted ${fields.type} ${p.externalKey} (${p.status})`);
+  }
+
+  /**
+   * A Jira version (fixVersion) with its dates. Writes only source-owned
+   * columns: `plannedReleaseAt` and its provenance are user input and are not
+   * in this object at all, so a poll can never overwrite them.
+   */
+  async handleVersion(
+    event: DomainEvent<PlanningVersionPayload>,
+  ): Promise<void> {
+    const p = event.payload;
+    const fields = {
+      connectionId: event.connectionId ?? '',
+      externalId: p.externalId,
+      startAt: p.startDate ? new Date(p.startDate) : null,
+      releaseDate: p.releaseDate ? new Date(p.releaseDate) : null,
+      released: p.released,
+      archived: p.archived,
+    };
+    await this.prisma.release.upsert({
+      where: {
+        tenantId_projectKey_name: {
+          tenantId: event.tenantId,
+          projectKey: p.projectKey,
+          name: p.name,
+        },
+      },
+      create: {
+        id: newId(),
+        tenantId: event.tenantId,
+        name: p.name,
+        projectKey: p.projectKey,
+        ...fields,
+      },
+      update: fields,
+    });
   }
 
   /**

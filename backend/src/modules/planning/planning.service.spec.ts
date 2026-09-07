@@ -1,5 +1,8 @@
 import { EventBus } from '../../common/events/event-bus';
-import { PlanningStoryPayload } from '../../common/events/contracts';
+import {
+  PlanningStoryPayload,
+  PlanningVersionPayload,
+} from '../../common/events/contracts';
 import { DomainEvent } from '../../common/events/domain-event';
 import { EventTypes } from '../../common/events/event-types';
 import { PrismaService } from '../../database/prisma.service';
@@ -212,5 +215,112 @@ describe('PlanningService — status-transition timeline', () => {
     };
     expect(without.update).not.toHaveProperty('sourceCreatedAt');
     expect(without.create.sourceCreatedAt).toBeNull();
+  });
+});
+
+describe('PlanningService — version projection', () => {
+  let prisma: {
+    story: { upsert: jest.Mock };
+    sprint: { upsert: jest.Mock };
+    release: { upsert: jest.Mock };
+    issueStatusHistory: { createMany: jest.Mock };
+    sprintScopeChange: { createMany: jest.Mock };
+  };
+  let service: PlanningService;
+
+  beforeEach(() => {
+    prisma = {
+      story: { upsert: jest.fn().mockResolvedValue({}) },
+      sprint: { upsert: jest.fn().mockResolvedValue({}) },
+      release: { upsert: jest.fn().mockResolvedValue({}) },
+      issueStatusHistory: { createMany: jest.fn().mockResolvedValue({}) },
+      sprintScopeChange: { createMany: jest.fn().mockResolvedValue({}) },
+    };
+    const bus = {
+      subscribe: jest.fn(),
+    } as unknown as EventBus;
+
+    service = new PlanningService(prisma as unknown as PrismaService, bus);
+    service.onModuleInit();
+  });
+
+  it('writes the version dates and released flag onto the release row', async () => {
+    await service.handleVersion({
+      tenantId: 't1',
+      connectionId: 'c1',
+      payload: {
+        externalId: '10042',
+        projectKey: 'ACT',
+        name: 'RC1',
+        startDate: '2026-08-14',
+        releaseDate: '2026-08-22',
+        released: true,
+        archived: false,
+      },
+    } as DomainEvent<PlanningVersionPayload>);
+
+    const arg = prisma.release.upsert.mock.calls[0][0] as {
+      where: unknown;
+      update: Record<string, unknown>;
+    };
+    expect(arg.update).toEqual({
+      connectionId: 'c1',
+      externalId: '10042',
+      startAt: new Date('2026-08-14'),
+      releaseDate: new Date('2026-08-22'),
+      released: true,
+      archived: false,
+    });
+  });
+
+  // The planned date is a human judgement recorded in SprintIQ. A poll that
+  // silently overwrote it would erase the only copy — Jira has no such field
+  // to restore it from.
+  it('never touches the user-entered planned date', async () => {
+    await service.handleVersion({
+      tenantId: 't1',
+      connectionId: 'c1',
+      payload: {
+        externalId: '10042',
+        projectKey: 'ACT',
+        name: 'RC1',
+        released: false,
+        archived: false,
+      },
+    } as DomainEvent<PlanningVersionPayload>);
+
+    const arg = prisma.release.upsert.mock.calls[0][0] as {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+    for (const key of [
+      'plannedReleaseAt',
+      'plannedSetByUserId',
+      'plannedSetAt',
+    ]) {
+      expect(arg.update).not.toHaveProperty(key);
+      expect(arg.create).not.toHaveProperty(key);
+    }
+  });
+
+  // A fixVersion name seen on an issue still creates the row; the version
+  // event fills in the rest. The name path must not blank the dates.
+  it('does not clear collected dates when an issue re-asserts the bare name', async () => {
+    await service.handleStory({
+      tenantId: 't1',
+      connectionId: 'c1',
+      payload: {
+        externalKey: 'ACT-1',
+        projectKey: 'ACT',
+        status: 'Done',
+        title: 'x',
+        releases: ['RC1'],
+      },
+    } as DomainEvent<PlanningStoryPayload>);
+
+    const call = prisma.release.upsert.mock.calls[0][0] as {
+      update: Record<string, unknown>;
+    };
+    expect(call.update).toEqual({});
   });
 });
