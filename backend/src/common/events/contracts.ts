@@ -198,3 +198,22 @@ export interface PlanningStoryPayload {
    */
   sprintChanges?: PlanningSprintChangeRef[];
 }
+
+/**
+ * A Jira project version (fixVersion) as collected — the RC's identity, dates
+ * and released flag.
+ *
+ * `releaseDate` means "expected to finish" while `released` is false, and
+ * "the day it was released" once true: Jira reuses the one field for both and
+ * overwrites the plan on release. The planned date therefore cannot come from
+ * here; it is user input on `planning_release.plannedReleaseAt`.
+ */
+export interface PlanningVersionPayload {
+  externalId: string;
+  projectKey: string;
+  name: string;
+  startDate?: string;
+  releaseDate?: string;
+  released: boolean;
+  archived: boolean;
+}
