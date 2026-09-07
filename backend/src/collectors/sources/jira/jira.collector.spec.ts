@@ -1065,5 +1065,26 @@ describe('JiraCollector.poll', () => {
         envelopes.some((e) => e.eventType === 'planning.version.upserted'),
       ).toBe(false);
     });
+
+    it('does not let a thrown version-fetch exception (network failure, not an HTTP status) unwind the pass and discard the issue envelopes', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      // getProjectVersions only guards HTTP status codes — a network-level
+      // failure (timeout, DNS, connection reset) rejects instead of
+      // resolving null. That must be caught here and treated exactly like
+      // the null case, not left to propagate out of the pass.
+      client.getProjectVersions.mockRejectedValue(new Error('ECONNRESET'));
+
+      const { envelopes } = await collector.poll(connection);
+
+      expect(
+        envelopes.some((e) => e.eventType === 'planning.issue.updated'),
+      ).toBe(true);
+      expect(
+        envelopes.some((e) => e.eventType === 'planning.version.upserted'),
+      ).toBe(false);
+    });
   });
 });

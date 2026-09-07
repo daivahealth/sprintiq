@@ -336,12 +336,28 @@ export class JiraCollector extends BaseSourceCollector {
     cursors.versionProjectKeys = config.projectKey ? undefined : projectKeys;
 
     for (const projectKey of projectKeys) {
-      const versions = await this.client.getProjectVersions(
-        config.siteUrl,
-        config.email,
-        apiToken,
-        projectKey,
-      );
+      // `getProjectVersions` only guards HTTP status codes (returns `null` on
+      // a non-2xx) — it does not wrap `fetch` itself, so a network-level
+      // failure (timeout, DNS, connection reset) REJECTS rather than
+      // resolving null. This loop runs before the cursor-write block below,
+      // so an unguarded rejection here would unwind the whole pass and
+      // discard the issue envelopes already collected, along with the
+      // cursor progress they earned. Caught and treated exactly like the
+      // null case: skip this project silently, next tick retries.
+      let versions: JiraVersion[] | null;
+      try {
+        versions = await this.client.getProjectVersions(
+          config.siteUrl,
+          config.email,
+          apiToken,
+          projectKey,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Jira version fetch threw for project ${projectKey} (connection ${connection.id}): ${(err as Error).message}`,
+        );
+        versions = null;
+      }
       // null = the ask failed. Skip silently rather than emitting nothing-as-fact;
       // the next tick retries, and the issue envelopes above still stand.
       for (const version of versions ?? []) {
