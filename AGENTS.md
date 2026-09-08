@@ -139,7 +139,8 @@ These rules are unique to SprintIQ and must not be violated.
 - **Collectors are the only door to the outside world.** All communication with external source systems — inbound webhooks *and* outbound polling/API calls — lives in the Collector context (BC-1). No other context may call a source API or receive its webhooks. Every collected event flows through the **single internal ingestion pipeline**: verify signature → idempotency → raw-event store → normalize → domain event. Do not scatter source-specific writes across domain tables.
 - **Everything is tenant-scoped.** Every record, event, query, metric, and agent action carries and is filtered by `tenant_id`. No cross-tenant reads, ever. Tenant isolation is tested, not assumed.
 - **AI is tool-grounded and cited.** AI agents must derive numbers from the Metrics Engine / delivery graph via read tools — never invent metrics. Every agent claim must be traceable to evidence. LLMs do not originate quantitative facts.
-- **Metrics are ethics-first.** Individual-level metrics are team/aggregate by default and exist to improve delivery, not to rank or punish people. Do not build leaderboards or surveillance features. Anti-vanity by design (e.g., LOC is never a productivity score).
+- **Metrics are ethics-first.** Individual-level metrics exist to improve delivery, not to rank or punish people, and are team/aggregate by default. Do not build leaderboards or surveillance features. Anti-vanity by design (e.g., LOC is never a productivity score).
+  **Exception, decided 2026-09-07:** the Sprint Health board publishes an attributed per-developer table, highest/lowest LOC contributor cards, and a high/medium/low grade. This was an explicit product decision. Where such a ranking ships, the rule it is computed from must ship with it and be displayed — the grade is cut from tickets, PRs and reviews, never from LOC, because LOC measures churn rather than delivery. Do not extend ranking to other boards without the same decision being taken again.
 - **Lineage is mandatory.** Any dashboard number, metric, or risk finding must be traceable back to the source events that produced it. Preserve the raw-event store and lineage.
 - **Idempotent ingestion.** Collection is at-least-once delivery → effectively-once persistence via idempotency keys. Never assume exactly-once webhooks; pollers and webhooks must converge on the same idempotent result.
 - **Webhook endpoints verify provider signatures.** Each source has its own scheme (GitHub `X-Hub-Signature-256`, GitLab token, Jira/ADO secret/JWT, etc.). Verify per-provider; treat unverified payloads as hostile.
@@ -239,7 +240,7 @@ docker compose up -d
 - Don't let any context other than the Collector context call external source APIs or receive their webhooks; all ingested data flows through the single internal ingestion pipeline.
 - Don't bypass signature verification on webhook endpoints, or store source credentials in plaintext.
 - Don't let LLMs originate metrics or emit ungrounded/uncited claims.
-- Don't build individual leaderboards, ranking, or surveillance features.
+- Don't build individual leaderboards, ranking, or surveillance features without the explicit, documented product decision the "Metrics are ethics-first" rule requires — today that exists only for the Sprint Health board (decided 2026-09-07), and does not extend to any other board by default.
 - Don't perform cross-tenant reads or leak data across tenants in prompts/memory.
 - Don't introduce cross-context direct DB coupling that blocks future service extraction.
 - Don't prematurely split into microservices before measured pressure justifies it.

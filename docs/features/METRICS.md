@@ -108,6 +108,30 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Formula:** `1 − |actual_cycle − estimate| / estimate` (clamped ≥0), aggregated. **Window:** rolling. **Scopes:** team.
 - **Source:** `story.story_points`, `cycle_time`.
 
+### sprint_commit_activity
+- **Definition:** five sprint-scoped tiles — developers who committed (of N assigned), commits with a daily average, PRs raised (open/merged split), PRs reviewed, and average time to first review.
+- **Formula:** commits with `authored_at ∈ [sprint.start_at, min(now, sprint.end_at)]`, on repos mapped to the sprint's project (`InsightsService.repoToProjects` — the same delivery-graph repo↔project mapping Project Activity uses). `commits_per_day = commits / elapsed_days`. `prs_raised` = PRs with `opened_at` in the same window; `prs_reviewed` = those with a non-null `first_review_at`; `avg_hours_to_first_review` = mean of `first_review_at − opened_at` over exactly the reviewed ones; `prs_waiting_over_24h` = raised, still unreviewed, and `now − opened_at > 24h` (measured against wall-clock now, not the window end, so a stale count keeps growing after the sprint closes).
+- **Window:** sprint's own elapsed window, clamped to now for a running sprint. **Scopes:** sprint.
+- **Source:** `commit`, `pull_request`, delivery-graph repo↔project mapping.
+- **Notes — two stated assumptions, both shown on the panel.** Git carries no sprint field, so this is a *window* over mapped repos, not a linkage to the sprint's stories — a repo that has never carried a linked PR contributes nothing here. `avg_hours_to_first_review` is **null, not 0, when no PR in the window has been reviewed yet** — 0 would claim "reviewed instantly," the opposite of the truth. `commits_per_day` and `reviewed_pct` are likewise null (not 0) over an empty denominator.
+- **Implemented** (`GET /api/dashboards/sprint-health`, `SprintHealthDetailService#commitActivity`, DASHBOARDS.md §4.1.4).
+
+### sprint_daily_check_ins
+- **Definition:** ticket movement per developer per calendar day, for the Sprint Health check-in grid.
+- **Formula:** `count(issue_status_history rows) grouped by author_login, istDateKey(transitioned_at)`, scoped to the sprint's own item keys (not the project) and the requested date range. Paged seven days at a time by default.
+- **Window:** the sprint's own elapsed window (its start through `min(now, end_at)`), never its full planned bounds — a running sprint offers pages only for days it has actually had. A requested range outside the elapsed window is clamped into it rather than returning an empty grid. **Scopes:** sprint, developer (activity context, not ranked — rows sort by volume because the grid *is* an activity picture, same as the Overview commit timeline).
+- **Source:** `issue_status_history`.
+- **Notes:** counts *whoever made the transition*, which is not always the item's assignee — the panel states this. Day bucketing uses the shared `istDateKey` helper, the same one every other daily series on the platform uses.
+- **Implemented** (`GET /api/dashboards/sprint-health/check-ins?sprint=&from=&to=`, `SprintHealthDetailService#checkIns`, DASHBOARDS.md §4.1.4).
+
+### sprint_quality_check
+- **Definition:** stories released, rollback share, and bug load for the sprint.
+- **Formula:** `stories_released` = sprint items with a non-empty `releases` list whose `status_category = 'done'` and whose transition into `done` falls in the window (read from `issue_status_history`, not the story's current status). `rolled_back` = distinct items with a transition `from_category = 'done'` to a non-`done` category in the window — a story reopened and re-fixed shows an ordinary "done" as its current status, so only the transition timeline shows it ever left. `bugs_by_priority` groups the sprint's `type = 'bug'` items by `priority` (Highest→Lowest, then Unprioritised, then any unrecognised name in encounter order). `bugs_per_story_released = bugs_logged / stories_released`.
+- **Window:** sprint's own elapsed window. **Scopes:** sprint.
+- **Source:** `story`, `issue_status_history`.
+- **Notes:** `rolled_back_pct` and `bugs_per_story_released` are both **null, not 0, when nothing has been released yet** — a fraction over a zero denominator is "not computable," not "zero." `bugs_logged` counts every bug-type item carried by the sprint, not only ones created inside the window.
+- **Implemented** (`GET /api/dashboards/sprint-health`, `SprintHealthDetailService#qualityCheck`, DASHBOARDS.md §4.1.4).
+
 ---
 
 ## 2. Code Throughput (Git)
@@ -269,6 +293,14 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Definition:** model calibration — predicted vs actual.
 - **Formula:** `1 − |predicted_date − actual_date| / horizon`, aggregated. **Window:** trailing completed targets. **Scopes:** team, org. **Source:** `forecast` vs realized. **Notes:** drives trust in predictions; surfaced to admins.
 
+### release_candidate_scope
+- **Definition:** per-release-candidate delivery and defect scope, one card per Jira fix-version carried by a sprint's items.
+- **Formula:** `planned_release_at` — user input (`planning_release.plannedReleaseAt`; Jira has no field for it, since it overwrites its one `releaseDate` with the actual day once a version ships). `actual_release_at` — Jira's `releaseDate`, read only when `released = true` (otherwise it means "expected to finish," not a fact). `days_late = round((actual_release_at − planned_release_at) / 1 day)`. `stories_delivered / stories_total` — the sprint's items carrying this release, **excluding bugs, epics and subtasks** (a bug is counted separately below, an epic is a container, a subtask's release is its parent's). Bug counts by priority read `story.affects_releases` (Jira's Affects Version — where a defect was *found*) when any item in the sprint carries it, else fall back to `releases` (fixVersions — where it will be *fixed*), with the fallback labelled on screen since it answers a different question.
+- **Window:** point-in-time (as of computation). **Scopes:** release, sprint.
+- **Source:** `planning_release`, `story` (`releases`, `affects_releases`).
+- **Notes:** `days_late` is reported **only when both a recorded plan and an actual release date exist** — never estimated from one alone. Test execution (pass/fail/blocked/WIP/not-run) is **not collected**: it lives in a separate test-management app this platform does not integrate with, and the card names that rather than showing an empty or guessed figure (api/README.md §12).
+- **Implemented** (`GET /api/dashboards/sprint-health/release-candidates?sprint=`, `SprintHealthDetailService#releaseCandidates`; planned date set via `PUT /api/dashboards/release-plan`, api/README.md §9; DASHBOARDS.md §4.1.4).
+
 ---
 
 ## 7. People & Collaboration *(ethics-bound; team-level default)*
@@ -293,6 +325,15 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Definition:** sustained overload pattern — **supportive flag, team-level**.
 - **Formula:** rolling pattern of (after-hours activity share AND sustained over-WIP AND high review load) above thresholds. **Window:** rolling 30d. **Scopes:** team (individual only to the person + their manager, gated).
 - **Source:** `commit`/`pr_review` timestamps, `wip`. **Notes:** explicitly *not* a performance metric; designed against misuse.
+
+### sprint_productivity_grade *(scoped exception to the team-level default — see below)*
+- **Definition:** per-developer sprint productivity table on the Sprint Health board — LOC added/removed, tickets worked, commits, PRs raised, PRs reviewed — with a `high | medium | low` grade.
+- **Formula:** `tickets_worked` = distinct sprint items (by the sprint's own item keys, not the project) a developer transitioned in the window — the same population `sprint_daily_check_ins` counts over, so the two panels can never disagree about one person's ticket movement. `score = tickets_worked + prs_raised + prs_reviewed`. Grade is cut by **tertiles of `score`, descending, across this sprint's *signal-carrying* contributors** (those with `score > 0`) — top third `high`, bottom third `low`, middle `medium`. A contributor with commits but no ticket/PR/review signal (`score = 0`) stays in the table but is graded `medium` and excluded from the cut, so a zero-score row cannot shift the boundaries or borrow a "high" grade from an undersized distribution.
+- **Window:** sprint's own elapsed window. **Scopes:** developer, attributed and displayed by name — see the exception below.
+- **Source:** `commit`, `pull_request`, `pr_review`, `issue_status_history`.
+- **Notes:** **`score` deliberately excludes LOC.** LOC measures how much text changed, not how much was delivered, and a grade that tracked it would reward churn and penalize the person who deleted 400 lines of dead code. The rule is shipped to the client verbatim (`gradeRule`) and printed under the table, so a graded person can check the verdict rather than trust it. **Fewer than three signal-carrying contributors is not a distribution to cut**: every row grades `medium` and the highest/lowest LOC cards are `null`, rather than asserting "high"/"low" from a sample of one or two. The two "highest/lowest LOC contributor" cards report only a number (`+N` additions) — **names withheld**: this is a volume signal, not a second leaderboard.
+- **Implemented** (`GET /api/dashboards/sprint-health`, `SprintHealthDetailService#productivity`, DASHBOARDS.md §4.1.4).
+- **Ethics exception, decided 2026-09-07.** This is the one metric on the platform that publishes an attributed per-developer table and a grade — the exact thing this section's banner forbids by default. It is permitted here, and here only, by the explicit, documented product decision recorded in `CLAUDE.md`/`AGENTS.md` §"Metrics are ethics-first": the grade is cut from delivery signals (tickets, PRs, reviews), never from LOC, and the rule ships with the data. Extending attributed ranking to any other board requires that same decision to be taken again — it does not generalize from this entry.
 
 ---
 
