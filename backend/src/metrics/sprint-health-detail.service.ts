@@ -685,6 +685,13 @@ export class SprintHealthDetailService {
     }
     const { sprint } = found;
 
+    // Deliberately `prisma.story.findMany`, not `planning.listItemsForSprint`
+    // (which runs this exact query): `PlanningService.listReleases` — the
+    // only release-side read it exposes — has no per-name filter, caps at
+    // 100 rows, and orders differently, so it cannot serve the query below.
+    // Reaching `prisma.release` directly here means the paired story read
+    // has to bypass the service layer too, or the two queries would answer
+    // from two different abstractions for one panel.
     const items = await this.prisma.story.findMany({
       where: { tenantId, sprintExternalId },
     });
@@ -719,10 +726,17 @@ export class SprintHealthDetailService {
         return ta - tb || a.name.localeCompare(b.name);
       })
       .map((release) => {
+        // A card's scope list is the deliverables a reader would recognise:
+        // bugs are counted separately below, an epic is a container rather
+        // than something shipped, and a subtask carries its parent's release
+        // without adding any work the parent doesn't already report — so all
+        // three are excluded here, the same way `buildSprintHealth` already
+        // filters epics out of its item counts.
         const stories: RcStory[] = items
           .filter(
             (item) =>
-              item.type !== 'bug' && item.releases.includes(release.name),
+              !['bug', 'epic', 'subtask'].includes(item.type) &&
+              item.releases.includes(release.name),
           )
           .map((item) => ({
             key: item.externalKey,

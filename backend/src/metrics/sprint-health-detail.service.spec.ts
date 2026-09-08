@@ -1181,11 +1181,16 @@ function defaultReleases() {
       plannedReleaseAt: null,
     },
     {
+      // `releaseDate` is populated but `released` is false: Jira's "expected
+      // to finish" reading of the same field an unreleased RC still carries.
+      // Left non-null on purpose — a null here would make the "no actual
+      // date for an unreleased RC" test pass whether or not the `released`
+      // gate is applied at all, which is no test.
       name: 'RC3',
       projectKey: 'ACT',
       externalId: '10003',
       released: false,
-      releaseDate: null,
+      releaseDate: new Date('2026-09-03T00:00:00.000Z'),
       plannedReleaseAt: null,
     },
   ];
@@ -1302,6 +1307,38 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
       title: 'Appointment reschedule notification',
       delivered: false,
     });
+  });
+
+  // An epic is a container, not a deliverable, and a subtask carries its
+  // parent's release without adding any work the parent doesn't already
+  // report — counting either would misstate the RC's scope list.
+  it('excludes epics and subtasks from the RC scope list', async () => {
+    story.findMany.mockResolvedValue([
+      ...defaultReleaseCandidateItems(),
+      {
+        externalKey: 'ACT-EPIC1',
+        type: 'epic',
+        title: 'Appointment scheduling epic',
+        statusCategory: 'done',
+        releases: ['RC1'],
+        affectsReleases: [],
+        priority: null,
+      },
+      {
+        externalKey: 'ACT-SUB1',
+        type: 'subtask',
+        title: 'Subtask of ACT-4221',
+        statusCategory: 'done',
+        releases: ['RC1'],
+        affectsReleases: [],
+        priority: null,
+      },
+    ]);
+    const view = await service.releaseCandidates('42');
+    expect(view![0].storiesTotal).toBe(5);
+    expect(view![0].stories.map((s) => s.key)).toEqual(
+      expect.not.arrayContaining(['ACT-EPIC1', 'ACT-SUB1']),
+    );
   });
 
   it('counts bugs by Affects Version and says so', async () => {
