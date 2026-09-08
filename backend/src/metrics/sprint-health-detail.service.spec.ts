@@ -337,6 +337,11 @@ function productivityTransitions() {
   );
 }
 
+/** The sprint's own item keys — every key `productivityTransitions` uses. */
+function productivitySprintItems() {
+  return productivityTransitions().map((t) => ({ externalKey: t.externalKey }));
+}
+
 function productivityJiraIndex() {
   const byDeveloper = new Map<string, { logins: string[]; names: string[] }>(
     PRODUCTIVITY_DEVS.map((d) => [
@@ -377,7 +382,9 @@ describe('SprintHealthDetailService.productivity', () => {
           tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
       ),
       listSprints: jest.fn().mockResolvedValue([]),
-      listItemsForSprint: jest.fn().mockResolvedValue([]),
+      listItemsForSprint: jest
+        .fn()
+        .mockResolvedValue(productivitySprintItems()),
     } as unknown as jest.Mocked<PlanningService>;
 
     code = {
@@ -499,6 +506,56 @@ describe('SprintHealthDetailService.productivity', () => {
     expect(view!.highest).toBeNull();
   });
 
+  // A commit-only developer did real work, but not the kind this composite
+  // counts. They must not (a) pad the contributor count past the
+  // rankable threshold on someone else's behalf, or (b) be graded "low" for
+  // a signal the composite never looked at — that is the LOC blindness this
+  // panel exists to avoid, inverted.
+  it('grades everyone medium when only one contributor carries any signal — two more commit only', async () => {
+    const signalDev = 'dev-b'; // ticketsWorked 9, prsRaised 5, reviews 6
+    const commitOnly = ['dev-c', 'dev-d']; // score 0: commits, nothing else
+    const included = new Set([signalDev, ...commitOnly]);
+
+    code.listCommitsPage.mockResolvedValue({
+      commits: productivityCommits().filter((c) =>
+        included.has(c.authorLogin),
+      ) as unknown as Awaited<
+        ReturnType<CodeService['listCommitsPage']>
+      >['commits'],
+      truncated: false,
+    });
+    prisma.pullRequest.findMany.mockResolvedValue(
+      productivityPrs().filter((pr) => pr.authorLogin === signalDev),
+    );
+    prisma.prReview.findMany.mockResolvedValue(
+      productivityReviews().filter((r) => r.reviewerLogin === signalDev),
+    );
+    prisma.issueStatusHistory.findMany.mockResolvedValue(
+      productivityTransitions().filter((t) => t.authorLogin === signalDev),
+    );
+    identities.jiraAssigneeIndex.mockResolvedValue({
+      byDeveloper: new Map(
+        [...productivityJiraIndex().byDeveloper].filter(
+          ([dev]) => dev === signalDev,
+        ),
+      ),
+      assignees: { observed: 1, matched: 1, unmatched: 0 },
+    });
+
+    const view = await service.productivity('42');
+
+    // 3 rows in the table (commit-only developers are shown, not dropped)...
+    expect(view!.rows).toHaveLength(3);
+    // ...but the real n for ranking is 1, so nobody is ranked at all.
+    expect(view!.rows.every((r) => r.grade === 'medium')).toBe(true);
+    expect(view!.highest).toBeNull();
+    expect(view!.lowest).toBeNull();
+    // The commit-only developers' real LOC work is still on the table.
+    const byDev = new Map(view!.rows.map((r) => [r.developer, r]));
+    expect(byDev.get('dev-c')!.additions).toBe(500);
+    expect(byDev.get('dev-d')!.additions).toBe(800);
+  });
+
   // Same isolation boundary as `commitActivity`: every downstream read is
   // reached only through the tenant resolved from the request context.
   it('scopes every query by the tenant from the request context', async () => {
@@ -514,6 +571,7 @@ describe('SprintHealthDetailService.productivity', () => {
       't-other',
       '42',
     );
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
     expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
     expect(code.listCommitsPage).toHaveBeenCalledWith(
       't-other',
@@ -550,6 +608,7 @@ describe('SprintHealthDetailService.productivity', () => {
       '42',
     );
     expect(view).toBeNull();
+    expect(planning.listItemsForSprint).not.toHaveBeenCalled();
     expect(code.listCommitsPage).not.toHaveBeenCalled();
     expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
     expect(prisma.prReview.findMany).not.toHaveBeenCalled();

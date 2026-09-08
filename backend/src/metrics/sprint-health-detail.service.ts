@@ -212,8 +212,9 @@ export class SprintHealthDetailService {
 
     // Same discipline as `commitActivity`: an unmapped project reads no repo
     // rather than reading every repo `listCommitsPage` treats `repos: []` as.
-    const [commitsPage, index, jiraIndex, transitions, prs, reviews] =
+    const [items, commitsPage, index, jiraIndex, prs, reviews] =
       await Promise.all([
+        this.planning.listItemsForSprint(tenantId, sprintExternalId),
         win.repos.length > 0
           ? this.code.listCommitsPage(tenantId, {
               repos: win.repos,
@@ -223,13 +224,6 @@ export class SprintHealthDetailService {
           : Promise.resolve({ commits: [], truncated: false }),
         this.identities.attributionIndex(tenantId),
         this.identities.jiraAssigneeIndex(tenantId),
-        this.prisma.issueStatusHistory.findMany({
-          where: {
-            tenantId,
-            transitionedAt: { gte: win.from, lte: win.to },
-          },
-          select: { externalKey: true, authorLogin: true, authorName: true },
-        }),
         win.repos.length > 0
           ? this.prisma.pullRequest.findMany({
               where: {
@@ -249,6 +243,29 @@ export class SprintHealthDetailService {
             })
           : Promise.resolve<PrReview[]>([]),
       ]);
+
+    // Scoped to THIS SPRINT'S OWN item keys, not merely the project: a
+    // tenant-wide (or project-wide) window would fold in a developer's
+    // transitions on any OTHER sprint's issue that happens to fall inside
+    // these calendar dates, corrupting the exact composite the grade is cut
+    // from. Same population Task 9's check-in grid counts over, so the two
+    // panels can never disagree about the same person's ticket movement.
+    const sprintKeys = items.map((item) => item.externalKey);
+    const transitions =
+      sprintKeys.length > 0
+        ? await this.prisma.issueStatusHistory.findMany({
+            where: {
+              tenantId,
+              externalKey: { in: sprintKeys },
+              transitionedAt: { gte: win.from, lte: win.to },
+            },
+            select: {
+              externalKey: true,
+              authorLogin: true,
+              authorName: true,
+            },
+          })
+        : [];
 
     interface Acc {
       additions: number;
@@ -342,15 +359,40 @@ export class SprintHealthDetailService {
         return { ...row, score: scoreOf(row) };
       })
       // Highest score first — the order the tertile cut reads, and the order
-      // the table renders in.
-      .sort((a, b) => b.score - a.score);
+      // the table renders in. `displayName` breaks a tied score so two equal
+      // rows can never land in different bands by incidental Map-insertion
+      // order — the panel's whole claim is that the verdict is checkable.
+      .sort(
+        (a, b) =>
+          b.score - a.score || a.displayName.localeCompare(b.displayName),
+      );
 
-    // One contributor is not a tertile: grading them "high" or "low" would be
-    // a verdict drawn from a distribution of one.
-    const tooFewToRank = scored.length < MIN_CONTRIBUTORS_TO_RANK;
-    const rows: ProductivityRow[] = tooFewToRank
-      ? scored.map((r) => ({ ...r, grade: 'medium' as const }))
-      : gradeByTertile(scored);
+    // Only contributors who carry SOME signal are a distribution to cut. A
+    // commit-only developer (score 0 — real work, but not this composite's
+    // kind) is not a rankable contributor: including them would let two
+    // zero-score developers pad `scored.length` past the threshold and hand
+    // the one actual signal-carrier a "high" grade off an n of one.
+    const signalCarriers = scored.filter((r) => r.score > 0);
+    const tooFewToRank = signalCarriers.length < MIN_CONTRIBUTORS_TO_RANK;
+
+    let rows: ProductivityRow[];
+    if (tooFewToRank) {
+      rows = scored.map((r) => ({ ...r, grade: 'medium' as const }));
+    } else {
+      // Zero-score developers stay in the table — they did real work, and
+      // dropping them would hide it — but they are graded `medium` (the
+      // non-verdict) and excluded from the cut so they cannot shift its
+      // boundaries. Grading them `low` would assert underperformance from a
+      // composite that ignores their commits entirely: the exact LOC
+      // blindness this panel exists to avoid, inverted.
+      const gradeByDeveloper = new Map(
+        gradeByTertile(signalCarriers).map((r) => [r.developer, r.grade]),
+      );
+      rows = scored.map((r) => ({
+        ...r,
+        grade: gradeByDeveloper.get(r.developer) ?? 'medium',
+      }));
+    }
 
     return {
       rows,
