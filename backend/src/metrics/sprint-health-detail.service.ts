@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PullRequest, Sprint } from '@prisma/client';
+import { PrReview, PullRequest, Sprint } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import { istDateKey } from '../common/time';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
@@ -35,6 +35,52 @@ export interface CommitActivityView {
 
 /** A PR waiting this long with no first review is flagged as waiting. */
 const REVIEW_WAIT_THRESHOLD_HOURS = 24;
+
+export type ProductivityGrade = 'high' | 'medium' | 'low';
+
+export interface ProductivityRow {
+  /** Canonical developer id. */
+  developer: string;
+  displayName: string;
+  additions: number;
+  deletions: number;
+  ticketsWorked: number;
+  commits: number;
+  prsRaised: number;
+  prsReviewed: number;
+  /** The composite the grade is cut from. */
+  score: number;
+  grade: ProductivityGrade;
+}
+
+export interface ProductivityView {
+  /** Sorted by `score` descending — the same order the grade cut reads. */
+  rows: ProductivityRow[];
+  highest: { additions: number } | null;
+  lowest: { additions: number } | null;
+  gradeRule: string;
+}
+
+/**
+ * The composite the high/medium/low grade is cut from.
+ *
+ * Deliberately excludes lines of code. LOC measures how much text changed, not
+ * how much was delivered, and a grade that tracked it would reward churn and
+ * punish the person who deleted 400 lines of dead code. The rule ships to the
+ * client in `gradeRule` and is printed under the table, so the reader can
+ * check the verdict rather than trust it.
+ */
+const scoreOf = (r: {
+  ticketsWorked: number;
+  prsRaised: number;
+  prsReviewed: number;
+}) => r.ticketsWorked + r.prsRaised + r.prsReviewed;
+
+const GRADE_RULE =
+  "Tertiles of tickets worked + PRs raised + reviews submitted, across this sprint's contributors — not lines of code.";
+
+/** Fewer than this many scored contributors is not a distribution to cut. */
+const MIN_CONTRIBUTORS_TO_RANK = 3;
 
 /**
  * BC-8 read model for the Sprint Health detail (DASHBOARDS.md §Sprint Health).
@@ -147,6 +193,178 @@ export class SprintHealthDetailService {
   }
 
   /**
+   * Per-developer productivity for the sprint, graded high/medium/low.
+   *
+   * The grade is cut from `scoreOf` — tickets worked + PRs raised + reviews
+   * submitted — never from LOC. `additions`/`deletions` still ride along on
+   * each row because the reader needs to SEE the LOC figure to trust that it
+   * didn't drive the grade next to it.
+   */
+  async productivity(
+    sprintExternalId: string,
+  ): Promise<ProductivityView | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.window(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const { win } = found;
+
+    // Same discipline as `commitActivity`: an unmapped project reads no repo
+    // rather than reading every repo `listCommitsPage` treats `repos: []` as.
+    const [commitsPage, index, jiraIndex, transitions, prs, reviews] =
+      await Promise.all([
+        win.repos.length > 0
+          ? this.code.listCommitsPage(tenantId, {
+              repos: win.repos,
+              from: win.from,
+              to: win.to,
+            })
+          : Promise.resolve({ commits: [], truncated: false }),
+        this.identities.attributionIndex(tenantId),
+        this.identities.jiraAssigneeIndex(tenantId),
+        this.prisma.issueStatusHistory.findMany({
+          where: {
+            tenantId,
+            transitionedAt: { gte: win.from, lte: win.to },
+          },
+          select: { externalKey: true, authorLogin: true, authorName: true },
+        }),
+        win.repos.length > 0
+          ? this.prisma.pullRequest.findMany({
+              where: {
+                tenantId,
+                repoFullName: { in: win.repos },
+                openedAt: { gte: win.from, lte: win.to },
+              },
+            })
+          : Promise.resolve<PullRequest[]>([]),
+        win.repos.length > 0
+          ? this.prisma.prReview.findMany({
+              where: {
+                tenantId,
+                repoFullName: { in: win.repos },
+                submittedAt: { gte: win.from, lte: win.to },
+              },
+            })
+          : Promise.resolve<PrReview[]>([]),
+      ]);
+
+    interface Acc {
+      additions: number;
+      deletions: number;
+      commits: number;
+      ticketKeys: Set<string>;
+      prsRaised: number;
+      prsReviewed: number;
+    }
+    const byDeveloper = new Map<string, Acc>();
+    const acc = (developer: string): Acc => {
+      let a = byDeveloper.get(developer);
+      if (!a) {
+        a = {
+          additions: 0,
+          deletions: 0,
+          commits: 0,
+          ticketKeys: new Set<string>(),
+          prsRaised: 0,
+          prsReviewed: 0,
+        };
+        byDeveloper.set(developer, a);
+      }
+      return a;
+    };
+
+    for (const commit of commitsPage.commits) {
+      const person = attributeCommit(commit, index);
+      if (!person) {
+        continue;
+      }
+      const a = acc(person);
+      a.additions += commit.additions;
+      a.deletions += commit.deletions;
+      a.commits += 1;
+    }
+
+    // The Jira-side reverse of `jiraAssigneeIndex` — same shape of lookup as
+    // `openAssignedByDeveloper` in DeveloperActivityService: a login/name with
+    // no matching identity row is invisible to us, so it is skipped rather
+    // than counted against a guessed developer.
+    const developerByJiraLogin = new Map<string, string>();
+    const developerByJiraName = new Map<string, string>();
+    for (const [developer, refs] of jiraIndex.byDeveloper) {
+      for (const login of refs.logins) {
+        developerByJiraLogin.set(login, developer);
+      }
+      for (const name of refs.names) {
+        developerByJiraName.set(name, developer);
+      }
+    }
+    for (const t of transitions) {
+      const person =
+        (t.authorLogin ? developerByJiraLogin.get(t.authorLogin) : undefined) ??
+        (t.authorName ? developerByJiraName.get(t.authorName) : undefined);
+      if (!person) {
+        continue;
+      }
+      acc(person).ticketKeys.add(t.externalKey);
+    }
+
+    for (const pr of prs) {
+      if (!pr.authorLogin) {
+        continue;
+      }
+      const person = index.byLogin.get(pr.authorLogin) ?? pr.authorLogin;
+      acc(person).prsRaised += 1;
+    }
+
+    for (const review of reviews) {
+      if (review.isBot || !review.reviewerLogin) {
+        continue;
+      }
+      const person =
+        index.byLogin.get(review.reviewerLogin) ?? review.reviewerLogin;
+      acc(person).prsReviewed += 1;
+    }
+
+    const scored = [...byDeveloper.entries()]
+      .map(([developer, a]) => {
+        const row = {
+          developer,
+          displayName: index.displayNames.get(developer) ?? developer,
+          additions: a.additions,
+          deletions: a.deletions,
+          ticketsWorked: a.ticketKeys.size,
+          commits: a.commits,
+          prsRaised: a.prsRaised,
+          prsReviewed: a.prsReviewed,
+        };
+        return { ...row, score: scoreOf(row) };
+      })
+      // Highest score first — the order the tertile cut reads, and the order
+      // the table renders in.
+      .sort((a, b) => b.score - a.score);
+
+    // One contributor is not a tertile: grading them "high" or "low" would be
+    // a verdict drawn from a distribution of one.
+    const tooFewToRank = scored.length < MIN_CONTRIBUTORS_TO_RANK;
+    const rows: ProductivityRow[] = tooFewToRank
+      ? scored.map((r) => ({ ...r, grade: 'medium' as const }))
+      : gradeByTertile(scored);
+
+    return {
+      rows,
+      highest: tooFewToRank
+        ? null
+        : { additions: Math.max(...scored.map((r) => r.additions)) },
+      lowest: tooFewToRank
+        ? null
+        : { additions: Math.min(...scored.map((r) => r.additions)) },
+      gradeRule: GRADE_RULE,
+    };
+  }
+
+  /**
    * The sprint's own window, clamped to now: a running sprint is measured over
    * the days it has actually had, not the days it was allotted. Averaging 14
    * days of commits over a 21-day plan understates a team mid-sprint.
@@ -203,4 +421,23 @@ function round1(value: number): number {
 
 function pct(part: number, total: number): number | null {
   return total > 0 ? Number(((part / total) * 100).toFixed(1)) : null;
+}
+
+/**
+ * Cuts a score-descending list into three near-equal bands: the top third
+ * graded `high`, the bottom third `low`, and the rest `medium`.
+ *
+ * Callers must have already filtered out the too-few-to-rank case — this
+ * assumes at least `MIN_CONTRIBUTORS_TO_RANK` rows.
+ */
+function gradeByTertile<T extends { score: number }>(
+  sortedByScoreDesc: T[],
+): (T & { grade: ProductivityGrade })[] {
+  const n = sortedByScoreDesc.length;
+  const highBoundary = Math.floor(n / 3);
+  const lowBoundary = Math.floor((2 * n) / 3);
+  return sortedByScoreDesc.map((row, i) => ({
+    ...row,
+    grade: i < highBoundary ? 'high' : i < lowBoundary ? 'medium' : 'low',
+  }));
 }

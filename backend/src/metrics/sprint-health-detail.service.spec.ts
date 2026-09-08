@@ -266,3 +266,293 @@ describe('SprintHealthDetailService.commitActivity', () => {
     expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Six contributors, deliberately scored so that LOC and score disagree:
+ * dev-a is the biggest LOC contributor by far but does almost nothing else,
+ * and dev-b is the opposite. `score = ticketsWorked + prsRaised + prsReviewed`
+ * for each:
+ *   dev-b 9+5+6=20 (rank 1, high)   dev-c 5+5+5=15 (rank 2, high)
+ *   dev-d 4+3+3=10 (rank 3, medium) dev-e 3+2+3=8  (rank 4, medium)
+ *   dev-f 1+1+1=3  (rank 5, low)    dev-a 1+0+0=1  (rank 6, low)
+ */
+const PRODUCTIVITY_DEVS = [
+  { developer: 'dev-a', additions: 4000, tickets: 1, prsRaised: 0, reviews: 0 },
+  { developer: 'dev-b', additions: 100, tickets: 9, prsRaised: 5, reviews: 6 },
+  { developer: 'dev-c', additions: 500, tickets: 5, prsRaised: 5, reviews: 5 },
+  { developer: 'dev-d', additions: 800, tickets: 4, prsRaised: 3, reviews: 3 },
+  { developer: 'dev-e', additions: 300, tickets: 3, prsRaised: 2, reviews: 3 },
+  { developer: 'dev-f', additions: 150, tickets: 1, prsRaised: 1, reviews: 1 },
+];
+
+function productivityCommits() {
+  return PRODUCTIVITY_DEVS.map((d, i) => ({
+    sha: `sha-${d.developer}`,
+    repoFullName: 'org/act-api',
+    authorLogin: d.developer,
+    authorEmail: null,
+    additions: d.additions,
+    deletions: 0,
+    committedAt: new Date(`2026-08-26T0${i % 9}:00:00.000Z`),
+    authoredAt: new Date(`2026-08-26T0${i % 9}:00:00.000Z`),
+  }));
+}
+
+function productivityPrs() {
+  return PRODUCTIVITY_DEVS.flatMap((d) =>
+    Array.from({ length: d.prsRaised }, (_, i) => ({
+      repoFullName: 'org/act-api',
+      externalNumber: `${d.developer}-${i}`,
+      authorLogin: d.developer,
+      state: 'open',
+      openedAt: new Date('2026-08-26T00:00:00.000Z'),
+      firstReviewAt: null,
+      mergedAt: null,
+    })),
+  );
+}
+
+function productivityReviews() {
+  return PRODUCTIVITY_DEVS.flatMap((d) =>
+    Array.from({ length: d.reviews }, (_, i) => ({
+      repoFullName: 'org/act-api',
+      externalNumber: `${d.developer}-r${i}`,
+      externalId: `${d.developer}-review-${i}`,
+      reviewerLogin: d.developer,
+      isBot: false,
+      state: 'approved',
+      submittedAt: new Date('2026-08-26T00:00:00.000Z'),
+    })),
+  );
+}
+
+function productivityTransitions() {
+  return PRODUCTIVITY_DEVS.flatMap((d) =>
+    Array.from({ length: d.tickets }, (_, i) => ({
+      externalKey: `ACT-${d.developer}-${i}`,
+      authorLogin: d.developer,
+      authorName: null,
+      transitionedAt: new Date('2026-08-26T00:00:00.000Z'),
+    })),
+  );
+}
+
+function productivityJiraIndex() {
+  const byDeveloper = new Map<string, { logins: string[]; names: string[] }>(
+    PRODUCTIVITY_DEVS.map((d) => [
+      d.developer,
+      { logins: [d.developer], names: [] },
+    ]),
+  );
+  return {
+    byDeveloper,
+    assignees: {
+      observed: PRODUCTIVITY_DEVS.length,
+      matched: PRODUCTIVITY_DEVS.length,
+      unmatched: 0,
+    },
+  };
+}
+
+describe('SprintHealthDetailService.productivity', () => {
+  let planning: jest.Mocked<PlanningService>;
+  let code: jest.Mocked<CodeService>;
+  let identities: jest.Mocked<DeveloperIdentityService>;
+  let insights: jest.Mocked<InsightsService>;
+  let tenantContext: jest.Mocked<TenantContextService>;
+  let prisma: {
+    pullRequest: { findMany: jest.Mock };
+    prReview: { findMany: jest.Mock };
+    issueStatusHistory: { findMany: jest.Mock };
+  };
+  let service: SprintHealthDetailService;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
+
+    planning = {
+      findSprintByExternalId: jest.fn(
+        async (tenantId: string, externalId: string) =>
+          tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
+      ),
+      listSprints: jest.fn().mockResolvedValue([]),
+      listItemsForSprint: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<PlanningService>;
+
+    code = {
+      listCommitsPage: jest.fn().mockResolvedValue({
+        commits: productivityCommits(),
+        truncated: false,
+      }),
+    } as unknown as jest.Mocked<CodeService>;
+
+    identities = {
+      attributionIndex: jest.fn().mockResolvedValue({
+        byLogin: new Map<string, string>(),
+        byEmail: new Map<string, string>(),
+        displayNames: new Map<string, string>(),
+      }),
+      jiraAssigneeIndex: jest.fn().mockResolvedValue(productivityJiraIndex()),
+    } as unknown as jest.Mocked<DeveloperIdentityService>;
+
+    insights = {
+      repoToProjects: jest
+        .fn()
+        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
+    } as unknown as jest.Mocked<InsightsService>;
+
+    tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('t1'),
+    } as unknown as jest.Mocked<TenantContextService>;
+
+    prisma = {
+      pullRequest: { findMany: jest.fn().mockResolvedValue(productivityPrs()) },
+      prReview: {
+        findMany: jest.fn().mockResolvedValue(productivityReviews()),
+      },
+      issueStatusHistory: {
+        findMany: jest.fn().mockResolvedValue(productivityTransitions()),
+      },
+    };
+
+    service = new SprintHealthDetailService(
+      tenantContext,
+      prisma as unknown as PrismaService,
+      planning,
+      code,
+      identities,
+      insights,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  // The grade must not be a LOC proxy: this is the one rule the board's
+  // ethics hang on, and it is invisible in the rendered pill.
+  it('grades on tickets + PRs + reviews, never on LOC', async () => {
+    // dev-a: 4,000 LOC, 1 ticket, 0 PRs, 0 reviews
+    // dev-b:   100 LOC, 9 tickets, 5 PRs, 6 reviews
+    const view = await service.productivity('42');
+    const byDev = new Map(view!.rows.map((r) => [r.developer, r]));
+    expect(byDev.get('dev-b')!.grade).toBe('high');
+    expect(byDev.get('dev-a')!.grade).toBe('low');
+  });
+
+  it('cuts tertiles across this sprint contributors', async () => {
+    const view = await service.productivity('42');
+    expect(view!.rows.map((r) => r.grade)).toEqual([
+      'high',
+      'high',
+      'medium',
+      'medium',
+      'low',
+      'low',
+    ]);
+  });
+
+  it('publishes the rule it graded by', async () => {
+    const view = await service.productivity('42');
+    expect(view!.gradeRule).toContain('not lines of code');
+  });
+
+  it('reports highest and lowest LOC contributors', async () => {
+    const view = await service.productivity('42');
+    expect(view!.highest).toEqual({ additions: 4000 });
+    expect(view!.lowest).toEqual({ additions: 100 });
+  });
+
+  // One contributor cannot be a tertile. Grading them "high" or "low" would
+  // be a verdict drawn from a distribution of one.
+  it('grades everyone medium when there are too few contributors to rank', async () => {
+    // Only dev-a and dev-b carry any signal — 2 contributors, not a tertile.
+    const onlyAB = (developer: string) =>
+      developer === 'dev-a' || developer === 'dev-b';
+    code.listCommitsPage.mockResolvedValue({
+      commits: productivityCommits().filter((c) =>
+        onlyAB(c.authorLogin),
+      ) as unknown as Awaited<
+        ReturnType<CodeService['listCommitsPage']>
+      >['commits'],
+      truncated: false,
+    });
+    prisma.pullRequest.findMany.mockResolvedValue(
+      productivityPrs().filter((pr) => onlyAB(pr.authorLogin)),
+    );
+    prisma.prReview.findMany.mockResolvedValue(
+      productivityReviews().filter((r) => onlyAB(r.reviewerLogin)),
+    );
+    prisma.issueStatusHistory.findMany.mockResolvedValue(
+      productivityTransitions().filter((t) => onlyAB(t.authorLogin)),
+    );
+    identities.jiraAssigneeIndex.mockResolvedValue({
+      byDeveloper: new Map(
+        [...productivityJiraIndex().byDeveloper].filter(([dev]) => onlyAB(dev)),
+      ),
+      assignees: { observed: 2, matched: 2, unmatched: 0 },
+    });
+
+    const view = await service.productivity('42');
+    expect(view!.rows.every((r) => r.grade === 'medium')).toBe(true);
+    expect(view!.highest).toBeNull();
+  });
+
+  // Same isolation boundary as `commitActivity`: every downstream read is
+  // reached only through the tenant resolved from the request context.
+  it('scopes every query by the tenant from the request context', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+    planning.findSprintByExternalId.mockImplementation(
+      async (tenantId: string, externalId: string) =>
+        tenantId === 't-other' && externalId === '42' ? defaultSprint() : null,
+    );
+
+    await service.productivity('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(code.listCommitsPage).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
+    );
+    expect(identities.attributionIndex).toHaveBeenCalledWith('t-other');
+    expect(identities.jiraAssigneeIndex).toHaveBeenCalledWith('t-other');
+    expect(prisma.pullRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+    expect(prisma.prReview.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+    expect(prisma.issueStatusHistory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+  });
+
+  // The sprint is real, just not this tenant's — exactly as absent as one
+  // that does not exist at all, and the downstream reads must never fire.
+  it('returns null for a sprint id belonging to another tenant', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+
+    const view = await service.productivity('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(view).toBeNull();
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+    expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
+    expect(prisma.prReview.findMany).not.toHaveBeenCalled();
+    expect(prisma.issueStatusHistory.findMany).not.toHaveBeenCalled();
+  });
+});
