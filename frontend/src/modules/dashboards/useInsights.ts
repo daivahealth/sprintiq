@@ -536,12 +536,13 @@ export interface CheckInsView {
   /** Sorted by `total` descending; `[]` when nobody moved a ticket. */
   rows: CheckInRow[];
   /**
-   * ISO — the sprint's ELAPSED window (`min(sprint.endAt, now)`), not its
-   * full planned bounds. Identical to the sprint's own start/end once it
-   * closes; only a running sprint differs. Feed these two fields straight
-   * into `checkInPages` (see `./sprint-health/pager`) — building pages from
-   * the full bounds instead can offer a page for days the sprint hasn't
-   * reached yet.
+   * IST date keys — same form as `days`, NOT an ISO instant. The sprint's
+   * ELAPSED window (`min(sprint.endAt, now)`), not its full planned bounds.
+   * Identical to the sprint's own start/end once it closes; only a running
+   * sprint differs. Feed these two fields straight into `checkInPages` (see
+   * `./sprint-health/pager`) — building pages from the full bounds instead
+   * can offer a page for days the sprint hasn't reached yet. Because this is
+   * already an IST date key, the pager does no timezone math of its own.
    */
   sprintFrom: string | null;
   sprintTo: string | null;

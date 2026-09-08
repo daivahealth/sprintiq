@@ -1008,8 +1008,8 @@ describe('SprintHealthDetailService.checkIns', () => {
   // happened yet must never be offered.
   it('reports the elapsed window, not the full sprint bounds, for a running sprint', async () => {
     const view = await service.checkIns('42');
-    expect(view!.sprintFrom).toBe('2026-08-25T00:00:00.000Z');
-    expect(view!.sprintTo).toBe('2026-08-31T00:00:00.000Z');
+    expect(view!.sprintFrom).toBe('2026-08-25');
+    expect(view!.sprintTo).toBe('2026-08-31');
   });
 
   it('returns an empty row set, not null, for a sprint nobody moved a ticket in', async () => {

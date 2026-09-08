@@ -143,12 +143,15 @@ export interface CheckInsView {
   /** Sorted by `total` descending — an activity picture, not a register. */
   rows: CheckInRow[];
   /**
-   * ISO — the ELAPSED window (`window().win.from`/`win.to`), not the
-   * sprint's full planned bounds: the days this sprint has actually had, not
-   * the days it was allotted. Identical to the sprint's own start/end once
-   * it closes; only a running sprint differs. The pager (Task 12) builds its
-   * pages from exactly these two fields, so a page can never be offered for
-   * days that have not happened yet.
+   * IST date keys (same form as `days`) — the ELAPSED window
+   * (`window().win.from`/`win.to`), not the sprint's full planned bounds:
+   * the days this sprint has actually had, not the days it was allotted.
+   * Identical to the sprint's own start/end once it closes; only a running
+   * sprint differs. The pager (Task 12) builds its pages from exactly these
+   * two fields, so a page can never be offered for days that have not
+   * happened yet. Deliberately not an ISO instant: `days`, `sprintFrom` and
+   * `sprintTo` all speak the same IST-date-key unit so a page boundary can
+   * never land a calendar day off the grid's own column headers.
    */
   sprintFrom: string | null;
   sprintTo: string | null;
@@ -660,9 +663,10 @@ export class SprintHealthDetailService {
       days,
       rows,
       // The elapsed window, not the sprint's full planned bounds — see
-      // `CheckInsView.sprintFrom` for why.
-      sprintFrom: win.from.toISOString(),
-      sprintTo: win.to.toISOString(),
+      // `CheckInsView.sprintFrom` for why. IST date keys, same unit as
+      // `days`, not ISO instants.
+      sprintFrom: istDateKey(win.from),
+      sprintTo: istDateKey(win.to),
     };
   }
 

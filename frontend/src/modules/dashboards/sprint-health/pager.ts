@@ -18,6 +18,13 @@ const PAGE_DAYS = 7;
  * page for days a running sprint hasn't reached yet; the backend clamps such
  * a request to a window with no data, and the grid comes back empty.
  *
+ * Both are IST date keys (`YYYY-MM-DD`), the same unit as `CheckInsView.days`
+ * — NOT ISO instants. This function does no timezone conversion of its own:
+ * it parses each key as UTC midnight purely as a stable anchor for day-count
+ * arithmetic, and every value it returns is sliced back to the same
+ * `YYYY-MM-DD` form. Passing an ISO instant here (e.g. straight off
+ * `Date#toISOString()`) is a caller bug, not a case this function handles.
+ *
  * The last page is left short rather than padded to a full week: a padded
  * page would show days the sprint never ran as empty columns, which reads as
  * "nobody moved anything" rather than "not a sprint day".

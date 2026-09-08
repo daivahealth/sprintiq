@@ -27,4 +27,21 @@ describe('checkInPages', () => {
   it('returns no pages when the sprint has no dates', () => {
     expect(checkInPages('', '')).toEqual([]);
   });
+
+  // Regression: `CheckInsView.sprintFrom`/`sprintTo` were briefly returned as
+  // full ISO instants (`win.from.toISOString()`), not IST date keys. This
+  // function assumed a bare `YYYY-MM-DD`, so concatenating a second
+  // `T00:00:00.000Z` onto an instant produced an invalid Date, the arithmetic
+  // went NaN, and every real sprint silently paged to zero pages. The
+  // contract is now IST date keys throughout — this uses the exact values a
+  // running sprint produces on the wire (sprint-health-detail.service.spec.ts:
+  // startAt 2026-08-25, endAt 2026-09-05, "now" 2026-08-31 -> elapsed window
+  // sprintFrom '2026-08-25', sprintTo '2026-08-31') so this class of "the
+  // test used a shape the API never sends" cannot recur silently.
+  it('consumes the real IST-date-key shape CheckInsView reports for a running sprint', () => {
+    const pages = checkInPages('2026-08-25', '2026-08-31');
+    expect(pages).toEqual([
+      { from: '2026-08-25', to: '2026-08-31', label: 'Week 1 of 1' },
+    ]);
+  });
 });
