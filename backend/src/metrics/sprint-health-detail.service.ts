@@ -61,6 +61,33 @@ export interface ProductivityView {
   gradeRule: string;
 }
 
+export interface RcStory {
+  key: string;
+  title: string;
+  delivered: boolean;
+}
+
+export interface ReleaseCandidateView {
+  name: string;
+  externalId: string | null;
+  plannedReleaseAt: string | null;
+  actualReleaseAt: string | null;
+  released: boolean;
+  daysLate: number | null;
+  storiesDelivered: number;
+  storiesTotal: number;
+  stories: RcStory[];
+  bugsByPriority: { priority: string; count: number }[];
+  bugSource: 'affects-version' | 'fix-version-fallback';
+  /**
+   * Always `null`. Test execution lives in a separate test-management app
+   * this platform does not integrate with — the field exists so the client
+   * can render "not collected" rather than guess a shape for data that was
+   * never fetched.
+   */
+  testExecution: null;
+}
+
 export interface QualityCheckView {
   storiesReleased: number;
   rolledBack: number;
@@ -637,6 +664,106 @@ export class SprintHealthDetailService {
       sprintFrom: win.from.toISOString(),
       sprintTo: win.to.toISOString(),
     };
+  }
+
+  /**
+   * One entry per release the sprint's own items carry, joined against the
+   * `planning_release` row Jira and the plan-date mutation (Task 11) feed.
+   *
+   * `bugSource` is decided once for the whole sprint, not per release: whether
+   * `affectsReleases` is populated depends on when an item was collected (the
+   * field's rollout), not on which release it belongs to, so a single flag
+   * keeps every card in this panel answering the same question.
+   */
+  async releaseCandidates(
+    sprintExternalId: string,
+  ): Promise<ReleaseCandidateView[] | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.window(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const { sprint } = found;
+
+    const items = await this.prisma.story.findMany({
+      where: { tenantId, sprintExternalId },
+    });
+
+    // Same hazard as every other read in this file: an empty `in` filter
+    // reads as "no filter", so a sprint with no release-bearing items must
+    // skip the read rather than pull back every release in the project.
+    const releaseNames = [...new Set(items.flatMap((item) => item.releases))];
+    if (releaseNames.length === 0) {
+      return [];
+    }
+
+    const releases = await this.prisma.release.findMany({
+      where: {
+        tenantId,
+        projectKey: sprint.projectKey,
+        name: { in: releaseNames },
+      },
+    });
+
+    const bugs = items.filter((item) => item.type === 'bug');
+    const bugSource: ReleaseCandidateView['bugSource'] = bugs.some(
+      (bug) => bug.affectsReleases.length > 0,
+    )
+      ? 'affects-version'
+      : 'fix-version-fallback';
+
+    return [...releases]
+      .sort((a, b) => {
+        const ta = a.releaseDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        const tb = b.releaseDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        return ta - tb || a.name.localeCompare(b.name);
+      })
+      .map((release) => {
+        const stories: RcStory[] = items
+          .filter(
+            (item) =>
+              item.type !== 'bug' && item.releases.includes(release.name),
+          )
+          .map((item) => ({
+            key: item.externalKey,
+            title: item.title,
+            delivered: item.statusCategory === 'done',
+          }));
+
+        const rcBugs = bugs.filter((bug) =>
+          bugSource === 'affects-version'
+            ? bug.affectsReleases.includes(release.name)
+            : bug.releases.includes(release.name),
+        );
+
+        // Jira's `releaseDate` means "expected to finish" while unreleased and
+        // "shipped on" once `released` flips — reporting it as an actual date
+        // beforehand would claim something that has not happened.
+        const actualReleaseAt = release.released ? release.releaseDate : null;
+        const daysLate =
+          release.plannedReleaseAt && actualReleaseAt
+            ? Math.round(
+                (actualReleaseAt.getTime() -
+                  release.plannedReleaseAt.getTime()) /
+                  86_400_000,
+              )
+            : null;
+
+        return {
+          name: release.name,
+          externalId: release.externalId ?? null,
+          plannedReleaseAt: release.plannedReleaseAt?.toISOString() ?? null,
+          actualReleaseAt: actualReleaseAt?.toISOString() ?? null,
+          released: release.released,
+          daysLate,
+          storiesDelivered: stories.filter((s) => s.delivered).length,
+          storiesTotal: stories.length,
+          stories,
+          bugsByPriority: bugsByPriority(rcBugs),
+          bugSource,
+          testExecution: null,
+        };
+      });
   }
 
   /**

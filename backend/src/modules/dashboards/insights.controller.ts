@@ -285,6 +285,24 @@ export class InsightsController {
     return { ...view, computedAt: new Date().toISOString() };
   }
 
+  /**
+   * Per-release scope: which stories shipped, which are still pending, and
+   * the defect load — one card per release the sprint's own items carry.
+   * Its own route for the same reason as check-ins: folding it into
+   * `sprint-health` would re-run every sprint aggregate just to render one
+   * more panel.
+   */
+  @Get('sprint-health/release-candidates')
+  async sprintReleaseCandidates(@Query('sprint') sprint?: string) {
+    const rows = await this.detail.releaseCandidates(
+      requireParam(sprint, 'sprint'),
+    );
+    if (!rows) {
+      throw new NotFoundException('Sprint not found.');
+    }
+    return { rows, computedAt: new Date().toISOString() };
+  }
+
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */
   @Get('sprint-risk/active')
   async activeSprintsRisk(@Query('projects') projects?: string) {

@@ -1066,3 +1066,314 @@ describe('SprintHealthDetailService.checkIns', () => {
     expect(history.findMany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Default release-candidate fixture: RC1 carries 5 stories (2 done, 3
+ * pending) and 9 bugs (3 Highest + 6 High), all bearing an Affects Version —
+ * the population `bugSource: 'affects-version'` reads. RC2/RC3 each carry one
+ * filler story purely so their names surface in the distinct-release
+ * collection off the sprint's own items.
+ */
+function defaultReleaseCandidateItems() {
+  const rc1Stories = [
+    {
+      externalKey: 'ACT-4221',
+      type: 'story',
+      title: 'Slot search caching',
+      statusCategory: 'done',
+      releases: ['RC1'],
+      affectsReleases: [],
+      priority: null,
+    },
+    {
+      externalKey: 'ACT-4222',
+      type: 'story',
+      title: 'Appointment confirm email',
+      statusCategory: 'done',
+      releases: ['RC1'],
+      affectsReleases: [],
+      priority: null,
+    },
+    {
+      externalKey: 'ACT-4223',
+      type: 'story',
+      title: 'Waitlist auto-promote',
+      statusCategory: 'indeterminate',
+      releases: ['RC1'],
+      affectsReleases: [],
+      priority: null,
+    },
+    {
+      externalKey: 'ACT-4224',
+      type: 'story',
+      title: 'Doctor calendar sync',
+      statusCategory: 'new',
+      releases: ['RC1'],
+      affectsReleases: [],
+      priority: null,
+    },
+    {
+      externalKey: 'ACT-4225',
+      type: 'story',
+      title: 'Appointment reschedule notification',
+      statusCategory: 'new',
+      releases: ['RC1'],
+      affectsReleases: [],
+      priority: null,
+    },
+  ];
+  const rc1BugsHighest = Array.from({ length: 3 }, (_, i) => ({
+    externalKey: `ACT-51${i}`,
+    type: 'bug',
+    title: `Highest bug ${i}`,
+    statusCategory: 'new',
+    releases: ['RC1'],
+    affectsReleases: ['RC1'],
+    priority: 'Highest',
+  }));
+  const rc1BugsHigh = Array.from({ length: 6 }, (_, i) => ({
+    externalKey: `ACT-52${i}`,
+    type: 'bug',
+    title: `High bug ${i}`,
+    statusCategory: 'new',
+    releases: ['RC1'],
+    affectsReleases: ['RC1'],
+    priority: 'High',
+  }));
+  const rc2Story = {
+    externalKey: 'ACT-4301',
+    type: 'story',
+    title: 'RC2 filler story',
+    statusCategory: 'done',
+    releases: ['RC2'],
+    affectsReleases: [],
+    priority: null,
+  };
+  const rc3Story = {
+    externalKey: 'ACT-4401',
+    type: 'story',
+    title: 'RC3 filler story',
+    statusCategory: 'new',
+    releases: ['RC3'],
+    affectsReleases: [],
+    priority: null,
+  };
+  return [...rc1Stories, ...rc1BugsHighest, ...rc1BugsHigh, rc2Story, rc3Story];
+}
+
+/** 3 `planning_release` rows: RC1 released+late, RC2 released+no plan, RC3 unreleased. */
+function defaultReleases() {
+  return [
+    {
+      name: 'RC1',
+      projectKey: 'ACT',
+      externalId: '10001',
+      released: true,
+      releaseDate: new Date('2026-08-20T00:00:00.000Z'),
+      plannedReleaseAt: new Date('2026-08-18T00:00:00.000Z'),
+    },
+    {
+      name: 'RC2',
+      projectKey: 'ACT',
+      externalId: '10002',
+      released: true,
+      releaseDate: new Date('2026-08-25T00:00:00.000Z'),
+      plannedReleaseAt: null,
+    },
+    {
+      name: 'RC3',
+      projectKey: 'ACT',
+      externalId: '10003',
+      released: false,
+      releaseDate: null,
+      plannedReleaseAt: null,
+    },
+  ];
+}
+
+describe('SprintHealthDetailService.releaseCandidates', () => {
+  let planning: jest.Mocked<PlanningService>;
+  let insights: jest.Mocked<InsightsService>;
+  let tenantContext: jest.Mocked<TenantContextService>;
+  let release: { findMany: jest.Mock };
+  let story: { findMany: jest.Mock };
+  let prisma: {
+    release: { findMany: jest.Mock };
+    story: { findMany: jest.Mock };
+  };
+  let service: SprintHealthDetailService;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
+
+    planning = {
+      findSprintByExternalId: jest.fn(
+        async (tenantId: string, externalId: string) =>
+          tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
+      ),
+      listSprints: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<PlanningService>;
+
+    insights = {
+      repoToProjects: jest
+        .fn()
+        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
+    } as unknown as jest.Mocked<InsightsService>;
+
+    tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('t1'),
+    } as unknown as jest.Mocked<TenantContextService>;
+
+    release = { findMany: jest.fn().mockResolvedValue(defaultReleases()) };
+    story = {
+      findMany: jest.fn().mockResolvedValue(defaultReleaseCandidateItems()),
+    };
+    prisma = { release, story };
+
+    service = new SprintHealthDetailService(
+      tenantContext,
+      prisma as unknown as PrismaService,
+      planning,
+      {} as unknown as CodeService,
+      {} as unknown as DeveloperIdentityService,
+      insights,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('lists one entry per release carried by the sprint stories', async () => {
+    const view = await service.releaseCandidates('42');
+    expect(view!.map((r) => r.name)).toEqual(['RC1', 'RC2', 'RC3']);
+  });
+
+  it('computes lateness from the planned date against Jira release date', async () => {
+    release.findMany.mockResolvedValue([
+      {
+        name: 'RC1',
+        projectKey: 'ACT',
+        externalId: '1',
+        released: true,
+        releaseDate: new Date('2026-08-22'),
+        plannedReleaseAt: new Date('2026-08-20'),
+      },
+    ]);
+    const view = await service.releaseCandidates('42');
+    expect(view![0]).toMatchObject({
+      daysLate: 2,
+      actualReleaseAt: '2026-08-22T00:00:00.000Z',
+    });
+  });
+
+  // Jira overwrites the planned date on release, so without a recorded plan
+  // there is nothing to compare against. Inventing one — from startDate, from
+  // the sprint end — would be a fabricated verdict on a real team.
+  it('reports null lateness when no planned date was recorded', async () => {
+    release.findMany.mockResolvedValue([
+      {
+        name: 'RC1',
+        projectKey: 'ACT',
+        released: true,
+        releaseDate: new Date('2026-08-22'),
+        plannedReleaseAt: null,
+      },
+    ]);
+    const view = await service.releaseCandidates('42');
+    expect(view![0].daysLate).toBeNull();
+  });
+
+  it('reports no actual date for an unreleased RC', async () => {
+    const view = await service.releaseCandidates('42');
+    expect(view!.at(-1)).toMatchObject({
+      released: false,
+      actualReleaseAt: null,
+      daysLate: null,
+    });
+  });
+
+  it('splits stories into delivered and pending', async () => {
+    const view = await service.releaseCandidates('42');
+    expect(view![0]).toMatchObject({ storiesDelivered: 2, storiesTotal: 5 });
+    expect(view![0].stories).toContainEqual({
+      key: 'ACT-4225',
+      title: 'Appointment reschedule notification',
+      delivered: false,
+    });
+  });
+
+  it('counts bugs by Affects Version and says so', async () => {
+    const view = await service.releaseCandidates('42');
+    expect(view![0].bugSource).toBe('affects-version');
+    expect(view![0].bugsByPriority).toEqual([
+      { priority: 'Highest', count: 3 },
+      { priority: 'High', count: 6 },
+    ]);
+  });
+
+  // Stories collected before Affects Version was requested carry none. The
+  // fallback keeps the panel useful, and the label keeps it honest about
+  // which question the number answers.
+  it('falls back to fixVersion and labels the fallback when no story carries an affects version', async () => {
+    story.findMany.mockResolvedValue([
+      {
+        externalKey: 'ACT-1',
+        type: 'bug',
+        priority: 'High',
+        releases: ['RC1'],
+        affectsReleases: [],
+      },
+    ]);
+    const view = await service.releaseCandidates('42');
+    expect(view![0].bugSource).toBe('fix-version-fallback');
+    expect(view![0].bugsByPriority).toEqual([{ priority: 'High', count: 1 }]);
+  });
+
+  it('carries a null test-execution block for the panel placeholder', async () => {
+    const view = await service.releaseCandidates('42');
+    expect(view![0].testExecution).toBeNull();
+  });
+
+  // Isolation is tested, not assumed — same pattern as every other read above.
+  it('scopes every query by the tenant from the request context', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+    planning.findSprintByExternalId.mockImplementation(
+      async (tenantId: string, externalId: string) =>
+        tenantId === 't-other' && externalId === '42' ? defaultSprint() : null,
+    );
+
+    await service.releaseCandidates('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(story.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+    expect(release.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+  });
+
+  it('returns null for a sprint id belonging to another tenant', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+
+    const view = await service.releaseCandidates('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(view).toBeNull();
+    expect(story.findMany).not.toHaveBeenCalled();
+    expect(release.findMany).not.toHaveBeenCalled();
+  });
+});
