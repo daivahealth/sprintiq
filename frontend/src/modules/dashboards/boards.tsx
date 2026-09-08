@@ -6,6 +6,11 @@ import { Badge, Card, FilterBar, ProvenanceNote } from '../../components/ui';
 import { useScope } from '../../lib/scope';
 import { cn, formatHours, timeAgo } from '../../lib/utils';
 import { ScopeBar } from './ScopeBar';
+import { CheckInGrid } from './sprint-health/CheckInGrid';
+import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
+import { ProductivityPanel } from './sprint-health/ProductivityPanel';
+import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
+import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
 import { useProjects } from './useCatalog';
 import {
   type SprintPace,
@@ -235,59 +240,76 @@ export function SprintHealthBoard() {
       {detail.isLoading && sprint && <LoadingCard />}
       {detail.isError && <ErrorCard error={detail.error} />}
       {d && (
-        <Card className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-fg">
-              {d.sprint.projectKey} · {d.sprint.name}
-            </h3>
-            <span className="space-x-2">
-              <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
-                {d.sprint.state}
-              </Badge>
-              <PaceBadge pace={d.pace} />
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <Stat
-              label="Completion"
-              value={d.completionPct === null ? '—' : `${d.completionPct}%`}
-              hint={`${d.completedPoints}/${d.committedPoints} pts`}
-            />
-            <Stat
-              label="Sprint elapsed"
-              value={d.elapsedPct === null ? '—' : `${d.elapsedPct}%`}
-              hint={`${d.itemsDone}/${d.itemsTotal} items done`}
-            />
-            <Stat
-              label="Code linkage"
-              value={d.codeLinkagePct === null ? '—' : `${d.codeLinkagePct}%`}
-              hint={`${d.itemsWithCode} items with linked PRs`}
-            />
-            <Stat
-              label="Days remaining"
-              value={d.daysRemaining ?? '—'}
-              hint={
-                d.unestimatedItems > 0
-                  ? `${d.unestimatedItems} unestimated`
-                  : undefined
-              }
-            />
-          </div>
-          <div>
-            <h4 className="mb-2 text-sm font-medium text-fg-muted">
-              Progress by work-item type
-            </h4>
-            <BarList
-              rows={d.byType.map((t) => ({
-                label: t.type,
-                value: t.done,
-                secondary: `/ ${t.total}`,
-              }))}
-            />
-          </div>
-        </Card>
+        <>
+          <Card>
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-fg">
+                {d.sprint.projectKey} · {d.sprint.name}
+              </h3>
+              <span className="space-x-2">
+                <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
+                  {d.sprint.state}
+                </Badge>
+                <PaceBadge pace={d.pace} />
+              </span>
+            </div>
+          </Card>
+
+          {/* commitActivity/productivity/qualityCheck can each independently
+              come back null — the backend returns null from those service
+              methods when a sprint can't be resolved for that metric, and the
+              route composes all three with Promise.all. A null here degrades
+              to a quiet note rather than a crash that takes the rest of the
+              board with it. */}
+          {/* Unlike the other four panels, CommitActivityTiles prints no
+              title of its own (it matches the bare-tile-row pattern used by
+              OverviewPage/PrStatusPage) — labelled here so it doesn't read as
+              an orphaned row of numbers under the sprint header. */}
+          <h4 className="text-sm font-medium text-fg-muted">Commit activity</h4>
+          {d.commitActivity ? (
+            <CommitActivityTiles data={d.commitActivity} />
+          ) : (
+            <PanelUnavailable label="Commit activity" />
+          )}
+
+          {/* Owns its own query and its own loading/error state, so a failed
+              or slow check-in fetch can never blank the panels around it. */}
+          <CheckInGrid sprint={d.sprint.externalId} />
+
+          {d.productivity ? (
+            <ProductivityPanel data={d.productivity} />
+          ) : (
+            <PanelUnavailable label="Productivity" />
+          )}
+
+          {d.qualityCheck ? (
+            <QualityCheckPanel data={d.qualityCheck} />
+          ) : (
+            <PanelUnavailable label="Quality check" />
+          )}
+
+          {/* Also owns its own query/loading/error state, same reasoning as
+              CheckInGrid above. */}
+          <ReleaseCandidateList
+            sprint={d.sprint.externalId}
+            projectKey={d.sprint.projectKey}
+          />
+
+          <ProvenanceNote>Computed {timeAgo(d.computedAt)}.</ProvenanceNote>
+        </>
       )}
     </div>
+  );
+}
+
+/** Quiet degrade for a sprint-health sub-panel the backend couldn't resolve. */
+function PanelUnavailable({ label }: { label: string }) {
+  return (
+    <Card>
+      <p className="text-sm text-fg-faint">
+        {label} not available for this sprint.
+      </p>
+    </Card>
   );
 }
 
