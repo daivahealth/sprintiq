@@ -615,3 +615,243 @@ describe('SprintHealthDetailService.productivity', () => {
     expect(prisma.issueStatusHistory.findMany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 18 stories, each carrying a release and a done-transition inside the
+ * window, plus 29 bugs split 4/8/11/6 across Highest/High/Medium/Low. Bugs
+ * carry no release and stay out of `done`, so they never contribute to
+ * `storiesReleased` — only `bugsByPriority`/`bugsLogged` see them.
+ */
+function qualityCheckItems() {
+  const stories = Array.from({ length: 18 }, (_, i) => ({
+    externalKey: `ACT-S${i + 1}`,
+    type: 'story',
+    statusCategory: 'done',
+    releases: ['R1'],
+    priority: 'Medium',
+  }));
+  const bugPriorities = [
+    ...Array(4).fill('Highest'),
+    ...Array(8).fill('High'),
+    ...Array(11).fill('Medium'),
+    ...Array(6).fill('Low'),
+  ];
+  const bugs = bugPriorities.map((priority, i) => ({
+    externalKey: `ACT-B${i + 1}`,
+    type: 'bug',
+    statusCategory: 'new',
+    releases: [],
+    priority,
+  }));
+  return [...stories, ...bugs];
+}
+
+/** One toCategory: 'done' transition per released story, inside the window. */
+function qualityCheckDoneTransitions() {
+  return Array.from({ length: 18 }, (_, i) => ({
+    externalKey: `ACT-S${i + 1}`,
+    fromCategory: 'indeterminate',
+    toCategory: 'done',
+    transitionedAt: new Date('2026-08-28'),
+  }));
+}
+
+describe('SprintHealthDetailService.qualityCheck', () => {
+  let planning: jest.Mocked<PlanningService>;
+  let insights: jest.Mocked<InsightsService>;
+  let tenantContext: jest.Mocked<TenantContextService>;
+  let history: { findMany: jest.Mock };
+  let prisma: { issueStatusHistory: { findMany: jest.Mock } };
+  let service: SprintHealthDetailService;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
+
+    planning = {
+      findSprintByExternalId: jest.fn(
+        async (tenantId: string, externalId: string) =>
+          tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
+      ),
+      listSprints: jest.fn().mockResolvedValue([]),
+      listItemsForSprint: jest.fn().mockResolvedValue(qualityCheckItems()),
+    } as unknown as jest.Mocked<PlanningService>;
+
+    insights = {
+      repoToProjects: jest
+        .fn()
+        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
+    } as unknown as jest.Mocked<InsightsService>;
+
+    tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('t1'),
+    } as unknown as jest.Mocked<TenantContextService>;
+
+    history = {
+      findMany: jest.fn().mockResolvedValue(qualityCheckDoneTransitions()),
+    };
+    prisma = { issueStatusHistory: history };
+
+    service = new SprintHealthDetailService(
+      tenantContext,
+      prisma as unknown as PrismaService,
+      planning,
+      {} as unknown as CodeService,
+      {} as unknown as DeveloperIdentityService,
+      insights,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('counts stories that carry a release and reached done in the window', async () => {
+    const view = await service.qualityCheck('42');
+    expect(view!.storiesReleased).toBe(18);
+  });
+
+  // "Rolled back" is a transition OUT of done, which only the status history
+  // can show — the story row alone carries the current status and would report
+  // a reopened-then-refixed item as if nothing had happened.
+  it('counts items that left a done status after entering one', async () => {
+    history.findMany.mockResolvedValue([
+      {
+        externalKey: 'ACT-1',
+        fromCategory: 'done',
+        toCategory: 'indeterminate',
+        transitionedAt: new Date('2026-08-28'),
+      },
+      {
+        externalKey: 'ACT-1',
+        fromCategory: 'indeterminate',
+        toCategory: 'done',
+        transitionedAt: new Date('2026-08-29'),
+      },
+    ]);
+    const view = await service.qualityCheck('42');
+    expect(view!.rolledBack).toBe(1);
+  });
+
+  it('groups bugs by priority, keeping Jira order', async () => {
+    const view = await service.qualityCheck('42');
+    expect(view!.bugsByPriority).toEqual([
+      { priority: 'Highest', count: 4 },
+      { priority: 'High', count: 8 },
+      { priority: 'Medium', count: 11 },
+      { priority: 'Low', count: 6 },
+    ]);
+  });
+
+  // Isolation is tested, not assumed — same pattern as commitActivity and
+  // productivity above.
+  it('scopes every query by the tenant from the request context', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+    planning.findSprintByExternalId.mockImplementation(
+      async (tenantId: string, externalId: string) =>
+        tenantId === 't-other' && externalId === '42' ? defaultSprint() : null,
+    );
+
+    await service.qualityCheck('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(history.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+  });
+
+  it('returns null for a sprint id belonging to another tenant', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+
+    const view = await service.qualityCheck('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(view).toBeNull();
+    expect(planning.listItemsForSprint).not.toHaveBeenCalled();
+    expect(history.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('SprintHealthDetailService.qualityCheck when nothing has been released', () => {
+  let planning: jest.Mocked<PlanningService>;
+  let insights: jest.Mocked<InsightsService>;
+  let tenantContext: jest.Mocked<TenantContextService>;
+  let prisma: { issueStatusHistory: { findMany: jest.Mock } };
+  let service: SprintHealthDetailService;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
+
+    planning = {
+      findSprintByExternalId: jest.fn(
+        async (tenantId: string, externalId: string) =>
+          tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
+      ),
+      listSprints: jest.fn().mockResolvedValue([]),
+      // No released stories at all: a handful of bugs, still open, still
+      // logged — nothing has reached `done`, so nothing was released.
+      listItemsForSprint: jest.fn().mockResolvedValue([
+        {
+          externalKey: 'ACT-B1',
+          type: 'bug',
+          statusCategory: 'new',
+          releases: [],
+          priority: 'Medium',
+        },
+        {
+          externalKey: 'ACT-B2',
+          type: 'bug',
+          statusCategory: 'indeterminate',
+          releases: [],
+          priority: 'Low',
+        },
+      ]),
+    } as unknown as jest.Mocked<PlanningService>;
+
+    insights = {
+      repoToProjects: jest
+        .fn()
+        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
+    } as unknown as jest.Mocked<InsightsService>;
+
+    tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('t1'),
+    } as unknown as jest.Mocked<TenantContextService>;
+
+    prisma = {
+      issueStatusHistory: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+
+    service = new SprintHealthDetailService(
+      tenantContext,
+      prisma as unknown as PrismaService,
+      planning,
+      {} as unknown as CodeService,
+      {} as unknown as DeveloperIdentityService,
+      insights,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  // Zero would read as "we released and got no bugs" — the opposite of "we
+  // released nothing".
+  it('reports a null bug ratio when nothing was released', async () => {
+    const view = await service.qualityCheck('42');
+    expect(view!.storiesReleased).toBe(0);
+    expect(view!.bugsPerStoryReleased).toBeNull();
+  });
+});

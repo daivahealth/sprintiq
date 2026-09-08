@@ -61,6 +61,25 @@ export interface ProductivityView {
   gradeRule: string;
 }
 
+export interface QualityCheckView {
+  storiesReleased: number;
+  rolledBack: number;
+  rolledBackPct: number | null;
+  bugsByPriority: { priority: string; count: number }[];
+  bugsLogged: number;
+  bugsPerStoryReleased: number | null;
+}
+
+/** Canonical bug-priority ordering; any unknown name is appended after these. */
+const BUG_PRIORITY_ORDER = [
+  'Highest',
+  'High',
+  'Medium',
+  'Low',
+  'Lowest',
+  'Unprioritised',
+];
+
 /**
  * The composite the high/medium/low grade is cut from.
  *
@@ -407,6 +426,82 @@ export class SprintHealthDetailService {
   }
 
   /**
+   * Releases, rollbacks and bug load — the release-quality signals that share
+   * this sprint's own status history.
+   *
+   * `rolledBack` is read from `IssueStatusHistory`, not the story row: a story
+   * that was reopened and then re-fixed shows an ordinary "done" as its
+   * current status, and only the transition timeline shows it ever left.
+   */
+  async qualityCheck(
+    sprintExternalId: string,
+  ): Promise<QualityCheckView | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.window(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const { win } = found;
+
+    const items = await this.planning.listItemsForSprint(
+      tenantId,
+      sprintExternalId,
+    );
+
+    // Same discipline as `productivity`'s ticketsWorked: scoped to THIS
+    // SPRINT'S OWN item keys, and skipped entirely when there are none — an
+    // unscoped `in` filter reads as "match everything" once it's empty, and
+    // there is nothing to release or roll back without items.
+    const sprintKeys = items.map((item) => item.externalKey);
+    const transitions =
+      sprintKeys.length > 0
+        ? await this.prisma.issueStatusHistory.findMany({
+            where: {
+              tenantId,
+              externalKey: { in: sprintKeys },
+              transitionedAt: { gte: win.from, lte: win.to },
+            },
+            select: {
+              externalKey: true,
+              fromCategory: true,
+              toCategory: true,
+            },
+          })
+        : [];
+
+    const reachedDoneInWindow = new Set(
+      transitions
+        .filter((t) => t.toCategory === 'done')
+        .map((t) => t.externalKey),
+    );
+    const rolledBackKeys = new Set(
+      transitions
+        .filter((t) => t.fromCategory === 'done' && t.toCategory !== 'done')
+        .map((t) => t.externalKey),
+    );
+
+    const storiesReleased = items.filter(
+      (item) =>
+        item.releases.length > 0 &&
+        item.statusCategory === 'done' &&
+        reachedDoneInWindow.has(item.externalKey),
+    ).length;
+
+    const bugs = items.filter((item) => item.type === 'bug');
+    const bugsLogged = bugs.length;
+
+    return {
+      storiesReleased,
+      rolledBack: rolledBackKeys.size,
+      rolledBackPct: pct(rolledBackKeys.size, storiesReleased),
+      bugsByPriority: bugsByPriority(bugs),
+      bugsLogged,
+      bugsPerStoryReleased:
+        storiesReleased > 0 ? round1(bugsLogged / storiesReleased) : null,
+    };
+  }
+
+  /**
    * The sprint's own window, clamped to now: a running sprint is measured over
    * the days it has actually had, not the days it was allotted. Averaging 14
    * days of commits over a 21-day plan understates a team mid-sprint.
@@ -463,6 +558,32 @@ function round1(value: number): number {
 
 function pct(part: number, total: number): number | null {
   return total > 0 ? Number(((part / total) * 100).toFixed(1)) : null;
+}
+
+/**
+ * Groups bug items by `priority` (null → `'Unprioritised'`), ordered
+ * `Highest, High, Medium, Low, Lowest, Unprioritised` — any priority name
+ * outside that set is appended in the order it was first encountered.
+ */
+function bugsByPriority(
+  bugs: { priority: string | null }[],
+): { priority: string; count: number }[] {
+  const counts = new Map<string, number>();
+  const encounterOrder: string[] = [];
+  for (const bug of bugs) {
+    const priority = bug.priority ?? 'Unprioritised';
+    if (!counts.has(priority)) {
+      counts.set(priority, 0);
+      encounterOrder.push(priority);
+    }
+    counts.set(priority, counts.get(priority)! + 1);
+  }
+  const known = BUG_PRIORITY_ORDER.filter((p) => counts.has(p));
+  const unknown = encounterOrder.filter((p) => !BUG_PRIORITY_ORDER.includes(p));
+  return [...known, ...unknown].map((priority) => ({
+    priority,
+    count: counts.get(priority)!,
+  }));
 }
 
 /**

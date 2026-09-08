@@ -244,14 +244,23 @@ export class InsightsController {
   @Get('sprint-health')
   async sprintHealth(@Query('sprint') sprint?: string) {
     const id = requireParam(sprint, 'sprint');
-    const [view, commitActivity] = await Promise.all([
-      this.insights.sprintHealth(id),
-      this.detail.commitActivity(id),
-    ]);
+    const [view, commitActivity, productivity, qualityCheck] =
+      await Promise.all([
+        this.insights.sprintHealth(id),
+        this.detail.commitActivity(id),
+        this.detail.productivity(id),
+        this.detail.qualityCheck(id),
+      ]);
     if (!view) {
       throw new NotFoundException('Sprint not found.');
     }
-    return { ...view, commitActivity, computedAt: new Date().toISOString() };
+    return {
+      ...view,
+      commitActivity,
+      productivity,
+      qualityCheck,
+      computedAt: new Date().toISOString(),
+    };
   }
 
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */
