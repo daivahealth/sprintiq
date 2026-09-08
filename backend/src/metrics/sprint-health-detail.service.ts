@@ -101,6 +101,28 @@ const GRADE_RULE =
 /** Fewer than this many scored contributors is not a distribution to cut. */
 const MIN_CONTRIBUTORS_TO_RANK = 3;
 
+export interface CheckInRow {
+  /** Canonical developer id (the Jira author login). */
+  developer: string;
+  displayName: string;
+  /** One entry per day in `CheckInsView.days`, same order. */
+  counts: number[];
+  total: number;
+}
+
+export interface CheckInsView {
+  /** IST date keys, ascending. */
+  days: string[];
+  /** Sorted by `total` descending — an activity picture, not a register. */
+  rows: CheckInRow[];
+  /** ISO — the pager clamps to these. */
+  sprintFrom: string | null;
+  sprintTo: string | null;
+}
+
+/** Days shown per page when the caller does not specify a range. */
+const CHECK_IN_PAGE_DAYS = 7;
+
 /**
  * BC-8 read model for the Sprint Health detail (DASHBOARDS.md §Sprint Health).
  *
@@ -502,6 +524,105 @@ export class SprintHealthDetailService {
   }
 
   /**
+   * Ticket movement per developer per IST day — the same population
+   * `productivity`/`qualityCheck` count transitions over (the sprint's own
+   * item keys), so two panels on one screen can never disagree about the
+   * same person's ticket movement.
+   */
+  async checkIns(
+    sprintExternalId: string,
+    from?: Date,
+    to?: Date,
+  ): Promise<CheckInsView | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.window(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const { sprint, win } = found;
+
+    // The range the caller asked for, intersected with the sprint's own days:
+    // a grid showing days the sprint did not run reports zeros that mean
+    // "not a sprint day", indistinguishable from "nobody moved anything".
+    const start = maxDate(from ?? win.from, win.from);
+    const end = minDate(to ?? addDays(start, CHECK_IN_PAGE_DAYS - 1), win.to);
+    const days = dayKeysBetween(start, end);
+    const dayIndex = new Map(days.map((key, i) => [key, i]));
+
+    const items = await this.planning.listItemsForSprint(
+      tenantId,
+      sprintExternalId,
+    );
+
+    // Same discipline as `productivity`/`qualityCheck`: scoped to THIS
+    // SPRINT'S OWN item keys, and skipped entirely when there are none — an
+    // unscoped `in` filter reads as "match everything" once it's empty.
+    const sprintKeys = items.map((item) => item.externalKey);
+    const transitions =
+      sprintKeys.length > 0
+        ? await this.prisma.issueStatusHistory.findMany({
+            where: {
+              tenantId,
+              externalKey: { in: sprintKeys },
+              transitionedAt: { gte: start, lte: end },
+            },
+            select: {
+              authorLogin: true,
+              authorName: true,
+              transitionedAt: true,
+            },
+          })
+        : [];
+
+    interface Acc {
+      displayName: string;
+      counts: number[];
+    }
+    const byDeveloper = new Map<string, Acc>();
+    for (const t of transitions) {
+      if (!t.authorLogin) {
+        continue;
+      }
+      const dayKey = istDateKey(t.transitionedAt);
+      const idx = dayIndex.get(dayKey);
+      if (idx === undefined) {
+        continue;
+      }
+      let acc = byDeveloper.get(t.authorLogin);
+      if (!acc) {
+        acc = {
+          displayName: t.authorName ?? t.authorLogin,
+          counts: days.map(() => 0),
+        };
+        byDeveloper.set(t.authorLogin, acc);
+      }
+      acc.counts[idx] += 1;
+    }
+
+    const rows: CheckInRow[] = [...byDeveloper.entries()]
+      .map(([developer, acc]) => ({
+        developer,
+        displayName: acc.displayName,
+        counts: acc.counts,
+        total: acc.counts.reduce((a, b) => a + b, 0),
+      }))
+      // Volume order, not alphabetical — the grid reads as an activity
+      // picture. `displayName` only breaks an exact tie so ordering stays
+      // deterministic.
+      .sort(
+        (a, b) =>
+          b.total - a.total || a.displayName.localeCompare(b.displayName),
+      );
+
+    return {
+      days,
+      rows,
+      sprintFrom: sprint.startAt ? sprint.startAt.toISOString() : null,
+      sprintTo: sprint.endAt ? sprint.endAt.toISOString() : null,
+    };
+  }
+
+  /**
    * The sprint's own window, clamped to now: a running sprint is measured over
    * the days it has actually had, not the days it was allotted. Averaging 14
    * days of commits over a 21-day plan understates a team mid-sprint.
@@ -546,6 +667,18 @@ function dayKeysBetween(from: Date, to: Date): string[] {
     key = istDateKey(cursor);
   }
   return keys;
+}
+
+function maxDate(a: Date, b: Date): Date {
+  return a > b ? a : b;
+}
+
+function minDate(a: Date, b: Date): Date {
+  return a < b ? a : b;
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 86_400_000);
 }
 
 function mean(values: number[]): number {

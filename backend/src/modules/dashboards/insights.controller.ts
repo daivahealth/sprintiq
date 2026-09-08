@@ -263,6 +263,28 @@ export class InsightsController {
     };
   }
 
+  /**
+   * Ticket movement per developer per day. Its own route because the grid
+   * pages by date range — folding it into `sprint-health` would re-run every
+   * sprint aggregate on each page flip.
+   */
+  @Get('sprint-health/check-ins')
+  async sprintCheckIns(
+    @Query('sprint') sprint?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const view = await this.detail.checkIns(
+      requireParam(sprint, 'sprint'),
+      from ? new Date(from) : undefined,
+      to ? new Date(to) : undefined,
+    );
+    if (!view) {
+      throw new NotFoundException('Sprint not found.');
+    }
+    return { ...view, computedAt: new Date().toISOString() };
+  }
+
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */
   @Get('sprint-risk/active')
   async activeSprintsRisk(@Query('projects') projects?: string) {

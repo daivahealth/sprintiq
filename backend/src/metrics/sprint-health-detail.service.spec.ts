@@ -855,3 +855,178 @@ describe('SprintHealthDetailService.qualityCheck when nothing has been released'
     expect(view!.bugsPerStoryReleased).toBeNull();
   });
 });
+
+describe('SprintHealthDetailService.checkIns', () => {
+  let planning: jest.Mocked<PlanningService>;
+  let insights: jest.Mocked<InsightsService>;
+  let tenantContext: jest.Mocked<TenantContextService>;
+  let history: { findMany: jest.Mock };
+  let prisma: { issueStatusHistory: { findMany: jest.Mock } };
+  let service: SprintHealthDetailService;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
+
+    planning = {
+      findSprintByExternalId: jest.fn(
+        async (tenantId: string, externalId: string) =>
+          tenantId === 't1' && externalId === '42' ? defaultSprint() : null,
+      ),
+      listSprints: jest.fn().mockResolvedValue([]),
+      listItemsForSprint: jest
+        .fn()
+        .mockResolvedValue([
+          { externalKey: 'ACT-1' },
+          { externalKey: 'ACT-2' },
+        ]),
+    } as unknown as jest.Mocked<PlanningService>;
+
+    insights = {
+      repoToProjects: jest
+        .fn()
+        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
+    } as unknown as jest.Mocked<InsightsService>;
+
+    tenantContext = {
+      requireTenantId: jest.fn().mockReturnValue('t1'),
+    } as unknown as jest.Mocked<TenantContextService>;
+
+    history = {
+      findMany: jest.fn().mockResolvedValue([]),
+    };
+    prisma = { issueStatusHistory: history };
+
+    service = new SprintHealthDetailService(
+      tenantContext,
+      prisma as unknown as PrismaService,
+      planning,
+      {} as unknown as CodeService,
+      {} as unknown as DeveloperIdentityService,
+      insights,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('buckets transitions per developer per IST day', async () => {
+    history.findMany.mockResolvedValue([
+      {
+        authorLogin: 'rahul',
+        authorName: 'Rahul S.',
+        transitionedAt: new Date('2026-08-25T04:00:00Z'),
+      },
+      {
+        authorLogin: 'rahul',
+        authorName: 'Rahul S.',
+        transitionedAt: new Date('2026-08-25T09:00:00Z'),
+      },
+      {
+        authorLogin: 'priya',
+        authorName: 'Priya N.',
+        transitionedAt: new Date('2026-08-26T05:00:00Z'),
+      },
+    ]);
+    const view = await service.checkIns(
+      '42',
+      new Date('2026-08-25'),
+      new Date('2026-08-26'),
+    );
+
+    expect(view!.days).toEqual(['2026-08-25', '2026-08-26']);
+    expect(view!.rows).toEqual([
+      { developer: 'rahul', displayName: 'Rahul S.', counts: [2, 0], total: 2 },
+      { developer: 'priya', displayName: 'Priya N.', counts: [0, 1], total: 1 },
+    ]);
+  });
+
+  // 18:30 UTC is the next IST day. Bucketing this in UTC would put a Monday
+  // evening check-in on Monday for this board and Tuesday on every other one.
+  it('uses the IST day boundary, like every other daily series', async () => {
+    history.findMany.mockResolvedValue([
+      {
+        authorLogin: 'rahul',
+        authorName: 'Rahul S.',
+        transitionedAt: new Date('2026-08-25T19:00:00Z'),
+      },
+    ]);
+    const view = await service.checkIns(
+      '42',
+      new Date('2026-08-25'),
+      new Date('2026-08-26'),
+    );
+    expect(view!.rows[0].counts).toEqual([0, 1]);
+  });
+
+  it('clamps the requested range to the sprint own days', async () => {
+    // Sprint runs 2026-08-25 → 2026-09-05; caller asks for all of August.
+    const view = await service.checkIns(
+      '42',
+      new Date('2026-08-01'),
+      new Date('2026-08-31'),
+    );
+    expect(view!.days[0]).toBe('2026-08-25');
+  });
+
+  it('defaults to the first seven sprint days when no range is given', async () => {
+    const view = await service.checkIns('42');
+    expect(view!.days).toHaveLength(7);
+    expect(view!.days[0]).toBe('2026-08-25');
+  });
+
+  it('returns an empty row set, not null, for a sprint nobody moved a ticket in', async () => {
+    history.findMany.mockResolvedValue([]);
+    const view = await service.checkIns('42');
+    expect(view!.rows).toEqual([]);
+    expect(view!.days).toHaveLength(7);
+  });
+
+  // Same population as productivity/qualityCheck: scoped to THIS SPRINT'S
+  // OWN item keys, skipped entirely when there are none.
+  it('skips the read and returns an empty row set when the sprint has no items', async () => {
+    planning.listItemsForSprint.mockResolvedValue([]);
+    const view = await service.checkIns('42');
+    expect(history.findMany).not.toHaveBeenCalled();
+    expect(view!.rows).toEqual([]);
+  });
+
+  // Isolation is tested, not assumed — same pattern as commitActivity,
+  // productivity and qualityCheck above.
+  it('scopes every query by the tenant from the request context', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+    planning.findSprintByExternalId.mockImplementation(
+      async (tenantId: string, externalId: string) =>
+        tenantId === 't-other' && externalId === '42' ? defaultSprint() : null,
+    );
+
+    await service.checkIns('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(history.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ tenantId: 't-other' }),
+      }),
+    );
+  });
+
+  it('returns null for a sprint id belonging to another tenant', async () => {
+    tenantContext.requireTenantId.mockReturnValue('t-other');
+
+    const view = await service.checkIns('42');
+
+    expect(planning.findSprintByExternalId).toHaveBeenCalledWith(
+      't-other',
+      '42',
+    );
+    expect(view).toBeNull();
+    expect(planning.listItemsForSprint).not.toHaveBeenCalled();
+    expect(history.findMany).not.toHaveBeenCalled();
+  });
+});
