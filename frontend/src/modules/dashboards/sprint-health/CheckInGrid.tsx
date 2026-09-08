@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintCheckIns, type CheckInRow } from '../useInsights';
@@ -33,30 +33,67 @@ function intensityClass(count: number, max: number): string {
  * paged seven days at a time within the sprint's own elapsed window
  * (`sprint-health-detail.service.ts#checkIns`, `./pager#checkInPages`).
  *
- * `page` is local state indexing `checkInPages(sprintFrom, sprintTo)`; the
- * hook is called with the selected page's `from`/`to`. Prev/Next are disabled
- * at the ends so the range can never leave the sprint — there is nothing to
- * page to before day one or after the sprint's last elapsed day.
+ * `sprint` is the only input this component needs. The elapsed window that
+ * `checkInPages` requires (`CheckInsView.sprintFrom`/`sprintTo`) has no
+ * legitimate source OUTSIDE this component: `SprintSummary.startAt`/`endAt`
+ * are the sprint's PLANNED bounds, which `./pager` documents as the wrong
+ * input — they would offer pages for days a running sprint has not reached
+ * yet, and the backend clamps such a request to nothing. Computing
+ * `min(endAt, now)` on the client would put timezone math back on the
+ * client, which this codebase forbids outright. So the grid fetches once
+ * with `from`/`to` unset — the backend already defaults to the sprint's
+ * first seven elapsed days and returns `sprintFrom`/`sprintTo` on every
+ * response — and derives its own pages from that response.
+ *
+ * `page === null` means "no explicit page yet": the hook is still called
+ * with `from`/`to` unset, which is also exactly page one, so the bootstrap
+ * fetch is never re-fetched under a second cache key once `bounds` resolves.
+ * Only a Prev/Next click assigns a concrete index, matching "subsequent page
+ * changes pass that page's from/to".
  */
-export function CheckInGrid({
-  sprint,
-  sprintFrom,
-  sprintTo,
-}: {
-  sprint: string;
-  sprintFrom: string | null;
-  sprintTo: string | null;
-}) {
-  // `checkInPages` already returns `[]` for empty strings, so a sprint whose
-  // elapsed window is not yet known to the caller degrades to "no pager"
-  // rather than throwing — the hook below still resolves a first page from
-  // the backend's own default.
-  const pages = checkInPages(sprintFrom ?? '', sprintTo ?? '');
-  const [page, setPage] = useState(0);
-  const current = pages[page];
+export function CheckInGrid({ sprint }: { sprint: string }) {
+  const [page, setPage] = useState<number | null>(null);
+  const [bounds, setBounds] = useState<{ from: string; to: string } | null>(null);
+
+  // Reset during render, not in an effect: an effect would fire one frame
+  // AFTER the sprint prop already changed, so the hook below would fetch one
+  // stale combination (the old page/bounds against the new sprint) before
+  // correcting itself. Adjusting here means that combination is never
+  // requested at all. (https://react.dev/learn/you-might-not-need-an-effect
+  // — "Adjusting state when a prop changes".)
+  const [trackedSprint, setTrackedSprint] = useState(sprint);
+  if (sprint !== trackedSprint) {
+    setTrackedSprint(sprint);
+    setPage(null);
+    setBounds(null);
+  }
+
+  const pages = useMemo(
+    () => (bounds ? checkInPages(bounds.from, bounds.to) : []),
+    [bounds],
+  );
+  const current = page === null ? undefined : pages[page];
 
   const query = useSprintCheckIns(sprint, current?.from ?? null, current?.to ?? null);
   const d = query.data;
+
+  // Learn the elapsed window from whichever response lands — bootstrap or a
+  // later explicit page — and keep it in sync if a running sprint's window
+  // has grown since the last fetch.
+  useEffect(() => {
+    if (d?.sprintFrom && d?.sprintTo) {
+      const sprintFrom = d.sprintFrom;
+      const sprintTo = d.sprintTo;
+      setBounds((prev) =>
+        prev && prev.from === sprintFrom && prev.to === sprintTo
+          ? prev
+          : { from: sprintFrom, to: sprintTo },
+      );
+    }
+  }, [d?.sprintFrom, d?.sprintTo]);
+
+  const activePage = page ?? 0;
+  const activeLabel = current?.label ?? pages[0]?.label;
 
   return (
     <Card className="space-y-3">
@@ -72,19 +109,19 @@ export function CheckInGrid({
             <Button
               variant="secondary"
               size="sm"
-              disabled={page <= 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={activePage <= 0}
+              onClick={() => setPage(Math.max(0, activePage - 1))}
             >
               Prev
             </Button>
             <span className="text-xs tabular-nums text-fg-subtle">
-              {current?.label}
+              {activeLabel}
             </span>
             <Button
               variant="secondary"
               size="sm"
-              disabled={page >= pages.length - 1}
-              onClick={() => setPage((p) => Math.min(pages.length - 1, p + 1))}
+              disabled={activePage >= pages.length - 1}
+              onClick={() => setPage(Math.min(pages.length - 1, activePage + 1))}
             >
               Next
             </Button>
