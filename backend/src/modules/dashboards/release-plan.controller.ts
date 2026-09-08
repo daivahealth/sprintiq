@@ -68,20 +68,7 @@ export class ReleasePlanController {
       );
     }
 
-    // Tenant-scoped lookup, not a bare keyed update: this is what stops a
-    // caller writing a planned date onto another tenant's release row.
-    const release = await this.prisma.release.findFirst({
-      where: {
-        tenantId: user.tenantId,
-        projectKey: dto.projectKey,
-        name: dto.name,
-      },
-    });
-    if (!release) {
-      throw new NotFoundException(
-        `Release "${dto.name}" not found in project ${dto.projectKey}.`,
-      );
-    }
+    const release = await this.loadOwnRelease(user, dto.projectKey, dto.name);
 
     const anchor = release.releaseDate ?? release.startAt ?? new Date();
     const driftDays =
@@ -115,17 +102,10 @@ export class ReleasePlanController {
   @Delete()
   async clear(
     @CurrentUser() user: AuthUser,
-    @Query('projectKey') projectKey: string,
-    @Query('name') name: string,
+    @Query('projectKey') projectKey?: string,
+    @Query('name') name?: string,
   ) {
-    const release = await this.prisma.release.findFirst({
-      where: { tenantId: user.tenantId, projectKey, name },
-    });
-    if (!release) {
-      throw new NotFoundException(
-        `Release "${name}" not found in project ${projectKey}.`,
-      );
-    }
+    const release = await this.loadOwnRelease(user, projectKey, name);
 
     // All three columns together: leaving provenance behind for a date that
     // no longer exists is a record that lies about itself.
@@ -139,5 +119,42 @@ export class ReleasePlanController {
     });
 
     return { ok: true };
+  }
+
+  /**
+   * The tenant-scoped lookup both handlers share, guarded up front against
+   * missing/empty identifiers.
+   *
+   * The guard matters most on `clear`: `projectKey`/`name` there are bare
+   * `@Query()` primitives, which the global `ValidationPipe` does not
+   * validate (only class-bodied DTOs get that treatment) — and Prisma drops
+   * an `undefined`-valued key from a `where` clause at build time. Without
+   * this check, a request missing either param would silently collapse the
+   * lookup to `{ tenantId }`, match an arbitrary release for that tenant,
+   * and `clear` would then erase that release's plan and report success.
+   * Rejecting here, before any query runs, is what closes that hole —
+   * Prisma's `undefined` semantics are exactly what must not be relied on.
+   *
+   * `findFirst` scoped by `tenantId`, not a bare keyed update, is separately
+   * what stops a write landing on another tenant's release row.
+   */
+  private async loadOwnRelease(
+    user: AuthUser,
+    projectKey: string | undefined,
+    name: string | undefined,
+  ) {
+    if (!projectKey || !name) {
+      throw new BadRequestException('projectKey and name are both required.');
+    }
+
+    const release = await this.prisma.release.findFirst({
+      where: { tenantId: user.tenantId, projectKey, name },
+    });
+    if (!release) {
+      throw new NotFoundException(
+        `Release "${name}" not found in project ${projectKey}.`,
+      );
+    }
+    return release;
   }
 }

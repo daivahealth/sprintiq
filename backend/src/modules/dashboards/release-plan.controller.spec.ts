@@ -121,4 +121,45 @@ describe('ReleasePlanController', () => {
       plannedSetAt: null,
     });
   });
+
+  it('rejects clearing a release that belongs to another tenant', async () => {
+    prisma.release.findFirst.mockResolvedValue(null);
+    await expect(
+      controller.clear(
+        { tenantId: 't2', userId: 'u9' } as AuthUser,
+        'ACT',
+        'RC1',
+      ),
+    ).rejects.toThrow(NotFoundException);
+    expect(prisma.release.update).not.toHaveBeenCalled();
+  });
+
+  // Regression test for the hole a missing query param opened: NestJS's
+  // global ValidationPipe does not validate bare @Query() primitives, and
+  // Prisma silently drops an undefined-valued key from a `where` clause —
+  // so a request missing `projectKey` used to collapse the lookup to
+  // `{ tenantId }`, match an arbitrary release, and clear ITS plan.
+  it('rejects clearing with a missing projectKey, before any lookup', async () => {
+    await expect(
+      controller.clear(
+        { tenantId: 't1', userId: 'u1' } as AuthUser,
+        undefined,
+        'RC1',
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.release.findFirst).not.toHaveBeenCalled();
+    expect(prisma.release.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects clearing with a missing name, before any lookup', async () => {
+    await expect(
+      controller.clear(
+        { tenantId: 't1', userId: 'u1' } as AuthUser,
+        'ACT',
+        undefined,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.release.findFirst).not.toHaveBeenCalled();
+    expect(prisma.release.update).not.toHaveBeenCalled();
+  });
 });
