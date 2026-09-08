@@ -115,7 +115,14 @@ export interface CheckInsView {
   days: string[];
   /** Sorted by `total` descending — an activity picture, not a register. */
   rows: CheckInRow[];
-  /** ISO — the pager clamps to these. */
+  /**
+   * ISO — the ELAPSED window (`window().win.from`/`win.to`), not the
+   * sprint's full planned bounds: the days this sprint has actually had, not
+   * the days it was allotted. Identical to the sprint's own start/end once
+   * it closes; only a running sprint differs. The pager (Task 12) builds its
+   * pages from exactly these two fields, so a page can never be offered for
+   * days that have not happened yet.
+   */
   sprintFrom: string | null;
   sprintTo: string | null;
 }
@@ -539,13 +546,21 @@ export class SprintHealthDetailService {
     if (!found) {
       return null;
     }
-    const { sprint, win } = found;
+    const { win } = found;
 
-    // The range the caller asked for, intersected with the sprint's own days:
-    // a grid showing days the sprint did not run reports zeros that mean
-    // "not a sprint day", indistinguishable from "nobody moved anything".
-    const start = maxDate(from ?? win.from, win.from);
-    const end = minDate(to ?? addDays(start, CHECK_IN_PAGE_DAYS - 1), win.to);
+    // The range the caller asked for, clamped into the sprint's own elapsed
+    // window on BOTH ends before `end` is derived from `start` — a grid
+    // showing days the sprint did not run reports zeros that mean "not a
+    // sprint day", indistinguishable from "nobody moved anything", and a
+    // request that lands entirely outside the window (a stale link, a
+    // hand-edited URL, or the pager's own math) must degrade to the nearest
+    // valid days rather than invert into an empty grid. `start` is clamped
+    // first; `end` is then floored at `start` so it can never fall below it.
+    const start = minDate(maxDate(from ?? win.from, win.from), win.to);
+    const end = maxDate(
+      minDate(to ?? addDays(start, CHECK_IN_PAGE_DAYS - 1), win.to),
+      start,
+    );
     const days = dayKeysBetween(start, end);
     const dayIndex = new Map(days.map((key, i) => [key, i]));
 
@@ -617,8 +632,10 @@ export class SprintHealthDetailService {
     return {
       days,
       rows,
-      sprintFrom: sprint.startAt ? sprint.startAt.toISOString() : null,
-      sprintTo: sprint.endAt ? sprint.endAt.toISOString() : null,
+      // The elapsed window, not the sprint's full planned bounds — see
+      // `CheckInsView.sprintFrom` for why.
+      sprintFrom: win.from.toISOString(),
+      sprintTo: win.to.toISOString(),
     };
   }
 

@@ -976,6 +976,42 @@ describe('SprintHealthDetailService.checkIns', () => {
     expect(view!.days[0]).toBe('2026-08-25');
   });
 
+  // A stale link, a hand-edited URL, or a pager page built from the wrong
+  // bounds must degrade to the nearest valid days, not invert into a
+  // column-less grid: `end` was previously derived independently of
+  // `start`'s clamp, so a range entirely past the elapsed window (2026-08-31,
+  // "now" for this fixture) put `start > end` and `dayKeysBetween` returned
+  // `[]`.
+  it('degrades a range entirely after the elapsed window to its last day, not an empty grid', async () => {
+    const view = await service.checkIns(
+      '42',
+      new Date('2026-09-02'),
+      new Date('2026-09-04'),
+    );
+    expect(view!.days).toEqual(['2026-08-31']);
+  });
+
+  // The same inversion, symmetrically, for a range entirely before the
+  // sprint started.
+  it('degrades a range entirely before the sprint start to its first day, not an empty grid', async () => {
+    const view = await service.checkIns(
+      '42',
+      new Date('2026-08-01'),
+      new Date('2026-08-10'),
+    );
+    expect(view!.days).toEqual(['2026-08-25']);
+  });
+
+  // `sprintFrom`/`sprintTo` are the ELAPSED window, not the sprint's full
+  // planned bounds (endAt is 2026-09-05, well past "now"): the pager builds
+  // its pages from these two fields, so a page for days that have not
+  // happened yet must never be offered.
+  it('reports the elapsed window, not the full sprint bounds, for a running sprint', async () => {
+    const view = await service.checkIns('42');
+    expect(view!.sprintFrom).toBe('2026-08-25T00:00:00.000Z');
+    expect(view!.sprintTo).toBe('2026-08-31T00:00:00.000Z');
+  });
+
   it('returns an empty row set, not null, for a sprint nobody moved a ticket in', async () => {
     history.findMany.mockResolvedValue([]);
     const view = await service.checkIns('42');
