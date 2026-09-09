@@ -880,9 +880,7 @@ describe('SprintHealthDetailService.qualityCheck', () => {
         releases: [],
         priority: null,
       },
-    ] as unknown as Awaited<
-      ReturnType<PlanningService['listItemsForSprint']>
-    >);
+    ] as unknown as Awaited<ReturnType<PlanningService['listItemsForSprint']>>);
     history.findMany.mockResolvedValue([
       {
         externalKey: 'ACT-1',
