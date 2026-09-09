@@ -152,6 +152,52 @@ describe('SprintHealthDetailService.commitActivity', () => {
     expect(view).toMatchObject({ committers: 2, assignees: 3 });
   });
 
+  // Bots and deprovisioned accounts stay out of `committers` — a head-count
+  // read against a Jira-assignee denominator that can never contain either —
+  // but their commits still land in the raw `commits` total. Dependabot
+  // alone can otherwise land in the "N of M assigned" tile against a
+  // denominator that never included it.
+  it('excludes bots and deprovisioned accounts from the committer head-count, not from the commit total', async () => {
+    const botCommit = {
+      sha: 'sha-bot',
+      repoFullName: 'org/act-api',
+      authorLogin: 'dependabot[bot]',
+      authorEmail: null,
+      additions: 1,
+      deletions: 0,
+      committedAt: new Date('2026-08-26T00:00:00.000Z'),
+      authoredAt: new Date('2026-08-26T00:00:00.000Z'),
+    };
+    const anonymizedCommit = {
+      sha: 'sha-anon',
+      repoFullName: 'org/act-api',
+      authorLogin: '1a824967e10493200d5a7ee2d91b87',
+      authorEmail: null,
+      additions: 1,
+      deletions: 0,
+      committedAt: new Date('2026-08-26T00:00:00.000Z'),
+      authoredAt: new Date('2026-08-26T00:00:00.000Z'),
+    };
+    code.listCommitsPage.mockResolvedValue({
+      commits: [
+        ...defaultCommits(),
+        botCommit,
+        anonymizedCommit,
+      ] as unknown as Awaited<
+        ReturnType<CodeService['listCommitsPage']>
+      >['commits'],
+      truncated: false,
+    });
+
+    const view = await service.commitActivity('42');
+
+    // Still only alice + bob — the bot and the deprovisioned account never
+    // join the head-count.
+    expect(view?.committers).toBe(2);
+    // But their commits still count.
+    expect(view?.commits).toBe(16);
+  });
+
   it('windows commits to the sprint and averages over its elapsed days', async () => {
     // Sprint: 2026-08-25 → 2026-09-05, "now" 2026-08-31 → 7 elapsed days.
     const view = await service.commitActivity('42');
@@ -471,6 +517,34 @@ describe('SprintHealthDetailService.productivity', () => {
     expect(view!.lowest).toEqual({ additions: 100 });
   });
 
+  // Bots and deprovisioned accounts never become a ROW — this is the one
+  // board that publishes an attributed per-developer grade, and Dependabot
+  // raising a pile of PRs must not let it land in the top tertile right next
+  // to the humans it's graded against.
+  it('excludes bots and deprovisioned accounts from the table entirely', async () => {
+    const botPrs = Array.from({ length: 20 }, (_, i) => ({
+      repoFullName: 'org/act-api',
+      externalNumber: `bot-${i}`,
+      authorLogin: 'dependabot[bot]',
+      state: 'open',
+      openedAt: new Date('2026-08-26T00:00:00.000Z'),
+      firstReviewAt: null,
+      mergedAt: null,
+    }));
+    prisma.pullRequest.findMany.mockResolvedValue([
+      ...productivityPrs(),
+      ...botPrs,
+    ]);
+
+    const view = await service.productivity('42');
+
+    expect(view!.rows.some((r) => r.developer === 'dependabot[bot]')).toBe(
+      false,
+    );
+    // The tertile cut is unaffected — same 6 rows as the base fixture, not 7.
+    expect(view!.rows).toHaveLength(6);
+  });
+
   // One contributor cannot be a tertile. Grading them "high" or "low" would
   // be a verdict drawn from a distribution of one.
   it('grades everyone medium when there are too few contributors to rank', async () => {
@@ -759,7 +833,6 @@ describe('SprintHealthDetailService.qualityCheck', () => {
       '42',
     );
     expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
-    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
     expect(history.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ tenantId: 't-other' }),
@@ -779,6 +852,60 @@ describe('SprintHealthDetailService.qualityCheck', () => {
     expect(view).toBeNull();
     expect(planning.listItemsForSprint).not.toHaveBeenCalled();
     expect(history.findMany).not.toHaveBeenCalled();
+  });
+
+  // This panel needs only the sprint's own elapsed dates — never
+  // `win.repos` — so it must use the lean `sprintWindow()` path and skip the
+  // N+1 repo lookup (`insights.repoToProjects`, a scan over every project)
+  // entirely.
+  it('never calls the repo↔project lookup, which this panel does not need', async () => {
+    await service.qualityCheck('42');
+    expect(insights.repoToProjects).not.toHaveBeenCalled();
+  });
+
+  // The `rolledBackPct` bug: an item that entered `done` in the window but
+  // carries no release used to be excluded from the denominator entirely
+  // (`storiesReleased` required a release), while still being counted by the
+  // numerator the instant it rolled back — so `pct` could exceed 100%. The
+  // fixed denominator is every item that entered `done` in the window,
+  // released or not, so a rollback (which requires having been in `done`) is
+  // always a subset of it.
+  it('never lets rolledBackPct exceed 100%, and reports the rollback count even when nothing was released', async () => {
+    planning.listItemsForSprint.mockResolvedValue([
+      {
+        externalKey: 'ACT-1',
+        type: 'story',
+        // Rolled back — no longer `done` — and never carried a release.
+        statusCategory: 'indeterminate',
+        releases: [],
+        priority: null,
+      },
+    ] as unknown as Awaited<
+      ReturnType<PlanningService['listItemsForSprint']>
+    >);
+    history.findMany.mockResolvedValue([
+      {
+        externalKey: 'ACT-1',
+        fromCategory: 'indeterminate',
+        toCategory: 'done',
+        transitionedAt: new Date('2026-08-27'),
+      },
+      {
+        externalKey: 'ACT-1',
+        fromCategory: 'done',
+        toCategory: 'indeterminate',
+        transitionedAt: new Date('2026-08-28'),
+      },
+    ]);
+
+    const view = await service.qualityCheck('42');
+
+    expect(view!.storiesReleased).toBe(0);
+    expect(view!.rolledBack).toBe(1);
+    // Denominator is the 1 item that entered done in the window, not the 0
+    // that were released — so the rollback is visible, not hidden behind a
+    // null, and the percentage is a real 100%, not >100%.
+    expect(view!.rolledBackPct).toBe(100);
   });
 });
 
@@ -858,6 +985,7 @@ describe('SprintHealthDetailService.qualityCheck when nothing has been released'
 
 describe('SprintHealthDetailService.checkIns', () => {
   let planning: jest.Mocked<PlanningService>;
+  let identities: jest.Mocked<DeveloperIdentityService>;
   let insights: jest.Mocked<InsightsService>;
   let tenantContext: jest.Mocked<TenantContextService>;
   let history: { findMany: jest.Mock };
@@ -882,6 +1010,22 @@ describe('SprintHealthDetailService.checkIns', () => {
         ]),
     } as unknown as jest.Mocked<PlanningService>;
 
+    // Empty by default: no Jira login/name bridges to a canonical developer,
+    // so every transition falls back to its raw `authorLogin` — identical to
+    // this file's behaviour before the identity-resolution fix, unless a
+    // test below overrides these to exercise the bridge itself.
+    identities = {
+      attributionIndex: jest.fn().mockResolvedValue({
+        byLogin: new Map<string, string>(),
+        byEmail: new Map<string, string>(),
+        displayNames: new Map<string, string>(),
+      }),
+      jiraAssigneeIndex: jest.fn().mockResolvedValue({
+        byDeveloper: new Map<string, { logins: string[]; names: string[] }>(),
+        assignees: { observed: 0, matched: 0, unmatched: 0 },
+      }),
+    } as unknown as jest.Mocked<DeveloperIdentityService>;
+
     insights = {
       repoToProjects: jest
         .fn()
@@ -902,7 +1046,7 @@ describe('SprintHealthDetailService.checkIns', () => {
       prisma as unknown as PrismaService,
       planning,
       {} as unknown as CodeService,
-      {} as unknown as DeveloperIdentityService,
+      identities,
       insights,
     );
   });
@@ -1044,12 +1188,94 @@ describe('SprintHealthDetailService.checkIns', () => {
       '42',
     );
     expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
-    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(identities.attributionIndex).toHaveBeenCalledWith('t-other');
+    expect(identities.jiraAssigneeIndex).toHaveBeenCalledWith('t-other');
     expect(history.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ tenantId: 't-other' }),
       }),
     );
+  });
+
+  // This panel needs only the sprint's own elapsed dates — never `win.repos`
+  // — so it must use the lean `sprintWindow()` path and skip the N+1 repo
+  // lookup (`insights.repoToProjects`, a scan over every project) entirely.
+  // `GET /sprint-health` fans out to this panel on every board load, so a
+  // needless repo lookup here runs once per load for no reason.
+  it('never calls the repo↔project lookup, which this panel does not need', async () => {
+    await service.checkIns('42');
+    expect(insights.repoToProjects).not.toHaveBeenCalled();
+  });
+
+  // The bug this file had no test for: the controller converts an IST
+  // date-key range into IST-day instants (`istDayStart`/`istDayEnd`) before
+  // calling this method, and this asserts THIS SERVICE passes those exact
+  // instants through to the query — not a UTC-shifted reinterpretation of
+  // them. Both fall inside the sprint's elapsed window (2026-08-25 through
+  // "now" 2026-08-31) so clamping is a no-op and cannot mask a bug here.
+  it('passes the exact from/to instants through to issueStatusHistory.findMany', async () => {
+    const from = new Date('2026-08-26T00:00:00.000+05:30'); // istDayStart('2026-08-26')
+    const to = new Date('2026-08-27T23:59:59.999+05:30'); // istDayEnd('2026-08-27')
+    await service.checkIns('42', from, to);
+    expect(history.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          transitionedAt: { gte: from, lte: to },
+        }),
+      }),
+    );
+  });
+
+  // The identity-resolution fix: `checkIns` used to key rows on the raw
+  // `authorLogin`, while `productivity` resolves the same Jira login through
+  // the canonical-developer bridge — so the same person could appear under
+  // two different names across the two panels. Both must now agree.
+  it('resolves the same canonical developer id and display name productivity would report', async () => {
+    identities.jiraAssigneeIndex.mockResolvedValue({
+      byDeveloper: new Map([['dev-priya', { logins: ['priya.n'], names: [] }]]),
+      assignees: { observed: 1, matched: 1, unmatched: 0 },
+    });
+    identities.attributionIndex.mockResolvedValue({
+      byLogin: new Map<string, string>(),
+      byEmail: new Map<string, string>(),
+      displayNames: new Map([['dev-priya', 'Priya Nair']]),
+    });
+    history.findMany.mockResolvedValue([
+      {
+        authorLogin: 'priya.n',
+        authorName: 'priya.n', // the raw Jira name, distinct from the GitHub display name
+        transitionedAt: new Date('2026-08-25T04:00:00Z'),
+      },
+    ]);
+
+    const view = await service.checkIns('42');
+
+    expect(view!.rows).toEqual([
+      {
+        developer: 'dev-priya',
+        displayName: 'Priya Nair',
+        counts: [1, 0, 0, 0, 0, 0, 0],
+        total: 1,
+      },
+    ]);
+  });
+
+  // A transition from someone with no recorded Jira bridge must still show
+  // on the grid — falling back to the raw login, not disappearing, the same
+  // conservative posture `productivity`'s reverse lookup describes.
+  it('falls back to the raw Jira login when no identity bridge exists', async () => {
+    history.findMany.mockResolvedValue([
+      {
+        authorLogin: 'unbridged.dev',
+        authorName: 'Unbridged Dev',
+        transitionedAt: new Date('2026-08-25T04:00:00Z'),
+      },
+    ]);
+    const view = await service.checkIns('42');
+    expect(view!.rows[0]).toMatchObject({
+      developer: 'unbridged.dev',
+      displayName: 'Unbridged Dev',
+    });
   });
 
   it('returns null for a sprint id belonging to another tenant', async () => {
@@ -1387,7 +1613,6 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
       't-other',
       '42',
     );
-    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
     expect(story.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ tenantId: 't-other' }),
@@ -1412,5 +1637,30 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
     expect(view).toBeNull();
     expect(story.findMany).not.toHaveBeenCalled();
     expect(release.findMany).not.toHaveBeenCalled();
+  });
+
+  // This panel needs only `sprint.projectKey` — never `win.repos`, and not
+  // even `win.from`/`win.to` — so it must reach the sprint directly rather
+  // than through `window()`/`sprintWindow()`, and it must never pay for the
+  // N+1 repo lookup (`insights.repoToProjects`, a scan over every project).
+  it('never calls the repo↔project lookup, which this panel does not need', async () => {
+    await service.releaseCandidates('42');
+    expect(insights.repoToProjects).not.toHaveBeenCalled();
+  });
+
+  // `window()` gates on `sprint.startAt`, which this panel has no use for —
+  // it reports release scope, not a date-bounded window. A sprint with no
+  // recorded start date must still show its release candidates, not 404 a
+  // panel that never dereferences a date.
+  it('reports release candidates for a sprint with no recorded start date', async () => {
+    planning.findSprintByExternalId.mockResolvedValue({
+      ...defaultSprint(),
+      startAt: null,
+    } as unknown as Awaited<
+      ReturnType<PlanningService['findSprintByExternalId']>
+    >);
+    const view = await service.releaseCandidates('42');
+    expect(view).not.toBeNull();
+    expect(view!.map((r) => r.name)).toEqual(['RC1', 'RC2', 'RC3']);
   });
 });

@@ -79,6 +79,29 @@ export function PlannedDateField({
     onError: revertDraft,
   });
 
+  // Committed on blur/Enter, not on every keystroke: a partially-typed date
+  // (e.g. mid-entry on the year) can trip the server's 365-day drift guard,
+  // 400, and revert the field while the user is still typing — and each
+  // attempted keystroke would otherwise write its own audit row. `draft` is
+  // still updated on every keystroke (the input's `onChange`) so the field
+  // feels responsive; only the write is deferred to when the user is
+  // actually done with it.
+  const commitDraft = (value: string) => {
+    if (value === toDateInputValue(plannedReleaseAt)) {
+      // Nothing changed since the last saved value — e.g. tabbing through
+      // the field without editing it. Skip the write and the audit row.
+      return;
+    }
+    // PUTs a new plan, or DELETEs the recorded one when cleared — a
+    // rejected write must never leave the field looking saved, so both
+    // mutations revert the draft on failure (`revertDraft` above).
+    if (value) {
+      setPlan.mutate(value);
+    } else {
+      clearPlan.mutate();
+    }
+  };
+
   if (!isAdmin) {
     return <span className="tabular-nums text-fg">{formatDate(plannedReleaseAt)}</span>;
   }
@@ -93,16 +116,12 @@ export function PlannedDateField({
         className="w-40"
         value={draft}
         disabled={pending}
-        onChange={(e) => {
-          const value = e.target.value;
-          setDraft(value);
-          // PUTs a new plan, or DELETEs the recorded one when cleared — a
-          // rejected write must never leave the field looking saved, so both
-          // mutations revert the draft on failure (`revertDraft` above).
-          if (value) {
-            setPlan.mutate(value);
-          } else {
-            clearPlan.mutate();
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => commitDraft(draft)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commitDraft(draft);
           }
         }}
       />

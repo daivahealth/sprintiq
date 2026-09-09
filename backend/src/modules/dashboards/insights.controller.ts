@@ -8,14 +8,18 @@ import {
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
-import { istWindowFloor } from '../../common/time';
+import { istDayEnd, istDayStart, istWindowFloor } from '../../common/time';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
 import { SprintHealthDetailService } from '../../metrics/sprint-health-detail.service';
 import { CodeService } from '../code/code.service';
 import { ConnectionsService } from '../connections/connections.service';
-import { ACTIVITY_WINDOWS, resolveActivityRange } from './activity-range';
+import {
+  ACTIVITY_WINDOWS,
+  parseDateKeyParam,
+  resolveActivityRange,
+} from './activity-range';
 import { parseList } from './catalog.controller';
 
 const ALL_ROLES = Object.values(Role);
@@ -274,10 +278,18 @@ export class InsightsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
+    // `from`/`to` are IST calendar-date keys ("2026-08-31"), the same
+    // convention `resolveActivityRange` uses for a custom range — NOT ISO
+    // instants. `new Date('2026-08-31')` parses as UTC midnight (05:30 IST),
+    // which shifted every page's bounds and made a full IST day unreachable
+    // from any page. `istDayStart`/`istDayEnd` convert the key into the
+    // actual IST-day instants the service windows against.
+    const fromKey = parseDateKeyParam(from, 'from');
+    const toKey = parseDateKeyParam(to, 'to');
     const view = await this.detail.checkIns(
       requireParam(sprint, 'sprint'),
-      from ? new Date(from) : undefined,
-      to ? new Date(to) : undefined,
+      fromKey ? istDayStart(fromKey) : undefined,
+      toKey ? istDayEnd(toKey) : undefined,
     );
     if (!view) {
       throw new NotFoundException('Sprint not found.');

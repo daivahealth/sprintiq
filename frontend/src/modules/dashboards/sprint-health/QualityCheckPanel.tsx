@@ -6,11 +6,27 @@ import type { QualityCheckView } from '../useInsights';
  * Sprint Health §Quality check — releases, rollbacks and bug load
  * (`sprint-health-detail.service.ts#qualityCheck`).
  *
- * `rolledBackPct` and `bugsPerStoryReleased` are both `null` when nothing has
- * been released yet, and both render a sentence rather than a `0.0` — a
- * fraction over a zero denominator is not "zero", it's "not computable".
+ * `rolledBackPct` is `null` when nothing entered `done` in this sprint's
+ * window yet (not merely when nothing has been RELEASED — a rollback can
+ * only happen to an item that reached `done`, so that's the population its
+ * percentage is read against); `bugsPerStoryReleased` is separately `null`
+ * when nothing has been released yet. Both render a sentence rather than a
+ * `0.0` — a fraction over a zero denominator is not "zero", it's "not
+ * computable". The rollback COUNT itself is always shown, independent of
+ * whether anything was released — three rollbacks in a sprint that shipped
+ * nothing is still a signal worth seeing, not something to hide.
  */
 export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
+  // Defensive clamp: `rolledBack` and the window's done-entries are read from
+  // independent scans of the same transition history, so a data anomaly
+  // could in principle still push the raw percentage outside [0, 100] — and
+  // an unclamped value would render a negative-width bar next to an
+  // over-wide one.
+  const rolledBackPct =
+    data.rolledBackPct === null
+      ? null
+      : Math.min(100, Math.max(0, data.rolledBackPct));
+
   return (
     <Card className="space-y-4">
       <h3 className="font-semibold text-fg">Quality check</h3>
@@ -26,21 +42,21 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-fg-subtle">Rolled back</span>
             <span className="text-xs tabular-nums text-fg-muted">
-              {data.rolledBackPct === null
-                ? '—'
-                : `${data.rolledBack} of ${data.storiesReleased} (${data.rolledBackPct}%)`}
+              {rolledBackPct === null
+                ? `${data.rolledBack} rolled back`
+                : `${data.rolledBack} rolled back (${rolledBackPct}%)`}
             </span>
           </div>
           <div className="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
-            {data.rolledBackPct !== null && (
+            {rolledBackPct !== null && (
               <>
                 <div
                   className="h-full bg-success"
-                  style={{ width: `${100 - data.rolledBackPct}%` }}
+                  style={{ width: `${100 - rolledBackPct}%` }}
                 />
                 <div
                   className="h-full bg-danger"
-                  style={{ width: `${data.rolledBackPct}%` }}
+                  style={{ width: `${rolledBackPct}%` }}
                 />
               </>
             )}

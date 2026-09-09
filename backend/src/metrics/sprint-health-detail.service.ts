@@ -3,18 +3,32 @@ import { PrReview, PullRequest, Sprint } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import { istDateKey } from '../common/time';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
+import {
+  isAnonymizedAccount,
+  isBotDeveloper,
+} from '../correlation/developer-identity.util';
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
 import { attributeCommit } from './developer-activity.service';
 import { InsightsService } from './insights.service';
 
-/** The sprint's own window, clamped to now, plus the repos it maps to. */
-export interface SprintWindow {
+/** The sprint's own elapsed window, clamped to now. */
+export interface SprintWindowDates {
   from: Date;
   to: Date;
   /** IST calendar-day keys covered, inclusive of both ends. */
   dayKeys: string[];
+}
+
+/**
+ * `SprintWindowDates` plus the repos the sprint's project maps to.
+ *
+ * `repos` costs its own read (`insights.repoToProjects`, an N+1 scan over
+ * every project) on top of the dates, so it is a separate, wider type rather
+ * than a field every caller pays for — see `window()`/`sprintWindow()` below.
+ */
+export interface SprintWindow extends SprintWindowDates {
   repos: string[];
 }
 
@@ -129,7 +143,11 @@ const GRADE_RULE =
 const MIN_CONTRIBUTORS_TO_RANK = 3;
 
 export interface CheckInRow {
-  /** Canonical developer id (the Jira author login). */
+  /**
+   * Canonical developer id where the Jira author bridges to one (the same
+   * identity `productivity` reports under) — falls back to the raw Jira
+   * author login when no bridge is recorded.
+   */
   developer: string;
   displayName: string;
   /** One entry per day in `CheckInsView.days`, same order. */
@@ -144,7 +162,7 @@ export interface CheckInsView {
   rows: CheckInRow[];
   /**
    * IST date keys (same form as `days`) — the ELAPSED window
-   * (`window().win.from`/`win.to`), not the sprint's full planned bounds:
+   * (`sprintWindow().win.from`/`win.to`), not the sprint's full planned bounds:
    * the days this sprint has actually had, not the days it was allotted.
    * Identical to the sprint's own start/end once it closes; only a running
    * sprint differs. The pager (Task 12) builds its pages from exactly these
@@ -217,10 +235,15 @@ export class SprintHealthDetailService {
     ]);
     const commits = commitsPage.commits;
 
+    // Bots and deprovisioned accounts stay OUT of this head-count — it is
+    // read against a Jira-assignee denominator ("N of M assigned") that can
+    // never contain a bot — but their commits still count in `commits.length`
+    // below. Matches `bridgeCoverage`'s rule exactly: excluded from figures
+    // that count people, not from the work.
     const committers = new Set<string>();
     for (const commit of commits) {
       const person = attributeCommit(commit, index);
-      if (person) {
+      if (person && !isBotDeveloper(person) && !isAnonymizedAccount(person)) {
         committers.add(person);
       }
     }
@@ -326,8 +349,14 @@ export class SprintHealthDetailService {
     // tenant-wide (or project-wide) window would fold in a developer's
     // transitions on any OTHER sprint's issue that happens to fall inside
     // these calendar dates, corrupting the exact composite the grade is cut
-    // from. Same population Task 9's check-in grid counts over, so the two
-    // panels can never disagree about the same person's ticket movement.
+    // from.
+    //
+    // NOT the same population the check-in grid counts over, despite both
+    // reading `issue_status_history` over these same item keys: this counts
+    // DISTINCT ticket KEYS per sprint (`ticketsWorked`), the grid counts
+    // transition EVENTS per day. A person who moves one ticket through six
+    // statuses shows `1` here and `6` there — both are correct, they answer
+    // different questions, and the two panels are not expected to agree.
     const sprintKeys = items.map((item) => item.externalKey);
     const transitions =
       sprintKeys.length > 0
@@ -370,9 +399,19 @@ export class SprintHealthDetailService {
       return a;
     };
 
+    // Bots and deprovisioned accounts never become a ROW on this table: it is
+    // the one board on the platform that publishes an attributed per-person
+    // grade, and a bot (Dependabot raises plenty of PRs) can otherwise land
+    // in the top tertile and be graded `high` right next to the humans it's
+    // compared against. Matches `bridgeCoverage`'s rule — excluded from
+    // figures that count PEOPLE. Their commits still land in `commits`/LOC
+    // totals elsewhere (`commitActivity`'s `commits.length`, unaffected).
+    const isExcludedPerson = (person: string) =>
+      isBotDeveloper(person) || isAnonymizedAccount(person);
+
     for (const commit of commitsPage.commits) {
       const person = attributeCommit(commit, index);
-      if (!person) {
+      if (!person || isExcludedPerson(person)) {
         continue;
       }
       const a = acc(person);
@@ -399,7 +438,7 @@ export class SprintHealthDetailService {
       const person =
         (t.authorLogin ? developerByJiraLogin.get(t.authorLogin) : undefined) ??
         (t.authorName ? developerByJiraName.get(t.authorName) : undefined);
-      if (!person) {
+      if (!person || isExcludedPerson(person)) {
         continue;
       }
       acc(person).ticketKeys.add(t.externalKey);
@@ -410,6 +449,9 @@ export class SprintHealthDetailService {
         continue;
       }
       const person = index.byLogin.get(pr.authorLogin) ?? pr.authorLogin;
+      if (isExcludedPerson(person)) {
+        continue;
+      }
       acc(person).prsRaised += 1;
     }
 
@@ -419,6 +461,9 @@ export class SprintHealthDetailService {
       }
       const person =
         index.byLogin.get(review.reviewerLogin) ?? review.reviewerLogin;
+      if (isExcludedPerson(person)) {
+        continue;
+      }
       acc(person).prsReviewed += 1;
     }
 
@@ -496,7 +541,9 @@ export class SprintHealthDetailService {
     sprintExternalId: string,
   ): Promise<QualityCheckView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId);
+    // The dates-only window: this panel never dereferences `win.repos`, so it
+    // skips `window()`'s repo lookup (`insights.repoToProjects`) entirely.
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
     }
@@ -508,9 +555,11 @@ export class SprintHealthDetailService {
     );
 
     // Same discipline as `productivity`'s ticketsWorked: scoped to THIS
-    // SPRINT'S OWN item keys, and skipped entirely when there are none — an
-    // unscoped `in` filter reads as "match everything" once it's empty, and
-    // there is nothing to release or roll back without items.
+    // SPRINT'S OWN item keys, and skipped entirely when there are none. Not
+    // because Prisma reads an empty `in` as "no filter" — it doesn't; `{ in:
+    // [] }` matches nothing, so the query would already return `[]` — this
+    // guard only saves the round trip when there is nothing to release or
+    // roll back without items.
     const sprintKeys = items.map((item) => item.externalKey);
     const transitions =
       sprintKeys.length > 0
@@ -552,7 +601,16 @@ export class SprintHealthDetailService {
     return {
       storiesReleased,
       rolledBack: rolledBackKeys.size,
-      rolledBackPct: pct(rolledBackKeys.size, storiesReleased),
+      // Denominator is every item that ENTERED done in the window — released
+      // or not — not `storiesReleased`. `storiesReleased` additionally
+      // requires a release AND a CURRENT status of done, and a rollback by
+      // definition flips status away from done, so the old denominator
+      // excluded exactly the items the numerator counts: `pct` could exceed
+      // 100%, and the panel rendered a negative-width bar next to an
+      // over-wide one. `reachedDoneInWindow` has no such requirement, so
+      // every rollback (which can only happen to an item that was in `done`)
+      // is counted against a population it is a genuine subset of.
+      rolledBackPct: pct(rolledBackKeys.size, reachedDoneInWindow.size),
       bugsByPriority: bugsByPriority(bugs),
       bugsLogged,
       bugsPerStoryReleased:
@@ -561,10 +619,18 @@ export class SprintHealthDetailService {
   }
 
   /**
-   * Ticket movement per developer per IST day — the same population
-   * `productivity`/`qualityCheck` count transitions over (the sprint's own
-   * item keys), so two panels on one screen can never disagree about the
-   * same person's ticket movement.
+   * Ticket movement per developer per IST day.
+   *
+   * NOT the same population `productivity` cuts its grade from, despite both
+   * reading `issue_status_history` over the sprint's own item keys: this
+   * counts transition EVENTS per day, `productivity`'s `ticketsWorked` counts
+   * distinct ticket KEYS per sprint. A person who moves one ticket through
+   * six statuses shows `6` here and `1` there — both are correct, and the two
+   * panels are not expected to agree. What DOES have to agree is who the
+   * person IS: identities are resolved through the same Jira-login/name →
+   * canonical-developer bridge `productivity` uses (falling back to the raw
+   * Jira login when no bridge exists), so the same person can't show up under
+   * two different names across the two panels.
    */
   async checkIns(
     sprintExternalId: string,
@@ -572,7 +638,9 @@ export class SprintHealthDetailService {
     to?: Date,
   ): Promise<CheckInsView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId);
+    // The dates-only window: this panel never dereferences `win.repos`, so it
+    // skips `window()`'s repo lookup (`insights.repoToProjects`) entirely.
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
     }
@@ -594,14 +662,17 @@ export class SprintHealthDetailService {
     const days = dayKeysBetween(start, end);
     const dayIndex = new Map(days.map((key, i) => [key, i]));
 
-    const items = await this.planning.listItemsForSprint(
-      tenantId,
-      sprintExternalId,
-    );
+    const [items, index, jiraIndex] = await Promise.all([
+      this.planning.listItemsForSprint(tenantId, sprintExternalId),
+      this.identities.attributionIndex(tenantId),
+      this.identities.jiraAssigneeIndex(tenantId),
+    ]);
 
     // Same discipline as `productivity`/`qualityCheck`: scoped to THIS
-    // SPRINT'S OWN item keys, and skipped entirely when there are none — an
-    // unscoped `in` filter reads as "match everything" once it's empty.
+    // SPRINT'S OWN item keys, and skipped entirely when there are none. Not
+    // because Prisma reads an empty `in` as "no filter" — it doesn't; `{ in:
+    // [] }` matches nothing, so the query would already return `[]` — this
+    // guard only saves the round trip.
     const sprintKeys = items.map((item) => item.externalKey);
     const transitions =
       sprintKeys.length > 0
@@ -619,6 +690,19 @@ export class SprintHealthDetailService {
           })
         : [];
 
+    // The same Jira-side bridge `productivity` builds, so the same person
+    // keys identically on both panels.
+    const developerByJiraLogin = new Map<string, string>();
+    const developerByJiraName = new Map<string, string>();
+    for (const [developer, refs] of jiraIndex.byDeveloper) {
+      for (const login of refs.logins) {
+        developerByJiraLogin.set(login, developer);
+      }
+      for (const name of refs.names) {
+        developerByJiraName.set(name, developer);
+      }
+    }
+
     interface Acc {
       displayName: string;
       counts: number[];
@@ -633,13 +717,21 @@ export class SprintHealthDetailService {
       if (idx === undefined) {
         continue;
       }
-      let acc = byDeveloper.get(t.authorLogin);
+      // Resolved to the canonical developer id where the Jira login/name
+      // bridges to one — same lookup `productivity` uses — and falls back to
+      // the raw Jira login otherwise, so a transition from someone with no
+      // recorded bridge still shows on the grid rather than disappearing.
+      const person =
+        developerByJiraLogin.get(t.authorLogin) ??
+        (t.authorName ? developerByJiraName.get(t.authorName) : undefined) ??
+        t.authorLogin;
+      let acc = byDeveloper.get(person);
       if (!acc) {
         acc = {
-          displayName: t.authorName ?? t.authorLogin,
+          displayName: index.displayNames.get(person) ?? t.authorName ?? person,
           counts: days.map(() => 0),
         };
-        byDeveloper.set(t.authorLogin, acc);
+        byDeveloper.set(person, acc);
       }
       acc.counts[idx] += 1;
     }
@@ -683,11 +775,19 @@ export class SprintHealthDetailService {
     sprintExternalId: string,
   ): Promise<ReleaseCandidateView[] | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId);
-    if (!found) {
+    // Neither `win.repos` nor even `win.from`/`win.to` is read below — only
+    // `sprint.projectKey` — so this reaches the sprint directly rather than
+    // through `window()`/`sprintWindow()`. That also lifts `window()`'s
+    // `!sprint?.startAt` gate, which this panel does not need: a sprint with
+    // no recorded start date has no dates to compute, but its items still
+    // carry releases worth reporting on.
+    const sprint = await this.planning.findSprintByExternalId(
+      tenantId,
+      sprintExternalId,
+    );
+    if (!sprint) {
       return null;
     }
-    const { sprint } = found;
 
     // Deliberately `prisma.story.findMany`, not `planning.listItemsForSprint`
     // (which runs this exact query): `PlanningService.listReleases` — the
@@ -700,9 +800,10 @@ export class SprintHealthDetailService {
       where: { tenantId, sprintExternalId },
     });
 
-    // Same hazard as every other read in this file: an empty `in` filter
-    // reads as "no filter", so a sprint with no release-bearing items must
-    // skip the read rather than pull back every release in the project.
+    // Same discipline as every other read in this file: skipped entirely
+    // when there are none. Not because Prisma reads an empty `in` as "no
+    // filter" — it doesn't; `{ in: [] }` matches nothing — this guard only
+    // saves the round trip when there is nothing to report on.
     const releaseNames = [...new Set(items.flatMap((item) => item.releases))];
     if (releaseNames.length === 0) {
       return [];
@@ -785,14 +886,19 @@ export class SprintHealthDetailService {
   }
 
   /**
-   * The sprint's own window, clamped to now: a running sprint is measured over
-   * the days it has actually had, not the days it was allotted. Averaging 14
-   * days of commits over a 21-day plan understates a team mid-sprint.
+   * The sprint's own elapsed window, clamped to now — WITHOUT the repos it
+   * maps to. Split from `window()` below because resolving `repos` costs its
+   * own read (`insights.repoToProjects`, an N+1 scan over every project),
+   * and three of the five panels on this board (`qualityCheck`, `checkIns`,
+   * and — via a still-lighter path — `releaseCandidates`) never dereference
+   * `win.repos`. `GET /sprint-health` calls `window()` three times
+   * concurrently plus one more each for check-ins/release-candidates; making
+   * repos opt-in cuts that N+1 down to the two panels that actually need it.
    */
-  private async window(
+  private async sprintWindow(
     tenantId: string,
     sprintExternalId: string,
-  ): Promise<{ sprint: Sprint; win: SprintWindow } | null> {
+  ): Promise<{ sprint: Sprint; win: SprintWindowDates } | null> {
     const sprint = await this.planning.findSprintByExternalId(
       tenantId,
       sprintExternalId,
@@ -803,14 +909,30 @@ export class SprintHealthDetailService {
     const from = sprint.startAt;
     const to =
       sprint.endAt && sprint.endAt < new Date() ? sprint.endAt : new Date();
+    return { sprint, win: { from, to, dayKeys: dayKeysBetween(from, to) } };
+  }
+
+  /**
+   * `sprintWindow()` plus the repos the sprint's project maps to — for the
+   * two panels (`commitActivity`, `productivity`) that actually read
+   * `win.repos`. A running sprint is measured over the days it has actually
+   * had, not the days it was allotted: averaging 14 days of commits over a
+   * 21-day plan understates a team mid-sprint.
+   */
+  private async window(
+    tenantId: string,
+    sprintExternalId: string,
+  ): Promise<{ sprint: Sprint; win: SprintWindow } | null> {
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const { sprint, win } = found;
     const repoToProjects = await this.insights.repoToProjects(tenantId);
     const repos = [...repoToProjects.entries()]
       .filter(([, projects]) => projects.includes(sprint.projectKey))
       .map(([repo]) => repo);
-    return {
-      sprint,
-      win: { from, to, dayKeys: dayKeysBetween(from, to), repos },
-    };
+    return { sprint, win: { ...win, repos } };
   }
 }
 

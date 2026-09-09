@@ -1073,6 +1073,26 @@ describe('JiraCollector.poll', () => {
       );
     });
 
+    // The bug: the version loop ran unconditionally, even on a tick whose
+    // issue search had JUST been 429'd — firing up to 50 more requests
+    // (one `getProjectVersions` call per remembered project) straight into
+    // an active rate-limit backoff instead of backing off with it.
+    it('does not fire the version loop when the search hit a live rate limit this tick', async () => {
+      const connection = versionConnection();
+      // A project remembered from an earlier pass, so the version loop would
+      // have something to iterate if it ran.
+      connection.syncCursors = { versionProjectKeys: ['ACT'] };
+      const resetAt = new Date(Date.now() + 30_000);
+      client.searchIssues.mockResolvedValue({
+        issues: [],
+        rateLimitedUntil: resetAt,
+      });
+
+      await collector.poll(connection);
+
+      expect(client.getProjectVersions).not.toHaveBeenCalled();
+    });
+
     it('does not fail the pass when the version fetch fails', async () => {
       const connection = versionConnection();
       client.searchIssues.mockResolvedValue({

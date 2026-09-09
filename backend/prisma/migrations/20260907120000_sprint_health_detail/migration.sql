@@ -4,9 +4,14 @@
 -- not-yet-re-walked row renders as unknown on the board, never as a zero the
 -- dashboard would present as fact.
 --
--- Jira version id, for the version projection (Task 4) to key off of instead
--- of the mutable (tenantId, projectKey, name) tuple. Null for a release first
--- seen only as a bare fixVersion name on an issue; filled in once the
+-- Jira version id, carried for future use. The version projection
+-- (`PlanningService#handleVersion`) still upserts on the mutable
+-- (tenantId, projectKey, name) tuple, NOT on this column — re-keying it
+-- needs a migration and a uniqueness change, and is separate work. Until
+-- that happens, renaming a Jira version creates a new `planning_release`
+-- row rather than updating the existing one, orphaning that row's
+-- `plannedReleaseAt` (DATA-MODEL.md). Null for a release first seen only as
+-- a bare fixVersion name on an issue; filled in once the
 -- `planning.version.upserted` event for it arrives.
 -- AlterTable
 ALTER TABLE "planning_release" ADD COLUMN "externalId" TEXT;

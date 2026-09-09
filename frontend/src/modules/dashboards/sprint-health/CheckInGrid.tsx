@@ -46,10 +46,13 @@ function intensityClass(count: number, max: number): string {
  * response — and derives its own pages from that response.
  *
  * `page === null` means "no explicit page yet": the hook is still called
- * with `from`/`to` unset, which is also exactly page one, so the bootstrap
- * fetch is never re-fetched under a second cache key once `bounds` resolves.
- * Only a Prev/Next click assigns a concrete index, matching "subsequent page
- * changes pass that page's from/to".
+ * with `from`/`to` unset, which is also exactly page one. That does NOT mean
+ * the bootstrap fetch is safe from a second cache key forever, though: a
+ * Prev/Next round trip (Next to page one, then Prev back to page zero) sets
+ * `page` to the explicit index `0`, and `current` then resolves to page
+ * zero's own concrete `from`/`to` — a different cache key from the initial
+ * unset-bounds bootstrap call, so paging forward and back re-fetches rather
+ * than reusing the bootstrap result.
  */
 export function CheckInGrid({ sprint }: { sprint: string }) {
   const [page, setPage] = useState<number | null>(null);

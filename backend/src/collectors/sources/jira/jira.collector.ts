@@ -335,35 +335,46 @@ export class JiraCollector extends BaseSourceCollector {
         ].slice(-VERSION_PROJECT_KEY_LIMIT);
     cursors.versionProjectKeys = config.projectKey ? undefined : projectKeys;
 
-    for (const projectKey of projectKeys) {
-      // `getProjectVersions` only guards HTTP status codes (returns `null` on
-      // a non-2xx) — it does not wrap `fetch` itself, so a network-level
-      // failure (timeout, DNS, connection reset) REJECTS rather than
-      // resolving null. This loop runs before the cursor-write block below,
-      // so an unguarded rejection here would unwind the whole pass and
-      // discard the issue envelopes already collected, along with the
-      // cursor progress they earned. Caught and treated exactly like the
-      // null case: skip this project silently, next tick retries.
-      let versions: JiraVersion[] | null;
-      try {
-        versions = await this.client.getProjectVersions(
-          config.siteUrl,
-          config.email,
-          apiToken,
-          projectKey,
-        );
-      } catch (err) {
-        this.logger.warn(
-          `Jira version fetch threw for project ${projectKey} (connection ${connection.id}): ${(err as Error).message}`,
-        );
-        versions = null;
-      }
-      // null = the ask failed. Skip silently rather than emitting nothing-as-fact;
-      // the next tick retries, and the issue envelopes above still stand.
-      for (const version of versions ?? []) {
-        envelopes.push(
-          this.versionEnvelope(connection, mode, projectKey, version),
-        );
+    // Skipped entirely once the search page loop above hit a live 429
+    // (`rateLimitedUntil` set at line ~272): the site just rejected a
+    // request as rate-limited, so firing up to 50 more requests here — one
+    // `getProjectVersions` call per observed project — into the same
+    // cooldown would make the situation worse, not better. Next tick
+    // retries from `resumePageToken`, and picks the version walk back up
+    // then.
+    if (!rateLimitedUntil) {
+      for (const projectKey of projectKeys) {
+        // `getProjectVersions` only guards HTTP status codes (returns `null`
+        // on a non-2xx) — it does not wrap `fetch` itself, so a
+        // network-level failure (timeout, DNS, connection reset) REJECTS
+        // rather than resolving null. This loop runs before the
+        // cursor-write block below, so an unguarded rejection here would
+        // unwind the whole pass and discard the issue envelopes already
+        // collected, along with the cursor progress they earned. Caught and
+        // treated exactly like the null case: skip this project silently,
+        // next tick retries.
+        let versions: JiraVersion[] | null;
+        try {
+          versions = await this.client.getProjectVersions(
+            config.siteUrl,
+            config.email,
+            apiToken,
+            projectKey,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Jira version fetch threw for project ${projectKey} (connection ${connection.id}): ${(err as Error).message}`,
+          );
+          versions = null;
+        }
+        // null = the ask failed. Skip silently rather than emitting
+        // nothing-as-fact; the next tick retries, and the issue envelopes
+        // above still stand.
+        for (const version of versions ?? []) {
+          envelopes.push(
+            this.versionEnvelope(connection, mode, projectKey, version),
+          );
+        }
       }
     }
 
