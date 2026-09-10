@@ -1,7 +1,8 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import type { Scope } from '../../lib/scope';
 import { rangeParams, type ActivityRange } from './activity-range';
+import type { DeveloperRoleValue } from './developer-role';
 import type { TrendMonth } from './monthly-trend';
 
 // ---- Response types (mirror backend insights.service.ts) -------------------
@@ -677,6 +678,15 @@ export interface ActiveDeveloper {
   prsOpened: number;
   prsMerged: number;
   /**
+   * The admin-stated DEV/QA/OTH classification.
+   *
+   * `null` means nobody has classified them — which is NOT `OTH`, a person
+   * deciding "none of these". `undefined` means this API predates the field
+   * and cannot tell us. All three render as `—`, but only `null` is a
+   * statement the server actually made.
+   */
+  role?: DeveloperRoleValue | null;
+  /**
    * Changed LOC (`additions + deletions`) across their attributed commits.
    *
    * Optional for the same frontend/backend-skew reason as
@@ -742,6 +752,8 @@ export interface WatchlistDeveloper {
   projects: string[];
   lastSignal: { type: SignalType; at: string } | null;
   bucket: WatchlistBucket;
+  /** Admin-stated DEV/QA/OTH; `null` = unclassified, which is not `OTH`. */
+  role?: DeveloperRoleValue | null;
   /** `null` = the bridge never matched them. Not the same as "nothing assigned". */
   hasAssignedWork: boolean | null;
   assignedOpenItems?: number;
@@ -858,6 +870,47 @@ export function useMonthlyTrend() {
         '/api/dashboards/developer-activity/monthly-trend',
       ),
     staleTime: 3_600_000,
+  });
+}
+
+/**
+ * Set or clear a developer's DEV/QA/OTH classification (admin only).
+ *
+ * `null` clears it via DELETE, returning the developer to *unclassified* rather
+ * than writing `OTH` — those are different statements and the boards render the
+ * difference.
+ *
+ * Invalidates both section reads because the role appears on both: the Overview
+ * roster and the Watchlist cards would otherwise disagree until one of them
+ * happened to refetch.
+ */
+interface DeveloperRoleWrite {
+  developer: string;
+  role: string | null;
+}
+
+export function useSetDeveloperRole() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      developer: string;
+      role: DeveloperRoleValue | null;
+    }) => {
+      const path = `/api/dashboards/developer-roles/${encodeURIComponent(input.developer)}`;
+      return input.role === null
+        ? api.delete<DeveloperRoleWrite>(path)
+        : api.put<DeveloperRoleWrite>(path, {
+            role: input.role,
+          });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ['developer-activity-overview'],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ['developer-activity-watchlist'],
+      });
+    },
   });
 }
 

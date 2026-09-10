@@ -71,6 +71,8 @@ export const api = {
       method: 'PUT',
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
+  /** No body: the resource is identified by the path, as DELETE intends. */
+  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, {
       method: 'PATCH',

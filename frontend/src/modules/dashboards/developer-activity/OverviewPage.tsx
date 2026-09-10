@@ -8,11 +8,19 @@ import {
   TableBodyRow,
   TableHeadRow,
 } from '../../../components/ui';
+import { useAuthStore } from '../../../lib/stores/auth-store';
 import { timeAgo } from '../../../lib/utils';
+import {
+  DEVELOPER_ROLES,
+  DEVELOPER_ROLE_LABEL,
+  UNCLASSIFIED_LABEL,
+  type DeveloperRoleValue,
+} from '../developer-role';
 import { MonthlyTrendChart, type TrendMetric } from '../MonthlyTrendChart';
 import {
   useDeveloperOverview,
   useMonthlyTrend,
+  useSetDeveloperRole,
   type ActiveDeveloper,
   type ActivityDay,
 } from '../useInsights';
@@ -230,6 +238,59 @@ export function OverviewPage() {
  * positions, medals or totals — a row is what one person did, not where they
  * placed.
  */
+/**
+ * One developer's DEV/QA/OTH classification: a badge for everyone, a control
+ * for admins.
+ *
+ * SprintIQ cannot observe this — a QA engineer committing test automation and a
+ * backend developer are indistinguishable in the delivery graph — so it is a
+ * human statement, editable where it is read rather than on a page you have to
+ * go and find.
+ *
+ * The gate is presentational only. The server enforces the admin role on the
+ * write; hiding the control is a courtesy so non-admins are not offered an
+ * action that would 403, never the thing standing between a non-admin and the
+ * data.
+ */
+function RoleCell({ dev }: { dev: ActiveDeveloper }) {
+  const user = useAuthStore((s) => s.user);
+  const canEdit = user?.roles.includes('admin') ?? false;
+  const setRole = useSetDeveloperRole();
+
+  if (!canEdit) {
+    return dev.role ? (
+      <Badge tone="neutral">{dev.role}</Badge>
+    ) : (
+      <span className="text-fg-faint">{UNCLASSIFIED_LABEL}</span>
+    );
+  }
+
+  return (
+    <select
+      value={dev.role ?? ''}
+      disabled={setRole.isPending}
+      onChange={(e) =>
+        setRole.mutate({
+          developer: dev.developer,
+          // The empty option clears the classification rather than writing
+          // OTH: "nobody has decided" and "somebody decided none of these"
+          // are different statements and the boards render them differently.
+          role: e.target.value === '' ? null : (e.target.value as DeveloperRoleValue),
+        })
+      }
+      aria-label={`Role for ${dev.displayName}`}
+      className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs text-fg outline-none focus:border-brand disabled:opacity-50"
+    >
+      <option value="">{UNCLASSIFIED_LABEL}</option>
+      {DEVELOPER_ROLES.map((role) => (
+        <option key={role} value={role}>
+          {role} · {DEVELOPER_ROLE_LABEL[role]}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function ActiveDevelopers({
   developers,
   range,
@@ -279,6 +340,7 @@ function ActiveDevelopers({
           <thead className="sticky top-0 bg-surface">
             <TableHeadRow>
               <th className="py-2 pr-4">Developer</th>
+              <th className="py-2 pr-4">Role</th>
               <th className="py-2 pr-4">Commits</th>
               <th className="py-2 pr-4">Changed LOC</th>
               <th className="py-2 pr-4">PRs opened</th>
@@ -295,6 +357,9 @@ function ActiveDevelopers({
                   >
                     {dev.displayName}
                   </Link>
+                </td>
+                <td className="py-2.5 pr-4">
+                  <RoleCell dev={dev} />
                 </td>
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.commits}

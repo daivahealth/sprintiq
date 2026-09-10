@@ -640,6 +640,42 @@ model WatchlistExclusion {
   @@map("watchlist_exclusion")
 }
 
+/// What kind of work a developer does — DEV, QA or OTH — as stated by an admin.
+///
+/// SprintIQ cannot observe this. A QA engineer who commits test automation and
+/// a backend developer look identical in the delivery graph, and inferring the
+/// difference from file paths or commit messages would be a guess presented as
+/// a fact. So it is an explicit human statement, recorded with who made it.
+///
+/// Keyed on the canonical developer rather than living on `DeveloperIdentity`:
+/// that table holds one row per SOURCE identity (a github login, a jira
+/// account, a bare email) and one person has several, so a role there would be
+/// duplicated across rows that could drift into disagreeing with each other.
+///
+/// Deliberately has no `expiresAt`, unlike the exclusion above. An exclusion is
+/// a temporary statement that must lapse so nobody falls off the roster
+/// permanently by accident; a role is a standing fact with no natural expiry.
+///
+/// Absence of a row means UNCLASSIFIED, which is not `OTH`. `OTH` is a person
+/// deciding "none of these"; no row is nobody having decided at all. The boards
+/// render the difference and must never collapse it.
+model DeveloperRole {
+  id                   String   @id
+  tenantId             String
+  /// The developer this covers, as `DeveloperIdentity.canonicalDeveloperId`.
+  canonicalDeveloperId String
+  /// DEV | QA | OTH — a closed set validated in the controller.
+  role                 String
+  /// Who classified them. This is a human judgement and it carries a name.
+  setByUserId          String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  /// One role per developer; re-classifying updates the existing row.
+  @@unique([tenantId, canonicalDeveloperId])
+  @@map("developer_role")
+}
+
 // ---------------------------------------------------------------------------
 // BC-8 Metrics & Aggregation
 // ---------------------------------------------------------------------------

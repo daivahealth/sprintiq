@@ -39,6 +39,35 @@ export const WATCHLIST_QUIET_WITHIN_WORKING_DAYS = 30;
 /** A PR unreviewed for longer than this is called out on PR Status. */
 export const REVIEW_WAIT_ALERT_HOURS = 48;
 
+/**
+ * What kind of work a developer does, as stated by an admin (DASHBOARDS.md
+ * §4.4.8). A closed set, written as a const union rather than a Prisma enum:
+ * this schema has none, and a fourth role stays a code change instead of a
+ * migration.
+ *
+ * SprintIQ cannot observe this. A QA engineer committing test automation and a
+ * backend developer are indistinguishable in the delivery graph, and inferring
+ * the difference from paths or commit messages would be a guess presented as a
+ * fact — so nothing in this file ever derives one.
+ */
+export const DEVELOPER_ROLES = ['DEV', 'QA', 'OTH'] as const;
+
+export type DeveloperRoleValue = (typeof DEVELOPER_ROLES)[number];
+
+/**
+ * Whether an arbitrary value is one of the three roles.
+ *
+ * Exact match, deliberately: `'dev'` is the likeliest client mistake, and
+ * accepting it would store a value the UI matches on exactly — rendering as an
+ * unknown badge no reader can interpret and no admin can clear.
+ */
+export function isDeveloperRole(value: unknown): value is DeveloperRoleValue {
+  return (
+    typeof value === 'string' &&
+    (DEVELOPER_ROLES as readonly string[]).includes(value)
+  );
+}
+
 export type SignalType = 'commit' | 'pr_opened' | 'pr_merged' | 'pr_reviewed';
 
 export type WatchlistBucket = 'active' | 'quiet' | 'no_signal';
@@ -55,6 +84,11 @@ export interface WatchlistDeveloper {
   projects: string[];
   lastSignal: LastSignal | null;
   bucket: WatchlistBucket;
+  /**
+   * The admin-stated DEV/QA/OTH classification, or `null` when nobody has made
+   * one — never `OTH`, which is a person deciding "none of these".
+   */
+  role: DeveloperRoleValue | null;
   /**
    * Whether any Jira item is assigned to this person right now. `null` means
    * the bridge never matched them — which is NOT the same as "nothing
@@ -132,6 +166,12 @@ export interface ActiveDeveloper {
   locChanged: number;
   prsOpened: number;
   prsMerged: number;
+  /**
+   * The admin-stated DEV/QA/OTH classification, or `null` when nobody has made
+   * one. `null` is NOT `OTH`: `OTH` is a person deciding "none of these", and
+   * null is nobody having decided at all. Never collapse them.
+   */
+  role: DeveloperRoleValue | null;
 }
 
 export interface OverviewView {
@@ -320,7 +360,7 @@ export class DeveloperActivityService {
     windowDays: number,
   ): Promise<OverviewView> {
     const tenantId = this.tenantContext.requireTenantId();
-    const [{ commits, truncated }, index, attribution, assignees, prs] =
+    const [{ commits, truncated }, index, attribution, assignees, prs, roles] =
       await Promise.all([
         this.code.listCommitsPage(tenantId, {
           ...(repos.length > 0 ? { repos } : {}),
@@ -338,6 +378,7 @@ export class DeveloperActivityService {
           },
           select: { authorLogin: true, mergedAt: true },
         }),
+        this.rolesByDeveloper(tenantId),
       ]);
 
     interface DayAcc {
@@ -444,6 +485,7 @@ export class DeveloperActivityService {
         locByDeveloper,
         prsByDeveloper,
         index.displayNames,
+        roles,
       ),
       days: [...byDay.entries()]
         .map(([date, acc]) => ({
@@ -556,13 +598,14 @@ export class DeveloperActivityService {
     windowDays: number,
   ): Promise<WatchlistView> {
     const tenantId = this.tenantContext.requireTenantId();
-    const [index, assignees, exclusionRows] = await Promise.all([
+    const [index, assignees, exclusionRows, roles] = await Promise.all([
       this.identities.attributionIndex(tenantId),
       this.identities.jiraAssigneeIndex(tenantId),
       this.prisma.watchlistExclusion.findMany({
         // Live exclusions only — a lapsed one is not a statement about today.
         where: { tenantId, expiresAt: { gt: new Date() } },
       }),
+      this.rolesByDeveloper(tenantId),
     ]);
 
     // Everything on this page describes ONE moment. For a preset that moment
@@ -624,6 +667,9 @@ export class DeveloperActivityService {
           ? { type: lastSignal.type, at: lastSignal.at.toISOString() }
           : null,
         bucket: bucketFor(lastSignal?.at ?? null, asOf),
+        // Absent from the map means nobody has classified them — `null`, not
+        // `OTH`, for the same reason `hasAssignedWork` below stays null.
+        role: roles.get(developer) ?? null,
         hasAssignedWork: matched ? openItems > 0 : null,
         ...(matched ? { assignedOpenItems: openItems } : {}),
       });
@@ -965,6 +1011,35 @@ export class DeveloperActivityService {
    * Bounded above by `asOf` as well, so a range ending in the past is judged by
    * what was known then (`signalScanRange`).
    */
+  /**
+   * The admin-stated role per canonical developer.
+   *
+   * Its own small read rather than a join: the table holds one row per
+   * *classified* developer, which on any real tenant is a fraction of the
+   * roster and never approaches the size of a commit page. A developer with no
+   * row is simply absent from the map, which is what makes "unclassified"
+   * expressible at all — the read models turn that absence into `null`, never
+   * into `OTH`.
+   */
+  private async rolesByDeveloper(
+    tenantId: string,
+  ): Promise<Map<string, DeveloperRoleValue>> {
+    const rows = await this.prisma.developerRole.findMany({
+      where: { tenantId },
+      select: { canonicalDeveloperId: true, role: true },
+    });
+    const roles = new Map<string, DeveloperRoleValue>();
+    for (const row of rows) {
+      // Guarded rather than cast: the column is a plain string, so a value
+      // written before the set changed (or by hand) must not become a badge
+      // the UI cannot render.
+      if (isDeveloperRole(row.role)) {
+        roles.set(row.canonicalDeveloperId, row.role);
+      }
+    }
+    return roles;
+  }
+
   private async lastSignalPerDeveloper(
     tenantId: string,
     index: { byLogin: Map<string, string>; byEmail: Map<string, string> },
@@ -1185,6 +1260,7 @@ export function activeDeveloperRoster(
   locByDeveloper: ReadonlyMap<string, { additions: number; deletions: number }>,
   prsByDeveloper: ReadonlyMap<string, { opened: number; merged: number }>,
   displayNames: ReadonlyMap<string, string>,
+  rolesByDeveloper: ReadonlyMap<string, DeveloperRoleValue> = new Map(),
 ): ActiveDeveloper[] {
   const everyone = new Set([
     ...commitsByDeveloper.keys(),
@@ -1210,6 +1286,9 @@ export function activeDeveloperRoster(
         locChanged: additions + deletions,
         prsOpened: prs?.opened ?? 0,
         prsMerged: prs?.merged ?? 0,
+        // `?? null`, never `?? 'OTH'`. An unclassified developer is not one
+        // somebody has decided is "other".
+        role: rolesByDeveloper.get(developer) ?? null,
       };
     })
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
