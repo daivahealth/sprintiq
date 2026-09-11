@@ -334,6 +334,20 @@ That PR count is the reason they are listed rather than dropped. An account with
 
 **Misconfigured git is a person, not a ghost.** `379031` commits as `a379031@CORPLPM000257.local` — a machine hostname, not a mail domain — and stays in the buckets, because there is someone behind it. It resolves itself the moment they set `user.email` to their corporate address, which also makes their commits attributable (§4.2). Naming it here so it is not mistaken for the deprovisioned case it superficially resembles.
 
+#### 4.4.8 Developer roles — DEV, QA, OTH
+
+**What kind of work someone does, stated by a person** (added 2026-09-10). Each developer carries an optional `DEV` / `QA` / `OTH` classification, rendered as a **Role column** on the Overview roster and as a small tag beside the name on each Watchlist card.
+
+**SprintIQ cannot observe this, and does not try.** A QA engineer committing test automation and a backend developer are indistinguishable in the delivery graph. Inferring the difference from file paths, repo names or commit messages would be a guess presented as a fact — the same failure the Watchlist exclusions exist to avoid — so the role is an explicit human statement, stored with `setByUserId` so the judgement carries a name.
+
+**Unclassified is not `OTH`.** A developer with no row reads as `null` and renders as an em dash. `OTH` is somebody deciding "none of these"; `null` is nobody having decided at all, and the API and both boards keep them apart. Clearing a role DELETEs the row rather than writing `OTH`, for exactly this reason.
+
+**Admin-only to set, visible to everyone.** The write routes carry `@Roles(ADMIN)` and are audited by the global mutating-request interceptor, like the exclusions beside them. The Overview control is a `<select>` in the Role cell shown only to admins; that gate is presentational courtesy, not the enforcement — the server rejects a non-admin write regardless. The Watchlist tag is always read-only: that page is three columns of cards rather than a table, and the place to edit a roster is the page that renders one.
+
+**No expiry, unlike an exclusion.** An exclusion must lapse so nobody falls off the roster permanently by accident; a role is a standing fact and stays until someone changes it.
+
+**Not an ordering.** The roster stays alphabetical and there is no sort or filter by role. Role is a classification rather than a volume, so it could not become a leaderboard — but the page has one ordering and adding a second invites reading the two named groups against each other.
+
 ### Honest-math notes
 - Velocity/health treat `Done/Closed/Resolved` as done (tenant-tunable constant); committed = items currently attached to the sprint (scope-change history is a follow-up, so mid-sprint additions inflate "committed").
 - Forecast is deliberately simple (average velocity ÷ remaining estimated points, average closed-sprint length for dating) and **labels unestimated items as excluded** rather than guessing.

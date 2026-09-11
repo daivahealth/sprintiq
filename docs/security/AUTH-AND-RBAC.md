@@ -92,6 +92,12 @@ Engineering Activity §Watchlist (DASHBOARDS.md §4.4.2) is the one surface that
 1. **An exclusion suppresses one thing only** — appearing in an attention bucket. The developer keeps counting in every commit, PR and metric figure.
 2. **The exclusion list is published on the board, with reasons.** A shortened roster whose filter is invisible is how a review loses the person it should have surfaced. With none configured the page says exactly that, rather than implying leave was checked.
 
+**Developer roles are the same shape of statement** (added 2026-09-10). `{PUT,DELETE} /api/dashboards/developer-roles/{developer}` classify a developer as `DEV`, `QA` or `OTH` and are **admin-only**, audited by the same interceptor, and stored with `setByUserId` so the judgement carries a name. `GET` is open to any dashboard user, because the boards render the role beside every name and hiding it would leave a column nobody could read.
+
+The write gate lives on the server. The Overview control is rendered only for admins, but that is presentational courtesy so a non-admin is not offered an action that would 403 — a non-admin request is rejected by `@Roles(ADMIN)` regardless of what the client chose to draw.
+
+Nothing infers a role. SprintIQ cannot distinguish a QA engineer from a backend developer in the delivery graph, and deriving one from file paths or commit messages would be a guess presented as a fact about a named person. Absence of a classification is reported as `null` and never as `OTH` — the difference between nobody having decided and somebody deciding "none of these".
+
 ---
 
 ## 6. Agent authorization & governance

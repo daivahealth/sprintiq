@@ -177,6 +177,17 @@ function DeveloperCard({ dev }: { dev: WatchlistDeveloper }) {
       <div className="flex items-baseline justify-between gap-2">
         <span className="truncate text-sm font-medium text-fg-secondary">
           {dev.displayName}
+          {/* Read-only here. This page is three columns of cards rather than a
+              table, so the classification rides beside the name as a tag; the
+              control that sets it lives on Overview, where the roster is an
+              actual table with a column to put it in. Unclassified shows
+              nothing at all — an em dash on every card would be noise, and the
+              absence already reads as absence. */}
+          {dev.role && (
+            <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-[10px] font-medium tracking-wide text-fg-subtle">
+              {dev.role}
+            </span>
+          )}
         </span>
         {dev.hasAssignedWork === false && (
           <Badge tone="warn">nothing assigned</Badge>

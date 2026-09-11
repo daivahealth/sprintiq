@@ -7,6 +7,7 @@ import { PlanningModule } from '../planning/planning.module';
 import { CatalogController } from './catalog.controller';
 import { DashboardsController } from './dashboards.controller';
 import { DashboardsService } from './dashboards.service';
+import { DeveloperRolesController } from './developer-roles.controller';
 import { InsightsController } from './insights.controller';
 import { ReleasePlanController } from './release-plan.controller';
 import { WatchlistExclusionsController } from './watchlist-exclusions.controller';
@@ -28,6 +29,7 @@ import { WatchlistExclusionsController } from './watchlist-exclusions.controller
     InsightsController,
     ReleasePlanController,
     WatchlistExclusionsController,
+    DeveloperRolesController,
   ],
   providers: [DashboardsService],
   exports: [DashboardsService],

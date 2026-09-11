@@ -2,7 +2,9 @@ import {
   WATCHLIST_ACTIVE_WITHIN_WORKING_DAYS,
   WATCHLIST_QUIET_WITHIN_WORKING_DAYS,
   activeDeveloperRoster,
+  DEVELOPER_ROLES,
   bucketFor,
+  isDeveloperRole,
   monthCollected,
   planningGapDevelopers,
   signalScanRange,
@@ -66,6 +68,7 @@ describe('activeDeveloperRoster', () => {
       locChanged: 0,
       prsOpened: 5,
       prsMerged: 2,
+      role: null,
     });
   });
 
@@ -332,5 +335,92 @@ describe('activeDeveloperRoster — changed LOC', () => {
       'Amit Bose',
       'Zara Ahmed',
     ]);
+  });
+});
+
+/**
+ * The admin-stated DEV/QA/OTH classification, carried onto the roster.
+ *
+ * SprintIQ cannot observe this — a QA engineer committing test automation and a
+ * backend developer look identical in the delivery graph — so it is a human
+ * statement, and the one thing the read model must never do is invent one.
+ */
+describe('activeDeveloperRoster — role', () => {
+  const names = new Map([
+    ['dev-a', 'Zara Ahmed'],
+    ['dev-b', 'Amit Bose'],
+  ]);
+
+  it('carries the role an admin set', () => {
+    const roster = activeDeveloperRoster(
+      new Map([['dev-a', 1]]),
+      new Map(),
+      new Map(),
+      names,
+      new Map([['dev-a', 'QA' as const]]),
+    );
+
+    expect(roster[0].role).toBe('QA');
+  });
+
+  it('reports null for an unclassified developer, never OTH', () => {
+    // The distinction the whole feature rests on. `OTH` is a person deciding
+    // "none of these"; null is nobody having decided at all. Collapsing them
+    // would make an unclassified roster indistinguishable from one somebody
+    // had actually been through.
+    const roster = activeDeveloperRoster(
+      new Map([['dev-a', 1]]),
+      new Map(),
+      new Map(),
+      names,
+      new Map(),
+    );
+
+    expect(roster[0].role).toBeNull();
+  });
+
+  it('does not order by role', () => {
+    // Alphabetical stays alphabetical. Grouping the roster by classification
+    // would quietly turn it into a comparison between two named groups.
+    const roster = activeDeveloperRoster(
+      new Map([
+        ['dev-a', 1],
+        ['dev-b', 1],
+      ]),
+      new Map(),
+      new Map(),
+      names,
+      new Map([
+        ['dev-a', 'DEV' as const],
+        ['dev-b', 'QA' as const],
+      ]),
+    );
+
+    expect(roster.map((r) => r.displayName)).toEqual([
+      'Amit Bose',
+      'Zara Ahmed',
+    ]);
+  });
+});
+
+/**
+ * The closed set. Roles arrive over HTTP, so anything outside it is rejected
+ * rather than stored — a stray value would render as an unknown badge that no
+ * reader could interpret and no admin could clear.
+ */
+describe('isDeveloperRole', () => {
+  it('accepts exactly DEV, QA and OTH', () => {
+    expect(DEVELOPER_ROLES).toEqual(['DEV', 'QA', 'OTH']);
+    for (const role of DEVELOPER_ROLES) {
+      expect(isDeveloperRole(role)).toBe(true);
+    }
+  });
+
+  it('rejects anything else, including case variants and the empty string', () => {
+    // 'dev' lowercase is the likeliest client mistake and must not slip
+    // through into a column the UI matches on exactly.
+    for (const bad of ['dev', 'qa', 'Dev', 'DEVELOPER', '', 'OTHER', null]) {
+      expect(isDeveloperRole(bad)).toBe(false);
+    }
   });
 });
