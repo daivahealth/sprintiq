@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { Connection } from '@prisma/client';
 import {
@@ -5,6 +6,7 @@ import {
   PlanningSprintChangeRef,
   PlanningStoryPayload,
   PlanningTransitionRef,
+  PlanningVersionPayload,
 } from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
@@ -24,6 +26,7 @@ import {
   JiraChangelogEntry,
   JiraClient,
   JiraSearchIssue,
+  JiraVersion,
 } from './jira.client';
 
 /** Jira Software's Sprint field always carries this custom-field schema type, regardless of its per-site numeric id. */
@@ -66,12 +69,24 @@ const PAGE_BUDGET_PER_TICK = 20;
 const PAGE_SIZE = 100;
 /** Default historical lookback when a connection doesn't set `config.backfillSince`. */
 const DEFAULT_BACKFILL_DAYS = 90;
+/** Bounds the per-tick version fetch: one request per project, per pass. */
+const VERSION_PROJECT_KEY_LIMIT = 50;
 
 interface JiraSyncCursors {
   /** `nextPageToken` to resume from within the current cursor's JQL pass. */
   resumePageToken?: string;
   /** Watermark: `updated >=` floor for the JQL search; advances once a full pass completes. */
   updatedCursor?: string;
+  /**
+   * Project keys this collector has itself seen on collected issues — the
+   * input to the per-project version fetch.
+   *
+   * Held here rather than read from `planning_release` on purpose: that table
+   * belongs to BC-3, and a collector querying it would be the cross-context DB
+   * coupling the architecture forbids. The collector already sees every key it
+   * needs on the issues passing through it.
+   */
+  versionProjectKeys?: string[];
 }
 
 /**
@@ -245,6 +260,7 @@ export class JiraCollector extends BaseSourceCollector {
     let rateLimitedUntil: Date | undefined;
     let passComplete = false;
     let passFailure: string | undefined;
+    const observedProjectKeys = new Set<string>();
 
     for (let fetched = 0; fetched < PAGE_BUDGET_PER_TICK; fetched++) {
       const page = await this.client.searchIssues(
@@ -292,11 +308,73 @@ export class JiraCollector extends BaseSourceCollector {
         if (typeof updated === 'string') {
           lastSeenUpdatedAt = updated;
         }
+        const seenProject = (
+          issue.fields?.project as { key?: string } | undefined
+        )?.key;
+        if (seenProject) {
+          observedProjectKeys.add(seenProject);
+        }
       }
       pageToken = page.nextPageToken;
       if (!pageToken) {
         passComplete = true;
         break;
+      }
+    }
+
+    // Union with what earlier passes saw, newest last, capped: a poll pass
+    // touches only recently-updated issues, so this must not forget a project
+    // that simply had a quiet week.
+    const projectKeys = config.projectKey
+      ? [config.projectKey]
+      : [
+          ...new Set([
+            ...(cursors.versionProjectKeys ?? []),
+            ...observedProjectKeys,
+          ]),
+        ].slice(-VERSION_PROJECT_KEY_LIMIT);
+    cursors.versionProjectKeys = config.projectKey ? undefined : projectKeys;
+
+    // Skipped entirely once the search page loop above hit a live 429
+    // (`rateLimitedUntil` set at line ~272): the site just rejected a
+    // request as rate-limited, so firing up to 50 more requests here — one
+    // `getProjectVersions` call per observed project — into the same
+    // cooldown would make the situation worse, not better. Next tick
+    // retries from `resumePageToken`, and picks the version walk back up
+    // then.
+    if (!rateLimitedUntil) {
+      for (const projectKey of projectKeys) {
+        // `getProjectVersions` only guards HTTP status codes (returns `null`
+        // on a non-2xx) — it does not wrap `fetch` itself, so a
+        // network-level failure (timeout, DNS, connection reset) REJECTS
+        // rather than resolving null. This loop runs before the
+        // cursor-write block below, so an unguarded rejection here would
+        // unwind the whole pass and discard the issue envelopes already
+        // collected, along with the cursor progress they earned. Caught and
+        // treated exactly like the null case: skip this project silently,
+        // next tick retries.
+        let versions: JiraVersion[] | null;
+        try {
+          versions = await this.client.getProjectVersions(
+            config.siteUrl,
+            config.email,
+            apiToken,
+            projectKey,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Jira version fetch threw for project ${projectKey} (connection ${connection.id}): ${(err as Error).message}`,
+          );
+          versions = null;
+        }
+        // null = the ask failed. Skip silently rather than emitting
+        // nothing-as-fact; the next tick retries, and the issue envelopes
+        // above still stand.
+        for (const version of versions ?? []) {
+          envelopes.push(
+            this.versionEnvelope(connection, mode, projectKey, version),
+          );
+        }
       }
     }
 
@@ -623,6 +701,53 @@ export class JiraCollector extends BaseSourceCollector {
     };
   }
 
+  private versionEnvelope(
+    connection: Connection,
+    mode: CollectionMode,
+    projectKey: string,
+    version: JiraVersion,
+  ): CanonicalEnvelope {
+    const payload: PlanningVersionPayload = {
+      externalId: String(version.id),
+      projectKey,
+      name: version.name,
+      startDate: version.startDate,
+      releaseDate: version.releaseDate,
+      released: Boolean(version.released),
+      archived: Boolean(version.archived),
+    };
+    // Versions carry no `updated` field, so the key hashes the mutable
+    // content instead: an unchanged version re-emits the same key every tick
+    // and de-dupes at the raw-event store, while a release or a date edit
+    // produces a new one and lands.
+    const signature = createHash('sha256')
+      .update(
+        [
+          payload.name,
+          payload.startDate ?? '',
+          payload.releaseDate ?? '',
+          String(payload.released),
+          String(payload.archived),
+        ].join('|'),
+      )
+      .digest('hex')
+      .slice(0, 12);
+
+    return {
+      schemaVersion: '1.0',
+      eventId: newId(),
+      idempotencyKey: `jira:version:v1:${payload.externalId}:${signature}`,
+      sourceSystem: 'jira',
+      connectionId: connection.id,
+      collectionMode: mode,
+      eventType: EventTypes.PLANNING_VERSION_UPSERTED,
+      occurredAt: this.nowIso(),
+      collectedAt: this.nowIso(),
+      externalRefs: { version_id: payload.externalId, project: projectKey },
+      data: payload as unknown as Record<string, unknown>,
+    };
+  }
+
   private mapIssueToPayload(
     issueKey: string,
     fields: Record<string, unknown>,
@@ -675,6 +800,7 @@ export class JiraCollector extends BaseSourceCollector {
       | undefined;
     const priority = fields.priority as { name?: string } | undefined;
     const fixVersions = fields.fixVersions;
+    const affectsVersions = fields.versions;
 
     return {
       externalKey: issueKey,
@@ -694,6 +820,11 @@ export class JiraCollector extends BaseSourceCollector {
             .map((v: { name?: string }) => v?.name)
             .filter((n: unknown): n is string => typeof n === 'string')
         : undefined,
+      affectsReleases: Array.isArray(affectsVersions)
+        ? affectsVersions
+            .map((v) => (v as { name?: string }).name)
+            .filter((n): n is string => Boolean(n))
+        : [],
       assigneeLogin: assignee?.name ?? assignee?.accountId ?? undefined,
       assigneeName: assignee?.displayName ?? undefined,
       assigneeEmail: assignee?.emailAddress ?? undefined,

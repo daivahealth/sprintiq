@@ -282,4 +282,100 @@ describe('JiraClient', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });
+
+  it('GETs the project versions endpoint with Basic auth', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(fakeResponse({ body: [] })) as unknown as typeof fetch;
+
+    await client.getProjectVersions(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      'tok',
+      'ACT',
+    );
+
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(
+      'https://acme.atlassian.net/rest/api/3/project/ACT/versions',
+    );
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(
+      `Basic ${Buffer.from('a@b.com:tok').toString('base64')}`,
+    );
+  });
+
+  it('returns the versions it was given', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: [
+          {
+            id: '10042',
+            name: 'RC1',
+            startDate: '2026-08-14',
+            releaseDate: '2026-08-22',
+            released: true,
+            archived: false,
+            overdue: false,
+          },
+        ],
+      }),
+    ) as unknown as typeof fetch;
+
+    const versions = await client.getProjectVersions(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      'tok',
+      'ACT',
+    );
+
+    expect(versions).toEqual([
+      {
+        id: '10042',
+        name: 'RC1',
+        startDate: '2026-08-14',
+        releaseDate: '2026-08-22',
+        released: true,
+        archived: false,
+        overdue: false,
+      },
+    ]);
+  });
+
+  // Null, not []: the caller must be able to tell "this project has no
+  // versions" from "we could not ask". Treating a 401 as an empty list would
+  // mark every RC as unknown-dated and look like real data.
+  it('returns null (not an empty list) when the request fails', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        fakeResponse({ ok: false, status: 401 }),
+      ) as unknown as typeof fetch;
+
+    const versions = await client.getProjectVersions(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      'tok',
+      'ACT',
+    );
+
+    expect(versions).toBeNull();
+  });
+
+  it('returns null when no API token is available', async () => {
+    global.fetch = jest.fn() as unknown as typeof fetch;
+
+    const versions = await client.getProjectVersions(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      '',
+      'ACT',
+    );
+
+    expect(versions).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

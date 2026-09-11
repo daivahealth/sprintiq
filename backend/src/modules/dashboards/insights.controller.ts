@@ -8,13 +8,18 @@ import {
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
-import { istWindowFloor } from '../../common/time';
+import { istDayEnd, istDayStart, istWindowFloor } from '../../common/time';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
+import { SprintHealthDetailService } from '../../metrics/sprint-health-detail.service';
 import { CodeService } from '../code/code.service';
 import { ConnectionsService } from '../connections/connections.service';
-import { ACTIVITY_WINDOWS, resolveActivityRange } from './activity-range';
+import {
+  ACTIVITY_WINDOWS,
+  parseDateKeyParam,
+  resolveActivityRange,
+} from './activity-range';
 import { parseList } from './catalog.controller';
 
 const ALL_ROLES = Object.values(Role);
@@ -176,6 +181,7 @@ export const DASHBOARD_REGISTRY: {
 export class InsightsController {
   constructor(
     private readonly insights: InsightsService,
+    private readonly detail: SprintHealthDetailService,
     private readonly devActivity: DeveloperActivityService,
     private readonly correlation: CorrelationService,
     private readonly code: CodeService,
@@ -241,13 +247,72 @@ export class InsightsController {
 
   @Get('sprint-health')
   async sprintHealth(@Query('sprint') sprint?: string) {
-    const view = await this.insights.sprintHealth(
+    const id = requireParam(sprint, 'sprint');
+    const [view, commitActivity, productivity, qualityCheck] =
+      await Promise.all([
+        this.insights.sprintHealth(id),
+        this.detail.commitActivity(id),
+        this.detail.productivity(id),
+        this.detail.qualityCheck(id),
+      ]);
+    if (!view) {
+      throw new NotFoundException('Sprint not found.');
+    }
+    return {
+      ...view,
+      commitActivity,
+      productivity,
+      qualityCheck,
+      computedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Ticket movement per developer per day. Its own route because the grid
+   * pages by date range — folding it into `sprint-health` would re-run every
+   * sprint aggregate on each page flip.
+   */
+  @Get('sprint-health/check-ins')
+  async sprintCheckIns(
+    @Query('sprint') sprint?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    // `from`/`to` are IST calendar-date keys ("2026-08-31"), the same
+    // convention `resolveActivityRange` uses for a custom range — NOT ISO
+    // instants. `new Date('2026-08-31')` parses as UTC midnight (05:30 IST),
+    // which shifted every page's bounds and made a full IST day unreachable
+    // from any page. `istDayStart`/`istDayEnd` convert the key into the
+    // actual IST-day instants the service windows against.
+    const fromKey = parseDateKeyParam(from, 'from');
+    const toKey = parseDateKeyParam(to, 'to');
+    const view = await this.detail.checkIns(
       requireParam(sprint, 'sprint'),
+      fromKey ? istDayStart(fromKey) : undefined,
+      toKey ? istDayEnd(toKey) : undefined,
     );
     if (!view) {
       throw new NotFoundException('Sprint not found.');
     }
-    return view;
+    return { ...view, computedAt: new Date().toISOString() };
+  }
+
+  /**
+   * Per-release scope: which stories shipped, which are still pending, and
+   * the defect load — one card per release the sprint's own items carry.
+   * Its own route for the same reason as check-ins: folding it into
+   * `sprint-health` would re-run every sprint aggregate just to render one
+   * more panel.
+   */
+  @Get('sprint-health/release-candidates')
+  async sprintReleaseCandidates(@Query('sprint') sprint?: string) {
+    const rows = await this.detail.releaseCandidates(
+      requireParam(sprint, 'sprint'),
+    );
+    if (!rows) {
+      throw new NotFoundException('Sprint not found.');
+    }
+    return { rows, computedAt: new Date().toISOString() };
   }
 
   /** Risk of EVERY active sprint in scope, ranked most-at-risk-first. */

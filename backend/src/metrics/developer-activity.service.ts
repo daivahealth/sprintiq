@@ -1220,7 +1220,7 @@ export function activeDeveloperRoster(
  * has seen it; only a commit with neither a known login nor a known email is
  * genuinely unattributable.
  */
-function attributeCommit(
+export function attributeCommit(
   commit: { authorLogin: string | null; authorEmail: string | null },
   index: { byLogin: Map<string, string>; byEmail: Map<string, string> },
 ): string | undefined {

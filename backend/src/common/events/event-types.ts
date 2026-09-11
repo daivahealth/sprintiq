@@ -11,6 +11,7 @@ export const EventTypes = {
   CODE_COMMIT_PUSHED: 'code.commit.pushed',
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
+  PLANNING_VERSION_UPSERTED: 'planning.version.upserted',
 } as const;
 
 export const CODE_PR_EVENT_TYPES: string[] = [
@@ -23,4 +24,8 @@ export const CODE_PR_EVENT_TYPES: string[] = [
 export const PLANNING_STORY_EVENT_TYPES: string[] = [
   EventTypes.PLANNING_STORY_CREATED,
   EventTypes.PLANNING_STORY_UPDATED,
+];
+
+export const PLANNING_VERSION_EVENT_TYPES: string[] = [
+  EventTypes.PLANNING_VERSION_UPSERTED,
 ];
