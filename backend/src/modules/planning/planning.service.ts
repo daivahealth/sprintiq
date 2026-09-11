@@ -5,8 +5,12 @@ import {
   PlanningSprintRef,
   PlanningStoryPayload,
   PlanningTransitionRef,
+  PlanningVersionPayload,
 } from '../../common/events/contracts';
-import { PLANNING_STORY_EVENT_TYPES } from '../../common/events/event-types';
+import {
+  PLANNING_STORY_EVENT_TYPES,
+  PLANNING_VERSION_EVENT_TYPES,
+} from '../../common/events/event-types';
 import { DomainEvent } from '../../common/events/domain-event';
 import { EventBus } from '../../common/events/event-bus';
 import { newId } from '../../common/id';
@@ -48,6 +52,11 @@ export class PlanningService implements OnModuleInit {
     for (const type of PLANNING_STORY_EVENT_TYPES) {
       this.eventBus.subscribe<PlanningStoryPayload>(type, (e) =>
         this.handleStory(e),
+      );
+    }
+    for (const type of PLANNING_VERSION_EVENT_TYPES) {
+      this.eventBus.subscribe<PlanningVersionPayload>(type, (e) =>
+        this.handleVersion(e),
       );
     }
   }
@@ -100,6 +109,7 @@ export class PlanningService implements OnModuleInit {
       parentKey: p.parentKey ?? null,
       sprintExternalId: p.sprint?.externalId ?? null,
       releases: p.releases ?? [],
+      affectsReleases: p.affectsReleases ?? [],
       assigneeLogin: p.assigneeLogin ?? null,
       assigneeName: p.assigneeName ?? null,
       // Written unconditionally with the rest of the assignee, and deliberately
@@ -147,6 +157,42 @@ export class PlanningService implements OnModuleInit {
     });
 
     this.logger.debug(`upserted ${fields.type} ${p.externalKey} (${p.status})`);
+  }
+
+  /**
+   * A Jira version (fixVersion) with its dates. Writes only source-owned
+   * columns: `plannedReleaseAt` and its provenance are user input and are not
+   * in this object at all, so a poll can never overwrite them.
+   */
+  private async handleVersion(
+    event: DomainEvent<PlanningVersionPayload>,
+  ): Promise<void> {
+    const p = event.payload;
+    const fields = {
+      connectionId: event.connectionId ?? '',
+      externalId: p.externalId,
+      startAt: p.startDate ? new Date(p.startDate) : null,
+      releaseDate: p.releaseDate ? new Date(p.releaseDate) : null,
+      released: p.released,
+      archived: p.archived,
+    };
+    await this.prisma.release.upsert({
+      where: {
+        tenantId_projectKey_name: {
+          tenantId: event.tenantId,
+          projectKey: p.projectKey,
+          name: p.name,
+        },
+      },
+      create: {
+        id: newId(),
+        tenantId: event.tenantId,
+        name: p.name,
+        projectKey: p.projectKey,
+        ...fields,
+      },
+      update: fields,
+    });
   }
 
   /**
@@ -488,6 +534,22 @@ export class PlanningService implements OnModuleInit {
           }
         : {}),
     };
+  }
+
+  /**
+   * One sprint by its source id — a point read on the unique key.
+   *
+   * NOT `listSprints(...).find(...)`: that read is capped at 100 rows, so
+   * scanning it silently reports "not found" for any sprint outside the most
+   * recent hundred. This board is opened from links to closed sprints.
+   */
+  findSprintByExternalId(
+    tenantId: string,
+    externalId: string,
+  ): Promise<Sprint | null> {
+    return this.prisma.sprint.findUnique({
+      where: { tenantId_externalId: { tenantId, externalId } },
+    });
   }
 
   /** Items committed to a sprint (velocity / health / risk inputs). */

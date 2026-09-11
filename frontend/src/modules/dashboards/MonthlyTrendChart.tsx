@@ -173,6 +173,17 @@ export function MonthlyTrendChart({
             metric === 'commits' ? 'fill-chart-1' : 'fill-chart-2';
           const hollowTone =
             metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2';
+          // Assembled as ONE string rather than interpolated as sibling JSX
+          // children. `<title>` accepts a single text child; handing React an
+          // array warns ("received an array with more than 1 element") and the
+          // markup it produces does not survive hydration reliably — the
+          // tooltip is the only thing naming the month a point belongs to, so
+          // losing it costs the reader the chart's labels.
+          const tooltip =
+            `${monthAxisLabel(p.point.month, undefined)}` +
+            `${isPartial ? ' (month to date)' : ''} · ` +
+            `${p.point.commits.toLocaleString()} commit${p.point.commits === 1 ? '' : 's'} · ` +
+            `${p.point.locChanged.toLocaleString()} LOC changed`;
           return (
             <circle
               key={p.point.month}
@@ -185,13 +196,7 @@ export function MonthlyTrendChart({
               strokeWidth={isPartial ? 2 : 0}
               className={isPartial ? hollowTone : solidTone}
             >
-              <title>
-                {monthAxisLabel(p.point.month, undefined)}
-                {isPartial ? ' (month to date)' : ''} ·{' '}
-                {p.point.commits.toLocaleString()} commit
-                {p.point.commits === 1 ? '' : 's'} ·{' '}
-                {p.point.locChanged.toLocaleString()} LOC changed
-              </title>
+              <title>{tooltip}</title>
             </circle>
           );
         })}

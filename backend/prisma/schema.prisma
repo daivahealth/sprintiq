@@ -254,6 +254,12 @@ model Story {
   parentKey        String? // parent story external key (for subtasks)
   sprintExternalId String? // Sprint.externalId this item is committed to
   releases         String[]  @default([]) // Jira fixVersion names
+  /// Jira's `versions` — Affects Version/s, i.e. where the defect was FOUND.
+  /// Distinct from `releases` (fixVersions), which is where it will be fixed.
+  /// "Bugs logged against RC1" is this field; using fixVersions would answer a
+  /// different question while looking like this one. Empty on items collected
+  /// before this field was requested, until they are re-walked.
+  affectsReleases  String[]  @default([])
   assigneeLogin    String?
   assigneeName     String?
   /// The assignee's Atlassian account email, when Jira discloses it.
@@ -382,8 +388,23 @@ model Release {
   connectionId String
   name         String // Jira fixVersion name
   projectKey   String
+  /// Jira version id. Null for a release first seen as a bare fixVersion name
+  /// on an issue; filled in when the version event arrives.
+  externalId   String?
   released     Boolean   @default(false)
+  /// Jira's `startDate`.
+  startAt      DateTime?
+  /// Jira's `releaseDate`: "expected to finish" while unreleased, and the day
+  /// it shipped once `released` is true — Jira reuses one field for both.
   releaseDate  DateTime?
+  archived     Boolean   @default(false)
+  /// The date this release was PLANNED for — user input, because Jira
+  /// overwrites `releaseDate` on release and destroys the plan. Null means
+  /// nobody has recorded one, and lateness is then not computed at all.
+  plannedReleaseAt   DateTime?
+  /// Who recorded the planned date. A human judgement carries a name.
+  plannedSetByUserId String?
+  plannedSetAt       DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 

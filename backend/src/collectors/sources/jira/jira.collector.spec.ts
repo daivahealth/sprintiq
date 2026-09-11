@@ -1,6 +1,7 @@
 import { Connection } from '@prisma/client';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { ConnectionsService } from '../../../modules/connections/connections.service';
+import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
 import { JiraClient, JiraSearchIssue } from './jira.client';
 import { JiraCollector } from './jira.collector';
 
@@ -61,6 +62,10 @@ describe('JiraCollector.poll', () => {
       getFields: jest.fn().mockResolvedValue([]),
       getIssueChangelog: jest.fn().mockResolvedValue(null),
       getStatusCategories: jest.fn().mockResolvedValue({}),
+      // Default to "failed" (null), the same posture an un-stubbed source call
+      // should have — existing tests that never mention versions must see no
+      // version envelopes rather than crash on an unmocked method.
+      getProjectVersions: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<JiraClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
@@ -388,12 +393,37 @@ describe('JiraCollector.poll', () => {
         'project',
         'parent',
         'fixVersions',
+        'versions',
         'assignee',
         'priority',
         'resolutiondate',
         'created',
         'updated',
       ],
+    });
+  });
+
+  it('requests Affects Version and carries it onto the payload', async () => {
+    // `versions` is Jira's "Affects Version/s" — where a defect was FOUND.
+    // fixVersions answers a different question and must not stand in for it.
+    client.searchIssues.mockResolvedValue({
+      issues: [
+        issue('ACT-9', {
+          summary: 'crash on save',
+          issuetype: { name: 'Bug' },
+          project: { key: 'ACT' },
+          versions: [{ name: 'RC1' }],
+          fixVersions: [{ name: 'RC2' }],
+        }),
+      ],
+    });
+
+    const { envelopes } = await collector.poll(baseConnection());
+
+    const env = envelopes.find((e) => e.eventType.startsWith('planning.issue'));
+    expect(env?.data).toMatchObject({
+      affectsReleases: ['RC1'],
+      releases: ['RC2'],
     });
   });
 
@@ -916,5 +946,190 @@ describe('JiraCollector.poll', () => {
     );
 
     expect(connections.setBackfillCompletedAt).toHaveBeenCalledWith('conn_1');
+  });
+
+  describe('version collection', () => {
+    function versionConnection(): Connection {
+      return baseConnection({
+        config: {
+          siteUrl: 'https://acme.atlassian.net',
+          email: 'a@b.com',
+          sprintFieldId: null,
+          storyPointsFieldIds: [],
+          statusCategories: {},
+          // projectKey deliberately absent — versions must be requested for
+          // whatever projects this pass itself observed on issues.
+        },
+      });
+    }
+
+    it('emits one version envelope per Jira version, keyed on its mutable content', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      client.getProjectVersions.mockResolvedValue([
+        {
+          id: '10042',
+          name: 'RC1',
+          startDate: '2026-08-14',
+          releaseDate: '2026-08-22',
+          released: false,
+          archived: false,
+        },
+      ]);
+
+      // Same version, twice, unchanged at the source.
+      const first = await collector.poll(connection);
+      const second = await collector.poll(connection);
+
+      const keyOf = (envs: CanonicalEnvelope[]) =>
+        envs.find((e) => e.eventType === 'planning.version.upserted')
+          ?.idempotencyKey;
+
+      expect(keyOf(first.envelopes)).toBeDefined();
+      // Unchanged version → identical key → de-duped at the raw-event store.
+      expect(keyOf(second.envelopes)).toBe(keyOf(first.envelopes));
+    });
+
+    it('changes the idempotency key when a version is released', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      client.getProjectVersions.mockResolvedValue([
+        {
+          id: '10042',
+          name: 'RC1',
+          startDate: '2026-08-14',
+          releaseDate: '2026-08-22',
+          released: false,
+          archived: false,
+        },
+      ]);
+
+      const before = await collector.poll(connection);
+      client.getProjectVersions.mockResolvedValue([
+        { id: '10042', name: 'RC1', releaseDate: '2026-08-22', released: true },
+      ]);
+      const after = await collector.poll(connection);
+
+      const keyOf = (envs: CanonicalEnvelope[]) =>
+        envs.find((e) => e.eventType === 'planning.version.upserted')
+          ?.idempotencyKey;
+
+      // A release is the one state change the board exists to show; it MUST
+      // NOT de-dupe against the unreleased envelope collected an hour earlier.
+      expect(keyOf(after.envelopes)).not.toBe(keyOf(before.envelopes));
+    });
+
+    it('carries the version fields into the payload', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      client.getProjectVersions.mockResolvedValue([
+        {
+          id: '10042',
+          name: 'RC1',
+          startDate: '2026-08-14',
+          releaseDate: '2026-08-22',
+          released: false,
+          archived: false,
+        },
+      ]);
+
+      const { envelopes } = await collector.poll(connection);
+      const env = envelopes.find(
+        (e) => e.eventType === 'planning.version.upserted',
+      );
+
+      expect(env?.data).toEqual({
+        externalId: '10042',
+        projectKey: 'ACT',
+        name: 'RC1',
+        startDate: '2026-08-14',
+        releaseDate: '2026-08-22',
+        released: false,
+        archived: false,
+      });
+    });
+
+    it('asks only for the projects it has itself observed, never the planning tables', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      client.getProjectVersions.mockResolvedValue([]);
+
+      // The connection sets no projectKey, and the pass collected an ACT issue.
+      await collector.poll(connection);
+
+      expect(client.getProjectVersions).toHaveBeenCalledWith(
+        'https://acme.atlassian.net',
+        'a@b.com',
+        'tok',
+        'ACT',
+      );
+    });
+
+    // The bug: the version loop ran unconditionally, even on a tick whose
+    // issue search had JUST been 429'd — firing up to 50 more requests
+    // (one `getProjectVersions` call per remembered project) straight into
+    // an active rate-limit backoff instead of backing off with it.
+    it('does not fire the version loop when the search hit a live rate limit this tick', async () => {
+      const connection = versionConnection();
+      // A project remembered from an earlier pass, so the version loop would
+      // have something to iterate if it ran.
+      connection.syncCursors = { versionProjectKeys: ['ACT'] };
+      const resetAt = new Date(Date.now() + 30_000);
+      client.searchIssues.mockResolvedValue({
+        issues: [],
+        rateLimitedUntil: resetAt,
+      });
+
+      await collector.poll(connection);
+
+      expect(client.getProjectVersions).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the pass when the version fetch fails', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      client.getProjectVersions.mockResolvedValue(null);
+
+      const { envelopes } = await collector.poll(connection);
+
+      // Issues still collected; versions simply absent this pass.
+      expect(
+        envelopes.some((e) => e.eventType === 'planning.issue.updated'),
+      ).toBe(true);
+      expect(
+        envelopes.some((e) => e.eventType === 'planning.version.upserted'),
+      ).toBe(false);
+    });
+
+    it('does not let a thrown version-fetch exception (network failure, not an HTTP status) unwind the pass and discard the issue envelopes', async () => {
+      const connection = versionConnection();
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('ACT-1', { project: { key: 'ACT' } })],
+      });
+      // getProjectVersions only guards HTTP status codes — a network-level
+      // failure (timeout, DNS, connection reset) rejects instead of
+      // resolving null. That must be caught here and treated exactly like
+      // the null case, not left to propagate out of the pass.
+      client.getProjectVersions.mockRejectedValue(new Error('ECONNRESET'));
+
+      const { envelopes } = await collector.poll(connection);
+
+      expect(
+        envelopes.some((e) => e.eventType === 'planning.issue.updated'),
+      ).toBe(true);
+      expect(
+        envelopes.some((e) => e.eventType === 'planning.version.upserted'),
+      ).toBe(false);
+    });
   });
 });
