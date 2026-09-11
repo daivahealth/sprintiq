@@ -425,6 +425,12 @@ model PullRequest {
   externalNumber String
   title          String
   branch         String
+  // The head commit's sha — the completeness check for commit collection. A
+  // merged PR whose headSha has no `code_commit` row is a commit we never
+  // collected, which is the only signal independent of the collector's own
+  // cursors (api/README.md §12 #51). Nullable: PRs collected before this
+  // existed carry no value, and that must read as "unknown", not "complete".
+  headSha        String?
   baseBranch     String?
   state          String // open | merged | closed
   authorLogin    String?
@@ -461,6 +467,13 @@ model PullRequest {
   // and commit messages are one of the three documented Jira-key sources, so
   // conflating the two silently understates linkage coverage.
   commitsFetchedAt DateTime?
+  // When this PR's commit SHAs were harvested into `code_commit`. Distinct
+  // from `commitsFetchedAt`, and the distinction is the whole point: that
+  // stamp is already set on essentially every PR (the 2026-08-14 message
+  // reconciler asked them all), so it cannot discriminate rows that still
+  // need their commits collected. Reusing it would have retired every
+  // candidate before the backfill began — the §12 #6 trap, one stamp later.
+  commitShasFetchedAt DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -469,6 +482,8 @@ model PullRequest {
   @@index([tenantId, reviewsFetchedAt])
   @@index([tenantId, detailFetchedAt])
   @@index([tenantId, commitsFetchedAt])
+  @@index([tenantId, commitShasFetchedAt])
+  @@index([tenantId, headSha])
   @@map("code_pull_request")
 }
 

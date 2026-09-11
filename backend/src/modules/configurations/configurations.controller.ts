@@ -20,6 +20,7 @@ import {
 import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { ConnectionsService } from '../connections/connections.service';
 import { GithubCommitMessageReconcilerService } from '../../collectors/sources/github/github-commit-message-reconciler.service';
+import { GithubPrCommitBackfillService } from '../../collectors/sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
@@ -104,6 +105,7 @@ export class ConfigurationsController {
     private readonly githubOrgSync: GithubOrgSyncService,
     private readonly commitReconciler: GithubCommitReconcilerService,
     private readonly commitMessageReconciler: GithubCommitMessageReconcilerService,
+    private readonly prCommitBackfill: GithubPrCommitBackfillService,
     private readonly prReconciler: GithubPrReconcilerService,
     private readonly reviewReconciler: GithubReviewReconcilerService,
     private readonly storyDateReconciler: JiraStoryDateReconcilerService,
@@ -283,6 +285,47 @@ export class ConfigurationsController {
   @Post('github/reconcile-commit-messages')
   async reconcileCommitMessages(@CurrentUser() user: AuthUser) {
     return this.commitMessageReconciler.reconcile(user.tenantId);
+  }
+
+  /**
+   * Recovers commits the branch-scoped commit walk never collected
+   * (api/README.md §12 #51): it reads only each repository's default branch,
+   * so on a tenant merging through integration branches it missed **43.7% of
+   * merged work**, understating 71 developers and leaving 3 with no commit
+   * activity at all. The live collector now harvests commits from each
+   * enriched PR, but incremental sync never revisits a PR behind its
+   * watermark — so the year of history needs this.
+   *
+   * Bounded per invocation (one API call per PR), resumable, and it stops at
+   * the rate reserve so the live poller keeps working. Re-run until
+   * `remaining` is 0; the scheduled backfill sweep drives it automatically.
+   *
+   * Unlike the sibling reconcilers this ingests through the normal pipeline —
+   * these SHAs were never ingested, so no idempotency key is burned and the
+   * recovered history keeps full lineage. Re-running is safe: commits already
+   * collected are reported as `alreadyPresent`, not written twice.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/backfill-pr-commits')
+  async backfillPrCommits(@CurrentUser() user: AuthUser) {
+    return this.prCommitBackfill.reconcile(user.tenantId);
+  }
+
+  /**
+   * How many merged PRs have a head commit that was never collected — the
+   * completeness check for commit collection, and the only one independent of
+   * the collector's own cursors. `collectedThroughAt` can attest that a walk
+   * finished but never that it looked at the right branch, which is how #51
+   * hid behind a green Sync Status for a year.
+   */
+  @Roles(Role.ADMIN)
+  @Get('github/commit-collection-coverage')
+  async commitCollectionCoverage(@CurrentUser() user: AuthUser) {
+    const [uncollectedMergedHeads, prsAwaitingHarvest] = await Promise.all([
+      this.prCommitBackfill.countUncollectedHeads(user.tenantId),
+      this.prCommitBackfill.countRemaining(user.tenantId),
+    ]);
+    return { uncollectedMergedHeads, prsAwaitingHarvest };
   }
 
   /**

@@ -1,5 +1,6 @@
 import { PrismaService } from '../../database/prisma.service';
 import { GithubCommitMessageReconcilerService } from '../sources/github/github-commit-message-reconciler.service';
+import { GithubPrCommitBackfillService } from '../sources/github/github-pr-commit-backfill.service';
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
@@ -12,6 +13,7 @@ describe('BackfillSchedulerService', () => {
   let reviews: jest.Mocked<GithubReviewReconcilerService>;
   let prStats: jest.Mocked<GithubPrReconcilerService>;
   let commitMessages: jest.Mocked<GithubCommitMessageReconcilerService>;
+  let prCommits: jest.Mocked<GithubPrCommitBackfillService>;
   let storyDates: jest.Mocked<JiraStoryDateReconcilerService>;
   let service: BackfillSchedulerService;
 
@@ -30,6 +32,15 @@ describe('BackfillSchedulerService', () => {
     commitMessages = {
       reconcile: jest.fn().mockResolvedValue({ ...idle, remaining: 0 }),
     } as unknown as jest.Mocked<GithubCommitMessageReconcilerService>;
+    prCommits = {
+      reconcile: jest.fn().mockResolvedValue({
+        ...idle,
+        processed: 0,
+        commitsIngested: 0,
+        alreadyPresent: 0,
+        remaining: 0,
+      }),
+    } as unknown as jest.Mocked<GithubPrCommitBackfillService>;
     storyDates = {
       reconcile: jest.fn().mockResolvedValue(idle),
     } as unknown as jest.Mocked<JiraStoryDateReconcilerService>;
@@ -38,6 +49,7 @@ describe('BackfillSchedulerService', () => {
       reviews,
       prStats,
       commitMessages,
+      prCommits,
       storyDates,
     );
   });
@@ -50,7 +62,13 @@ describe('BackfillSchedulerService', () => {
 
     await service.tick();
 
-    for (const svc of [storyDates, reviews, prStats, commitMessages]) {
+    for (const svc of [
+      storyDates,
+      reviews,
+      prStats,
+      commitMessages,
+      prCommits,
+    ]) {
       expect(svc.reconcile).toHaveBeenCalledWith('tenant-a');
       expect(svc.reconcile).toHaveBeenCalledWith('tenant-b');
     }

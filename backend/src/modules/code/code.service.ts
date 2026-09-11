@@ -116,6 +116,12 @@ export class CodeService implements OnModuleInit {
       connectionId: event.connectionId ?? '',
       title: p.title,
       branch: p.branch,
+      // Only ever written when the event carries one. A payload without it
+      // (a PR collected before head SHAs existed, or a transport that does
+      // not supply one) must leave a previously-stored sha alone rather than
+      // nulling it — the completeness anti-join reads absence as "unknown",
+      // so erasing a known sha would silently retire a real finding.
+      ...(p.headSha ? { headSha: p.headSha } : {}),
       baseBranch: p.baseBranch ?? null,
       state: p.state,
       authorLogin: p.authorLogin ?? null,
