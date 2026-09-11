@@ -36,6 +36,17 @@ export interface CodePullRequestPayload {
   externalNumber: string;
   title: string;
   branch: string;
+  /**
+   * The head commit's sha. Carried for one purpose: it is the only
+   * independent check that commit collection is complete. A merged PR whose
+   * `headSha` has no `code_commit` row is a commit that was never collected —
+   * which is exactly the gap that hid for a year behind a completeness
+   * watermark derived from the collector's own cursors (api/README.md §12
+   * #51, qualifying #30). Optional because PRs collected before this existed
+   * have no value for it, and absent must read as "unknown", never as "no
+   * gap".
+   */
+  headSha?: string;
   baseBranch?: string;
   state: 'open' | 'merged' | 'closed';
   authorLogin?: string;

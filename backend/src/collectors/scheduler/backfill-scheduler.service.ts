@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../database/prisma.service';
 import { GithubCommitMessageReconcilerService } from '../sources/github/github-commit-message-reconciler.service';
+import { GithubPrCommitBackfillService } from '../sources/github/github-pr-commit-backfill.service';
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
@@ -59,6 +60,7 @@ export class BackfillSchedulerService {
     private readonly reviews: GithubReviewReconcilerService,
     private readonly prStats: GithubPrReconcilerService,
     private readonly commitMessages: GithubCommitMessageReconcilerService,
+    private readonly prCommits: GithubPrCommitBackfillService,
     private readonly storyDates: JiraStoryDateReconcilerService,
   ) {}
 
@@ -138,6 +140,24 @@ export class BackfillSchedulerService {
     }
     if (messages.resumeAt) {
       this.cooldowns.set(`${tenantId}:github`, messages.resumeAt);
+      return;
+    }
+
+    // Last of the GitHub reconcilers, deliberately. It is the largest backlog
+    // by far — every PR ever collected, not just those missing a field — so
+    // running it ahead of the others would starve them for days. It is also
+    // the only one that recovers data rather than completing it, and a
+    // half-filled review timeline distorts a metric that is already on screen
+    // where a missing commit simply is not there yet.
+    const prCommits = await this.prCommits.reconcile(tenantId);
+    if (prCommits.processed > 0 || prCommits.remaining > 0) {
+      this.logger.log(
+        `Backfill (tenant ${tenantId}): PR commits — ${prCommits.processed} PRs, ` +
+          `${prCommits.commitsIngested} commits recovered, ${prCommits.remaining} remaining.`,
+      );
+    }
+    if (prCommits.resumeAt) {
+      this.cooldowns.set(`${tenantId}:github`, prCommits.resumeAt);
     }
   }
 }

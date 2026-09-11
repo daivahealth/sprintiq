@@ -1,4 +1,5 @@
 import { Connection } from '@prisma/client';
+import { EventTypes } from '../../../common/events/event-types';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { ConnectionsService } from '../../../modules/connections/connections.service';
 import {
@@ -164,6 +165,81 @@ describe('GithubCollector.poll', () => {
     expect(cursors.prBackfillDone).toBe(true);
     expect(cursors.prPage).toBeUndefined();
     expect(cursors.prNewestSeenAt).toBe(within.updated_at);
+  });
+
+  it('emits a commit envelope per commit on an enriched PR, so work merged into a non-default branch is collected', async () => {
+    // The commit walk reads only the repository's DEFAULT branch (REST omits
+    // `sha`; GraphQL reads `defaultBranchRef`). A team merging into long-lived
+    // integration branches therefore has most of its commits invisible until
+    // that branch reaches the default one — 43.7% of merged work on the
+    // reference tenant, and 71 developers understated. The PR's own commit
+    // list is the one place those commits are already on the wire.
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 7 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestCommits.mockResolvedValue({
+      messages: ['NHC-1 fix the thing'],
+      commits: [
+        {
+          sha: 'abc123',
+          message: 'NHC-1 fix the thing',
+          authorLogin: 'dev-a',
+          authorName: 'Dev A',
+          authorEmail: 'dev.a@example.com',
+          authoredAt: '2026-09-01T10:00:00Z',
+          committedAt: '2026-09-01T10:05:00Z',
+          additions: 4,
+          deletions: 2,
+          filesChanged: 1,
+        },
+      ],
+    });
+
+    const { envelopes } = await collector.poll(baseConnection());
+
+    const commits = envelopes.filter(
+      (e) => e.eventType === EventTypes.CODE_COMMIT_PUSHED,
+    );
+    expect(commits).toHaveLength(1);
+    // Deliberately the SAME key the default-branch walk mints, so a commit
+    // reachable both ways converges on one row rather than double-counting.
+    expect(commits[0].idempotencyKey).toBe(
+      'github:acme/payments:commit:abc123',
+    );
+    expect(commits[0].occurredAt).toBe('2026-09-01T10:00:00Z');
+    expect(commits[0].collectionMode).toBe('backfill');
+    expect(commits[0].data).toMatchObject({
+      sha: 'abc123',
+      authorLogin: 'dev-a',
+      authorEmail: 'dev.a@example.com',
+      additions: 4,
+      deletions: 2,
+      filesChanged: 1,
+    });
+    // The PR itself still lands — this adds commits, it does not replace them.
+    expect(
+      envelopes.filter((e) => e.externalRefs.pr_number === '7'),
+    ).toHaveLength(1);
+  });
+
+  it('skips a PR commit carrying no sha rather than minting an unkeyable envelope', async () => {
+    client.listPullRequestsPage.mockResolvedValue({
+      items: [pull({ number: 8 })],
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestCommits.mockResolvedValue({
+      messages: ['no sha'],
+      commits: [{ sha: '', message: 'no sha' }],
+    });
+
+    const { envelopes } = await collector.poll(baseConnection());
+
+    expect(
+      envelopes.filter((e) => e.eventType === EventTypes.CODE_COMMIT_PUSHED),
+    ).toHaveLength(0);
   });
 
   it('defers un-enriched PRs to a later tick once the backfill enrichment budget runs out', async () => {

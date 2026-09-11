@@ -203,6 +203,7 @@ export class GithubCollector extends BaseSourceCollector {
       externalNumber: number,
       title: pr.title ?? '',
       branch: pr.head?.ref ?? '',
+      headSha: pr.head?.sha,
       baseBranch: pr.base?.ref,
       state,
       authorLogin: pr.user?.login,
@@ -497,6 +498,12 @@ export class GithubCollector extends BaseSourceCollector {
             enriched.reviews,
             enriched.comments,
           ),
+          ...this.commitEnvelopesFromPull(
+            connection,
+            repoFullName,
+            'backfill',
+            enriched.commits,
+          ),
         );
         const rateLimitedUntil = this.enrichRateLimit(enriched);
         if (rateLimitedUntil) {
@@ -680,12 +687,20 @@ export class GithubCollector extends BaseSourceCollector {
     // the watermark may honestly advance.
     let lastEnrichedAt: string | undefined;
     let rateLimitedUntil: Date | undefined;
+    // PRs enriched, NOT envelopes emitted. These were the same number until a
+    // PR started also yielding a commit envelope per commit; counting
+    // envelopes would then silently divide the budget by the average commits
+    // per PR (~2 on the reference tenant, more on a big PR) and enrich a
+    // fraction of the PRs the budget actually allows. The budget's unit is
+    // the API cost of one PR, which is unchanged by how many commits it has.
+    let enrichedCount = 0;
 
     for (const pr of ordered) {
-      if (envelopes.length >= prBudget) {
+      if (enrichedCount >= prBudget) {
         break;
       }
       const enriched = await this.enrichPull(repoFullName, token, pr.number);
+      enrichedCount++;
       envelopes.push(
         this.fromPolledPull(
           connection,
@@ -695,6 +710,12 @@ export class GithubCollector extends BaseSourceCollector {
           enriched.detail,
           enriched.commits.messages,
           enriched.reviews,
+        ),
+        ...this.commitEnvelopesFromPull(
+          connection,
+          repoFullName,
+          'poll',
+          enriched.commits,
         ),
       );
       // Counted as done: it is enriched and emitted before the rate-limit
@@ -926,6 +947,7 @@ export class GithubCollector extends BaseSourceCollector {
       externalNumber: String(pr.number),
       title: pr.title,
       branch: pr.head?.ref ?? '',
+      headSha: pr.head?.sha,
       baseBranch: pr.base?.ref,
       state: merged ? 'merged' : pr.state === 'open' ? 'open' : 'closed',
       authorLogin: pr.user?.login,
@@ -952,6 +974,61 @@ export class GithubCollector extends BaseSourceCollector {
       pr.merged_at ?? pr.updated_at ?? pr.created_at,
       pr.user?.login,
       payload,
+    );
+  }
+
+  /**
+   * Commits harvested from an enriched PR's own commit list.
+   *
+   * The second source of `code.commit.pushed`, and the one that makes commit
+   * collection branch-agnostic. `syncCommits` walks only the repository's
+   * DEFAULT branch (REST omits `sha`, GraphQL reads `defaultBranchRef`), so a
+   * team merging into long-lived integration branches is largely invisible to
+   * it: on the reference tenant 43.7% of merged PRs targeted something other
+   * than master/main/develop, 71 developers were understated, and 3 had no
+   * commit activity on the board at all despite merged work.
+   *
+   * Costs nothing extra. The commit list is already fetched per enriched PR
+   * (for Jira keys, §6) — only the fields kept were too narrow.
+   *
+   * Emitted as separate envelopes, never as a field on the PR envelope, and
+   * that is load-bearing: the PR's key (`…:pr:{n}:{eventType}`) is dropped as
+   * a duplicate on any re-walk, whereas each commit carries its own
+   * `…:commit:{sha}`. That key is the SAME one `fromPolledCommit` mints, so a
+   * commit reachable from both the default branch and a PR converges on one
+   * row instead of double-counting — and a backfill over historical PRs can
+   * ingest through the normal pipeline rather than writing rows directly.
+   */
+  private commitEnvelopesFromPull(
+    connection: Connection,
+    repoFullName: string,
+    mode: CollectionMode,
+    commits: GithubPullCommits,
+  ): CanonicalEnvelope[] {
+    return (
+      (commits.commits ?? [])
+        // A commit with no sha has no idempotency key, so it could neither
+        // converge with the walk nor be corrected later. Dropped rather than
+        // keyed on something invented.
+        .filter((c) => Boolean(c.sha))
+        .map((c) =>
+          this.commitEnvelope(connection, mode, repoFullName, {
+            repoFullName,
+            sha: c.sha,
+            message: c.message,
+            authorLogin: c.authorLogin,
+            authorName: c.authorName,
+            authorEmail: c.authorEmail,
+            // Falls back to collection time only if GitHub returned no date at
+            // all; `occurredAt` is required and a commit without one cannot be
+            // bucketed onto any day.
+            authoredAt: c.authoredAt ?? this.nowIso(),
+            committedAt: c.committedAt,
+            additions: c.additions,
+            deletions: c.deletions,
+            filesChanged: c.filesChanged,
+          }),
+        )
     );
   }
 

@@ -575,7 +575,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
       additions: node.additions,
       deletions: node.deletions,
       changed_files: node.changedFiles,
-      head: { ref: node.headRefName },
+      head: { ref: node.headRefName, sha: node.headRefOid },
       base: { ref: node.baseRefName },
       user: { login: node.author?.login },
     };
@@ -620,6 +620,28 @@ export class GithubGraphqlClient implements GithubSourceClient {
       messages: commitNodes
         .map((c) => c?.commit?.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0),
+      // Whole commits, not just subjects: the history walk reads only
+      // `defaultBranchRef`, so for work merged into an integration branch this
+      // is the only place the commit is ever seen. Stats come back inline
+      // here, so unlike REST these land complete.
+      commits: commitNodes
+        .map((c) => c?.commit)
+        .filter((c): c is PullCommitNode => Boolean(c?.oid))
+        .map((c) => ({
+          sha: c.oid as string,
+          message: c.message ?? '',
+          // `author.user.login` is null when the commit email is unverified;
+          // preserved rather than defaulted, so §12 #22's identity resolution
+          // can still recover the person from name/email.
+          authorLogin: c.author?.user?.login,
+          authorName: c.author?.name,
+          authorEmail: c.author?.email,
+          authoredAt: c.authoredDate,
+          committedAt: c.committedDate,
+          additions: c.additions,
+          deletions: c.deletions,
+          filesChanged: c.changedFilesIfAvailable ?? undefined,
+        })),
     };
 
     const reviewNodes = (node.reviews?.nodes ?? []).filter(
@@ -668,10 +690,14 @@ export class GithubGraphqlClient implements GithubSourceClient {
     };
 
     if (node.commits?.pageInfo?.hasNextPage) {
-      // Messages are a Jira-key source (§6); a truncated list can only miss a
-      // key, never invent one, so this is logged rather than failed.
-      this.logger.debug(
-        `PR #${node.number} commit list truncated at ${commitNodes.length} — key extraction sees a subset.`,
+      // Raised from debug: this used to cost only Jira-key coverage (a
+      // truncated list can miss a key, never invent one). Now that commits
+      // are harvested here it also costs COLLECTION — a commit past the
+      // nested page on a non-default branch is seen by nothing else. Measured
+      // at ~1% of PRs on the reference tenant (240 of 22,903 have ≥20
+      // commits), and the ref-aware walk is what closes the remainder.
+      this.logger.warn(
+        `PR #${node.number} commit list truncated at ${commitNodes.length} — commits past that point are not collected from this PR.`,
       );
     }
 
@@ -913,12 +939,22 @@ const PULL_FIELDS = (nested: number): string => `
   deletions
   changedFiles
   headRefName
+  headRefOid
   baseRefName
   author { login __typename }
   mergedBy { login }
   commits(first: ${nested}) {
     pageInfo { hasNextPage }
-    nodes { commit { message } }
+    nodes { commit {
+      oid
+      message
+      authoredDate
+      committedDate
+      additions
+      deletions
+      changedFilesIfAvailable
+      author { name email user { login } }
+    } }
   }
   reviews(first: ${nested}) {
     pageInfo { hasNextPage }
@@ -1015,14 +1051,36 @@ interface PullNode {
   deletions?: number;
   changedFiles?: number;
   headRefName?: string;
+  headRefOid?: string;
   baseRefName?: string;
   author?: { login?: string; __typename?: string } | null;
   mergedBy?: { login?: string } | null;
   commits?: {
     pageInfo?: PageInfo;
-    nodes?: ({ commit?: { message?: string } } | null)[];
+    nodes?: ({ commit?: PullCommitNode } | null)[];
   } | null;
   reviews?: { pageInfo?: PageInfo; nodes?: (ReviewNode | null)[] } | null;
+}
+
+/**
+ * A commit as it appears nested under a pull request. Distinct from
+ * `CommitNode` (the default-branch history walk): the fields overlap but the
+ * two queries select them independently, and conflating the shapes would let a
+ * change to one silently claim coverage the other never fetched.
+ */
+interface PullCommitNode {
+  oid?: string;
+  message?: string;
+  authoredDate?: string;
+  committedDate?: string;
+  additions?: number;
+  deletions?: number;
+  changedFilesIfAvailable?: number | null;
+  author?: {
+    name?: string;
+    email?: string;
+    user?: { login?: string } | null;
+  } | null;
 }
 
 interface CommitNode {

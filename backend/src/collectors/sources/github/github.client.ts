@@ -13,7 +13,7 @@ export interface GithubPull {
   additions?: number;
   deletions?: number;
   changed_files?: number;
-  head?: { ref?: string };
+  head?: { ref?: string; sha?: string };
   base?: { ref?: string };
   user?: { login?: string };
 }
@@ -135,6 +135,41 @@ export interface GithubPullReviews {
   failed?: boolean;
 }
 
+/**
+ * One commit as the PR's own commit list reports it.
+ *
+ * This exists because the commit *walk* can only ever see one branch. REST's
+ * `/repos/{repo}/commits` defaults to the default branch and GraphQL reads
+ * `defaultBranchRef`, so on a team that merges into long-lived integration
+ * branches the walk misses most of the work: on the reference tenant 43.7% of
+ * merged PRs targeted something other than `master`/`main`/`develop`, leaving
+ * 71 developers understated and 3 with no commit activity on the board at all.
+ *
+ * A PR's commit list is branch-agnostic — it reports the commits regardless of
+ * what the PR merges into, and keeps reporting them after the head branch is
+ * deleted, which is precisely the history a ref walk can never recover. The
+ * call is already being made for `messages`; only the fields kept were too
+ * narrow.
+ *
+ * `additions`/`deletions`/`filesChanged` are optional because REST's PR commit
+ * list omits them (only the per-commit detail call carries stats, exactly as
+ * for the main walk). GraphQL returns them inline. A commit that lands without
+ * them is corrected by `GithubCommitReconcilerService`, which exists for that.
+ */
+export interface GithubPullCommitRef {
+  sha: string;
+  message: string;
+  /** Null when the commit email is not verified against a GitHub account. */
+  authorLogin?: string;
+  authorName?: string;
+  authorEmail?: string;
+  authoredAt?: string;
+  committedAt?: string;
+  additions?: number;
+  deletions?: number;
+  filesChanged?: number;
+}
+
 export interface GithubPullCommits {
   /**
    * Commit subjects on the PR, for Jira-key extraction (api/README.md §6).
@@ -142,6 +177,13 @@ export interface GithubPullCommits {
    * extra match, but see `failed` for the caller that must tell them apart.
    */
   messages: string[];
+  /**
+   * The same commits as `messages`, whole — the collector turns each into a
+   * `code.commit.pushed` envelope so commits on a non-default branch are
+   * collected at all. Optional so a transport or fixture that only supplies
+   * subjects keeps working; absent means "none harvested", never "none exist".
+   */
+  commits?: GithubPullCommitRef[];
   /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
   rateLimitedUntil?: Date;
   rateLimit?: GithubRateLimit;
@@ -378,12 +420,36 @@ export class GithubClient implements GithubSourceClient {
       return { messages: [], failed: true };
     }
 
-    const body = (await res.json()) as { commit?: { message?: string } }[];
+    const body = (await res.json()) as {
+      sha?: string;
+      commit?: {
+        message?: string;
+        author?: { name?: string; email?: string; date?: string } | null;
+        committer?: { date?: string } | null;
+      };
+      author?: { login?: string } | null;
+    }[];
+    const items = Array.isArray(body) ? body : [];
     const result: GithubPullCommits = {
       rateLimit: this.readRateLimit(res),
-      messages: (Array.isArray(body) ? body : [])
+      messages: items
         .map((c) => c.commit?.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0),
+      // Same response, wider selection: the endpoint has always returned the
+      // sha, author and dates alongside the message. Stats are absent here —
+      // only `GET /commits/{sha}` carries them under REST — so these land
+      // without LOC and are corrected by the commit-stats reconciler.
+      commits: items
+        .filter((c): c is typeof c & { sha: string } => Boolean(c.sha))
+        .map((c) => ({
+          sha: c.sha,
+          message: c.commit?.message ?? '',
+          authorLogin: c.author?.login,
+          authorName: c.commit?.author?.name,
+          authorEmail: c.commit?.author?.email,
+          authoredAt: c.commit?.author?.date,
+          committedAt: c.commit?.committer?.date,
+        })),
     };
 
     // Same preemption as everywhere else: don't let the NEXT call hit a hard 403.
