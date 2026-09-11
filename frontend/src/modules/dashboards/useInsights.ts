@@ -472,12 +472,151 @@ export function useActiveSprintsHealth(projects: string[]) {
   });
 }
 
+// ---- Sprint Health detail (mirror backend sprint-health-detail.service.ts) --
+
+export interface CommitActivityView {
+  committers: number;
+  assignees: number;
+  commits: number;
+  commitsPerDay: number | null;
+  prsRaised: number;
+  prsOpen: number;
+  prsMerged: number;
+  prsReviewed: number;
+  reviewedPct: number | null;
+  avgHoursToFirstReview: number | null;
+  prsWaitingOver24h: number;
+  repos: string[];
+}
+
+export type ProductivityGrade = 'high' | 'medium' | 'low';
+
+export interface ProductivityRow {
+  developer: string;
+  displayName: string;
+  additions: number;
+  deletions: number;
+  ticketsWorked: number;
+  commits: number;
+  prsRaised: number;
+  prsReviewed: number;
+  score: number;
+  grade: ProductivityGrade;
+}
+
+export interface ProductivityView {
+  /** Sorted by `score` descending. */
+  rows: ProductivityRow[];
+  highest: { additions: number } | null;
+  lowest: { additions: number } | null;
+  gradeRule: string;
+}
+
+export interface QualityCheckView {
+  storiesReleased: number;
+  rolledBack: number;
+  rolledBackPct: number | null;
+  bugsByPriority: { priority: string; count: number }[];
+  bugsLogged: number;
+  bugsPerStoryReleased: number | null;
+}
+
+export interface CheckInRow {
+  /** Canonical developer id (the Jira author login). */
+  developer: string;
+  displayName: string;
+  /** One entry per day in `CheckInsView.days`, same order. */
+  counts: number[];
+  total: number;
+}
+
+export interface CheckInsView {
+  /** IST date keys, ascending, always populated. */
+  days: string[];
+  /** Sorted by `total` descending; `[]` when nobody moved a ticket. */
+  rows: CheckInRow[];
+  /**
+   * IST date keys — same form as `days`, NOT an ISO instant. The sprint's
+   * ELAPSED window (`min(sprint.endAt, now)`), not its full planned bounds.
+   * Identical to the sprint's own start/end once it closes; only a running
+   * sprint differs. Feed these two fields straight into `checkInPages` (see
+   * `./sprint-health/pager`) — building pages from the full bounds instead
+   * can offer a page for days the sprint hasn't reached yet. Because this is
+   * already an IST date key, the pager does no timezone math of its own.
+   */
+  sprintFrom: string | null;
+  sprintTo: string | null;
+}
+
+export interface RcStory {
+  key: string;
+  title: string;
+  delivered: boolean;
+}
+
+export interface ReleaseCandidateView {
+  name: string;
+  externalId: string | null;
+  plannedReleaseAt: string | null;
+  actualReleaseAt: string | null;
+  released: boolean;
+  daysLate: number | null;
+  storiesDelivered: number;
+  storiesTotal: number;
+  stories: RcStory[];
+  bugsByPriority: { priority: string; count: number }[];
+  bugSource: 'affects-version' | 'fix-version-fallback';
+  /** Always `null` — test execution is not collected from any source. */
+  testExecution: null;
+}
+
 export function useSprintHealth(sprint: string | null) {
   return useQuery({
     queryKey: ['sprint-health', sprint],
     queryFn: () =>
-      api.get<SprintHealthView>(`/api/dashboards/sprint-health?sprint=${sprint}`),
+      api.get<
+        SprintHealthView & {
+          commitActivity: CommitActivityView | null;
+          productivity: ProductivityView | null;
+          qualityCheck: QualityCheckView | null;
+          computedAt: string;
+        }
+      >(`/api/dashboards/sprint-health?sprint=${sprint}`),
     enabled: Boolean(sprint),
+  });
+}
+
+/**
+ * Ticket movement per developer per day. Paged by date range client-side via
+ * `checkInPages` — its own route so flipping a page doesn't re-run every
+ * sprint aggregate.
+ */
+export function useSprintCheckIns(
+  sprint: string | null,
+  from: string | null,
+  to: string | null,
+) {
+  return useQuery({
+    queryKey: ['sprint-check-ins', sprint, from, to],
+    enabled: Boolean(sprint),
+    queryFn: () =>
+      api.get<CheckInsView & { computedAt: string }>(
+        `/api/dashboards/sprint-health/check-ins?sprint=${sprint}` +
+          (from ? `&from=${from}` : '') +
+          (to ? `&to=${to}` : ''),
+      ),
+  });
+}
+
+/** Per-release scope for the sprint: delivered stories, defect load. */
+export function useSprintReleaseCandidates(sprint: string | null) {
+  return useQuery({
+    queryKey: ['sprint-release-candidates', sprint],
+    enabled: Boolean(sprint),
+    queryFn: () =>
+      api.get<{ rows: ReleaseCandidateView[]; computedAt: string }>(
+        `/api/dashboards/sprint-health/release-candidates?sprint=${sprint}`,
+      ),
   });
 }
 

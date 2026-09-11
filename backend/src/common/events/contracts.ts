@@ -174,6 +174,11 @@ export interface PlanningStoryPayload {
   parentKey?: string; // parent story external key (subtasks)
   sprint?: PlanningSprintRef;
   releases?: string[]; // Jira fixVersion names
+  /**
+   * Jira's `versions` (Affects Version/s) — where a defect was FOUND, as
+   * distinct from `releases` (fixVersions), where it will be fixed.
+   */
+  affectsReleases?: string[];
   assigneeLogin?: string;
   assigneeName?: string;
   /**
@@ -208,4 +213,23 @@ export interface PlanningStoryPayload {
    * Empty when the source didn't return a change log.
    */
   sprintChanges?: PlanningSprintChangeRef[];
+}
+
+/**
+ * A Jira project version (fixVersion) as collected — the RC's identity, dates
+ * and released flag.
+ *
+ * `releaseDate` means "expected to finish" while `released` is false, and
+ * "the day it was released" once true: Jira reuses the one field for both and
+ * overwrites the plan on release. The planned date therefore cannot come from
+ * here; it is user input on `planning_release.plannedReleaseAt`.
+ */
+export interface PlanningVersionPayload {
+  externalId: string;
+  projectKey: string;
+  name: string;
+  startDate?: string;
+  releaseDate?: string;
+  released: boolean;
+  archived: boolean;
 }

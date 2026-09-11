@@ -41,7 +41,7 @@ export interface ResolvedRange {
   windowDays: number;
 }
 
-const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+export const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * The one place a request's range is decided, for every activity endpoint.
@@ -85,10 +85,28 @@ export function resolveActivityRange(
 }
 
 function requireDateKey(value: string | undefined, name: string): string {
-  if (!value) {
+  const key = parseDateKeyParam(value, name);
+  if (!key) {
     throw new BadRequestException(
       `Query param "${name}" is required when window=${CUSTOM_WINDOW}.`,
     );
+  }
+  return key;
+}
+
+/**
+ * Validates an optional IST date-key query param (`YYYY-MM-DD`), or returns
+ * `undefined` when the caller didn't send one. Shared with any endpoint that
+ * takes a bare from/to pair outside the window-preset scheme above (e.g.
+ * `sprint-health/check-ins`) — the same format rule, without requiring a
+ * `window=custom` to make the param mandatory.
+ */
+export function parseDateKeyParam(
+  value: string | undefined,
+  name: string,
+): string | undefined {
+  if (!value) {
+    return undefined;
   }
   if (!DATE_KEY.test(value) || Number.isNaN(istDayStart(value).getTime())) {
     throw new BadRequestException(

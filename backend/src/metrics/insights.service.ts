@@ -1589,9 +1589,7 @@ export class InsightsService {
   }
 
   /** repo → project keys via the delivery graph (cached per call, N≤60 projects). */
-  private async repoToProjects(
-    tenantId: string,
-  ): Promise<Map<string, string[]>> {
+  async repoToProjects(tenantId: string): Promise<Map<string, string[]>> {
     const projects = await this.planning.listProjectKeys(tenantId);
     const map = new Map<string, string[]>();
     for (const project of projects) {
@@ -1607,12 +1605,15 @@ export class InsightsService {
 
   // ---- helpers -------------------------------------------------------------
 
-  private async findSprint(
+  private findSprint(
     tenantId: string,
     externalId: string,
   ): Promise<Sprint | null> {
-    const sprints = await this.planning.listSprints(tenantId);
-    return sprints.find((s) => s.externalId === externalId) ?? null;
+    // A point read, not `listSprints(...).find(...)`: that read is capped at
+    // 100 rows, so scanning it silently reported "not found" for any sprint
+    // outside the most recent hundred — and this board is opened from links
+    // to closed sprints.
+    return this.planning.findSprintByExternalId(tenantId, externalId);
   }
 
   private async toViews(
