@@ -571,9 +571,29 @@ export interface ReleaseCandidateView {
   testExecution: null;
 }
 
-export function useSprintHealth(sprint: string | null) {
+/**
+ * `&projects=A,B` when a scope is selected, and nothing at all when it is not.
+ *
+ * Empty must stay absent rather than `&projects=`: the server reads no scope
+ * as "the whole sprint", which is the right answer for an unfiltered board —
+ * these sprints really are cross-project.
+ */
+function projectsParam(projects: string[]): string {
+  return projects.length > 0
+    ? `&projects=${encodeURIComponent(projects.join(','))}`
+    : '';
+}
+
+/**
+ * The sprint detail, scoped to the projects selected on the board.
+ *
+ * The scope is part of the query key, not a filter applied after: a sprint
+ * here can hold work from 25 projects, so the same sprint viewed under two
+ * different project selections is two different answers.
+ */
+export function useSprintHealth(sprint: string | null, projects: string[] = []) {
   return useQuery({
-    queryKey: ['sprint-health', sprint],
+    queryKey: ['sprint-health', sprint, projects.join(',')],
     queryFn: () =>
       api.get<
         SprintHealthView & {
@@ -582,7 +602,10 @@ export function useSprintHealth(sprint: string | null) {
           qualityCheck: QualityCheckView | null;
           computedAt: string;
         }
-      >(`/api/dashboards/sprint-health?sprint=${sprint}`),
+      >(
+        `/api/dashboards/sprint-health?sprint=${sprint}` +
+          projectsParam(projects),
+      ),
     enabled: Boolean(sprint),
   });
 }
@@ -594,15 +617,17 @@ export function useSprintHealth(sprint: string | null) {
  */
 export function useSprintCheckIns(
   sprint: string | null,
+  projects: string[],
   from: string | null,
   to: string | null,
 ) {
   return useQuery({
-    queryKey: ['sprint-check-ins', sprint, from, to],
+    queryKey: ['sprint-check-ins', sprint, projects.join(','), from, to],
     enabled: Boolean(sprint),
     queryFn: () =>
       api.get<CheckInsView & { computedAt: string }>(
         `/api/dashboards/sprint-health/check-ins?sprint=${sprint}` +
+          projectsParam(projects) +
           (from ? `&from=${from}` : '') +
           (to ? `&to=${to}` : ''),
       ),
@@ -610,13 +635,17 @@ export function useSprintCheckIns(
 }
 
 /** Per-release scope for the sprint: delivered stories, defect load. */
-export function useSprintReleaseCandidates(sprint: string | null) {
+export function useSprintReleaseCandidates(
+  sprint: string | null,
+  projects: string[] = [],
+) {
   return useQuery({
-    queryKey: ['sprint-release-candidates', sprint],
+    queryKey: ['sprint-release-candidates', sprint, projects.join(',')],
     enabled: Boolean(sprint),
     queryFn: () =>
       api.get<{ rows: ReleaseCandidateView[]; computedAt: string }>(
-        `/api/dashboards/sprint-health/release-candidates?sprint=${sprint}`,
+        `/api/dashboards/sprint-health/release-candidates?sprint=${sprint}` +
+          projectsParam(projects),
       ),
   });
 }

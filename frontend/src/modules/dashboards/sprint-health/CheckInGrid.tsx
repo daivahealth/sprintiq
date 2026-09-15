@@ -54,7 +54,14 @@ function intensityClass(count: number, max: number): string {
  * unset-bounds bootstrap call, so paging forward and back re-fetches rather
  * than reusing the bootstrap result.
  */
-export function CheckInGrid({ sprint }: { sprint: string }) {
+export function CheckInGrid({
+  sprint,
+  projects,
+}: {
+  sprint: string;
+  /** Projects selected on the board — this sprint can span 25 of them. */
+  projects: string[];
+}) {
   const [page, setPage] = useState<number | null>(null);
   const [bounds, setBounds] = useState<{ from: string; to: string } | null>(null);
 
@@ -77,7 +84,12 @@ export function CheckInGrid({ sprint }: { sprint: string }) {
   );
   const current = page === null ? undefined : pages[page];
 
-  const query = useSprintCheckIns(sprint, current?.from ?? null, current?.to ?? null);
+  const query = useSprintCheckIns(
+    sprint,
+    projects,
+    current?.from ?? null,
+    current?.to ?? null,
+  );
   const d = query.data;
 
   // Learn the elapsed window from whichever response lands — bootstrap or a

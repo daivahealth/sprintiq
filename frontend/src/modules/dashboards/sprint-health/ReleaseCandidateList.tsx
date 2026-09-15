@@ -17,11 +17,14 @@ import { releaseCandidatePill } from './release-pill';
 export function ReleaseCandidateList({
   sprint,
   projectKey,
+  projects,
 }: {
   sprint: string;
   projectKey: string;
+  /** Projects selected on the board — narrows which stories count here. */
+  projects: string[];
 }) {
-  const query = useSprintReleaseCandidates(sprint);
+  const query = useSprintReleaseCandidates(sprint, projects);
 
   if (query.isLoading) return <LoadingCard label="Loading release candidates…" />;
   if (query.isError) return <ErrorCard error={query.error} />;

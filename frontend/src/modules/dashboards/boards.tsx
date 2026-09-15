@@ -142,7 +142,7 @@ export function SprintHealthBoard() {
   const projects = useProjects(projectSearch);
   const active = useActiveSprintsHealth(scope.projects);
   const { sprints, sprint, setSprint } = useSprintSelection();
-  const detail = useSprintHealth(sprint);
+  const detail = useSprintHealth(sprint, scope.projects);
   const d = detail.data;
 
   return (
@@ -274,7 +274,10 @@ export function SprintHealthBoard() {
 
           {/* Owns its own query and its own loading/error state, so a failed
               or slow check-in fetch can never blank the panels around it. */}
-          <CheckInGrid sprint={d.sprint.externalId} />
+          <CheckInGrid
+            sprint={d.sprint.externalId}
+            projects={scope.projects}
+          />
 
           {d.productivity ? (
             <ProductivityPanel data={d.productivity} />
@@ -293,6 +296,7 @@ export function SprintHealthBoard() {
           <ReleaseCandidateList
             sprint={d.sprint.externalId}
             projectKey={d.sprint.projectKey}
+            projects={scope.projects}
           />
 
           <ProvenanceNote>Computed {timeAgo(d.computedAt)}.</ProvenanceNote>

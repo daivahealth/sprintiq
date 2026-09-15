@@ -246,14 +246,20 @@ export class InsightsController {
   }
 
   @Get('sprint-health')
-  async sprintHealth(@Query('sprint') sprint?: string) {
+  async sprintHealth(
+    @Query('sprint') sprint?: string,
+    @Query('projects') projects?: string,
+  ) {
     const id = requireParam(sprint, 'sprint');
+    // A sprint can hold work from 25 projects; the panels answer for the
+    // projects the reader has selected, not for the whole organisation.
+    const scope = parseList(projects);
     const [view, commitActivity, productivity, qualityCheck] =
       await Promise.all([
         this.insights.sprintHealth(id),
-        this.detail.commitActivity(id),
-        this.detail.productivity(id),
-        this.detail.qualityCheck(id),
+        this.detail.commitActivity(id, scope),
+        this.detail.productivity(id, scope),
+        this.detail.qualityCheck(id, scope),
       ]);
     if (!view) {
       throw new NotFoundException('Sprint not found.');
@@ -275,6 +281,7 @@ export class InsightsController {
   @Get('sprint-health/check-ins')
   async sprintCheckIns(
     @Query('sprint') sprint?: string,
+    @Query('projects') projects?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -288,6 +295,7 @@ export class InsightsController {
     const toKey = parseDateKeyParam(to, 'to');
     const view = await this.detail.checkIns(
       requireParam(sprint, 'sprint'),
+      parseList(projects),
       fromKey ? istDayStart(fromKey) : undefined,
       toKey ? istDayEnd(toKey) : undefined,
     );
@@ -305,9 +313,13 @@ export class InsightsController {
    * more panel.
    */
   @Get('sprint-health/release-candidates')
-  async sprintReleaseCandidates(@Query('sprint') sprint?: string) {
+  async sprintReleaseCandidates(
+    @Query('sprint') sprint?: string,
+    @Query('projects') projects?: string,
+  ) {
     const rows = await this.detail.releaseCandidates(
       requireParam(sprint, 'sprint'),
+      parseList(projects),
     );
     if (!rows) {
       throw new NotFoundException('Sprint not found.');
