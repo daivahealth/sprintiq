@@ -278,7 +278,11 @@ describe('SprintHealthDetailService.commitActivity', () => {
       't-other',
       '42',
     );
-    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith(
+      't-other',
+      '42',
+      [],
+    );
     expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
     expect(code.listCommitsPage).toHaveBeenCalledWith(
       't-other',
@@ -645,7 +649,11 @@ describe('SprintHealthDetailService.productivity', () => {
       't-other',
       '42',
     );
-    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith(
+      't-other',
+      '42',
+      [],
+    );
     expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
     expect(code.listCommitsPage).toHaveBeenCalledWith(
       't-other',
@@ -832,7 +840,11 @@ describe('SprintHealthDetailService.qualityCheck', () => {
       't-other',
       '42',
     );
-    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith(
+      't-other',
+      '42',
+      [],
+    );
     expect(history.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ tenantId: 't-other' }),
@@ -1073,6 +1085,7 @@ describe('SprintHealthDetailService.checkIns', () => {
     ]);
     const view = await service.checkIns(
       '42',
+      [],
       new Date('2026-08-25'),
       new Date('2026-08-26'),
     );
@@ -1096,6 +1109,7 @@ describe('SprintHealthDetailService.checkIns', () => {
     ]);
     const view = await service.checkIns(
       '42',
+      [],
       new Date('2026-08-25'),
       new Date('2026-08-26'),
     );
@@ -1106,6 +1120,7 @@ describe('SprintHealthDetailService.checkIns', () => {
     // Sprint runs 2026-08-25 → 2026-09-05; caller asks for all of August.
     const view = await service.checkIns(
       '42',
+      [],
       new Date('2026-08-01'),
       new Date('2026-08-31'),
     );
@@ -1127,6 +1142,7 @@ describe('SprintHealthDetailService.checkIns', () => {
   it('degrades a range entirely after the elapsed window to its last day, not an empty grid', async () => {
     const view = await service.checkIns(
       '42',
+      [],
       new Date('2026-09-02'),
       new Date('2026-09-04'),
     );
@@ -1138,6 +1154,7 @@ describe('SprintHealthDetailService.checkIns', () => {
   it('degrades a range entirely before the sprint start to its first day, not an empty grid', async () => {
     const view = await service.checkIns(
       '42',
+      [],
       new Date('2026-08-01'),
       new Date('2026-08-10'),
     );
@@ -1185,7 +1202,11 @@ describe('SprintHealthDetailService.checkIns', () => {
       't-other',
       '42',
     );
-    expect(planning.listItemsForSprint).toHaveBeenCalledWith('t-other', '42');
+    expect(planning.listItemsForSprint).toHaveBeenCalledWith(
+      't-other',
+      '42',
+      [],
+    );
     expect(identities.attributionIndex).toHaveBeenCalledWith('t-other');
     expect(identities.jiraAssigneeIndex).toHaveBeenCalledWith('t-other');
     expect(history.findMany).toHaveBeenCalledWith(
@@ -1214,7 +1235,7 @@ describe('SprintHealthDetailService.checkIns', () => {
   it('passes the exact from/to instants through to issueStatusHistory.findMany', async () => {
     const from = new Date('2026-08-26T00:00:00.000+05:30'); // istDayStart('2026-08-26')
     const to = new Date('2026-08-27T23:59:59.999+05:30'); // istDayEnd('2026-08-27')
-    await service.checkIns('42', from, to);
+    await service.checkIns('42', [], from, to);
     expect(history.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

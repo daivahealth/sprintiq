@@ -202,9 +202,10 @@ export class SprintHealthDetailService {
    */
   async commitActivity(
     sprintExternalId: string,
+    projects: string[] = [],
   ): Promise<CommitActivityView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId);
+    const found = await this.window(tenantId, sprintExternalId, projects);
     if (!found) {
       return null;
     }
@@ -214,7 +215,7 @@ export class SprintHealthDetailService {
     // an empty `repos` filter through to `listCommitsPage` would instead read
     // as "no filter" and return every repo in the tenant.
     const [items, commitsPage, index, prs] = await Promise.all([
-      this.planning.listItemsForSprint(tenantId, sprintExternalId),
+      this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
       win.repos.length > 0
         ? this.code.listCommitsPage(tenantId, {
             repos: win.repos,
@@ -303,9 +304,10 @@ export class SprintHealthDetailService {
    */
   async productivity(
     sprintExternalId: string,
+    projects: string[] = [],
   ): Promise<ProductivityView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId);
+    const found = await this.window(tenantId, sprintExternalId, projects);
     if (!found) {
       return null;
     }
@@ -315,7 +317,7 @@ export class SprintHealthDetailService {
     // rather than reading every repo `listCommitsPage` treats `repos: []` as.
     const [items, commitsPage, index, jiraIndex, prs, reviews] =
       await Promise.all([
-        this.planning.listItemsForSprint(tenantId, sprintExternalId),
+        this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
         win.repos.length > 0
           ? this.code.listCommitsPage(tenantId, {
               repos: win.repos,
@@ -539,6 +541,7 @@ export class SprintHealthDetailService {
    */
   async qualityCheck(
     sprintExternalId: string,
+    projects: string[] = [],
   ): Promise<QualityCheckView | null> {
     const tenantId = this.tenantContext.requireTenantId();
     // The dates-only window: this panel never dereferences `win.repos`, so it
@@ -552,6 +555,7 @@ export class SprintHealthDetailService {
     const items = await this.planning.listItemsForSprint(
       tenantId,
       sprintExternalId,
+      projects,
     );
 
     // Same discipline as `productivity`'s ticketsWorked: scoped to THIS
@@ -634,6 +638,7 @@ export class SprintHealthDetailService {
    */
   async checkIns(
     sprintExternalId: string,
+    projects: string[] = [],
     from?: Date,
     to?: Date,
   ): Promise<CheckInsView | null> {
@@ -663,7 +668,7 @@ export class SprintHealthDetailService {
     const dayIndex = new Map(days.map((key, i) => [key, i]));
 
     const [items, index, jiraIndex] = await Promise.all([
-      this.planning.listItemsForSprint(tenantId, sprintExternalId),
+      this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
       this.identities.attributionIndex(tenantId),
       this.identities.jiraAssigneeIndex(tenantId),
     ]);
@@ -773,6 +778,7 @@ export class SprintHealthDetailService {
    */
   async releaseCandidates(
     sprintExternalId: string,
+    projects: string[] = [],
   ): Promise<ReleaseCandidateView[] | null> {
     const tenantId = this.tenantContext.requireTenantId();
     // Neither `win.repos` nor even `win.from`/`win.to` is read below — only
@@ -797,7 +803,14 @@ export class SprintHealthDetailService {
     // has to bypass the service layer too, or the two queries would answer
     // from two different abstractions for one panel.
     const items = await this.prisma.story.findMany({
-      where: { tenantId, sprintExternalId },
+      where: {
+        tenantId,
+        sprintExternalId,
+        // Narrowed to the projects in scope for the same reason every other
+        // panel is: this sprint can hold work from 25 projects, and an RC
+        // list mixing all of them answers nobody's question.
+        ...(projects.length > 0 ? { projectKey: { in: projects } } : {}),
+      },
     });
 
     // Same discipline as every other read in this file: skipped entirely
@@ -922,15 +935,21 @@ export class SprintHealthDetailService {
   private async window(
     tenantId: string,
     sprintExternalId: string,
+    projects: string[] = [],
   ): Promise<{ sprint: Sprint; win: SprintWindow } | null> {
     const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
     }
     const { sprint, win } = found;
+    // The projects the reader selected, or — when they selected none — the one
+    // the sprint row names. Falling back to `sprint.projectKey` alone was the
+    // bug: it is a single value assigned by first observation, so a sprint
+    // ACT merely participates in reports CMS's repos and none of ACT's.
+    const scope = projects.length > 0 ? projects : [sprint.projectKey];
     const repoToProjects = await this.insights.repoToProjects(tenantId);
     const repos = [...repoToProjects.entries()]
-      .filter(([, projects]) => projects.includes(sprint.projectKey))
+      .filter(([, mapped]) => mapped.some((p) => scope.includes(p)))
       .map(([repo]) => repo);
     return { sprint, win: { ...win, repos } };
   }

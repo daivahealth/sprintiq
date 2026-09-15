@@ -428,18 +428,44 @@ export class PlanningService implements OnModuleInit {
 
   // ---- Detailing reads (catalog + work-item level) -------------------------
 
-  listSprints(
+  /**
+   * Sprints in scope for the given projects.
+   *
+   * A sprint belongs to every project that has work in it, not only the one
+   * `Sprint.projectKey` happens to name. That column holds a single value
+   * assigned by whichever project was observed first, and sprints here are
+   * genuinely cross-project — 57 of 63 on the reference tenant span more than
+   * one, and Sprint-25-12 spans 27. Filtering on it alone hid NHC's 346 items
+   * in Sprint-26-8 and its 62 in the running Sprint-26-9, and cost ACT four of
+   * its nine 2026 months to CMS, AADI2, NHIL and AS2.
+   *
+   * The owner is still honoured, so a sprint created for a project that has no
+   * collected items yet does not vanish from its own picker.
+   */
+  async listSprints(
     tenantId: string,
     projectKeys?: string[],
     /** One state, or a set of them — the picker asks for several at once. */
     state?: string | string[],
   ): Promise<Sprint[]> {
     const states = typeof state === 'string' ? [state] : (state ?? []);
+    const scoped = projectKeys && projectKeys.length > 0;
+    // Only asked when a project scope exists — an unfiltered picker has no
+    // reason to pay for it.
+    const participating = scoped
+      ? await this.sprintIdsWithItemsIn(tenantId, projectKeys)
+      : [];
+
     return this.prisma.sprint.findMany({
       where: {
         tenantId,
-        ...(projectKeys && projectKeys.length > 0
-          ? { projectKey: { in: projectKeys } }
+        ...(scoped
+          ? {
+              OR: [
+                { projectKey: { in: projectKeys } },
+                { externalId: { in: participating } },
+              ],
+            }
           : {}),
         ...(states.length > 0 ? { state: { in: states } } : {}),
       },
@@ -553,13 +579,56 @@ export class PlanningService implements OnModuleInit {
   }
 
   /** Items committed to a sprint (velocity / health / risk inputs). */
+  /**
+   * A sprint's work items, optionally narrowed to the projects in scope.
+   *
+   * The narrowing is what stops a panel reporting the whole organisation:
+   * Sprint-26-8 holds 2,268 items across 25 projects, so a check-in grid built
+   * from the unnarrowed sprint listed every developer in the company rather
+   * than the ones working on the project the reader had selected.
+   *
+   * Unnarrowed remains correct when nothing is selected — the board's
+   * unfiltered view genuinely is cross-project.
+   */
   listItemsForSprint(
     tenantId: string,
     sprintExternalId: string,
+    projectKeys?: string[],
   ): Promise<Story[]> {
     return this.prisma.story.findMany({
-      where: { tenantId, sprintExternalId },
+      where: {
+        tenantId,
+        sprintExternalId,
+        ...(projectKeys && projectKeys.length > 0
+          ? { projectKey: { in: projectKeys } }
+          : {}),
+      },
     });
+  }
+
+  /**
+   * Sprint ids holding at least one item from the given projects.
+   *
+   * Reads `Story.projectKey` rather than parsing the issue key: it is the
+   * column the collector writes, and on the reference tenant it agrees with
+   * the key prefix on all 18,112 rows that carry a sprint.
+   */
+  private async sprintIdsWithItemsIn(
+    tenantId: string,
+    projectKeys: string[],
+  ): Promise<string[]> {
+    const rows = await this.prisma.story.findMany({
+      where: {
+        tenantId,
+        projectKey: { in: projectKeys },
+        sprintExternalId: { not: null },
+      },
+      select: { sprintExternalId: true },
+      distinct: ['sprintExternalId'],
+    });
+    return rows
+      .map((r) => r.sprintExternalId)
+      .filter((id): id is string => Boolean(id));
   }
 
   /** Open (not-done) non-epic backlog for forecasting. */

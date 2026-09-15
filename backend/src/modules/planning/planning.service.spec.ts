@@ -364,3 +364,106 @@ describe('PlanningService — version projection', () => {
     expect(arg.update).toMatchObject({ affectsReleases: ['RC1'] });
   });
 });
+
+/**
+ * Sprints in this Jira instance are cross-project: 57 of 63 on the reference
+ * tenant span more than one project, and Sprint-25-12 spans 27. But
+ * `planning_sprint.projectKey` holds a single value, assigned by whichever
+ * project was observed first — so filtering the picker on that column hid
+ * every sprint a project participated in without owning.
+ *
+ * Concretely: NHC had 346 items in Sprint-26-8 and 62 in the active
+ * Sprint-26-9, and its picker offered neither, because both rows say `ACT`.
+ * ACT likewise lost four of its nine 2026 months to CMS, AADI2, NHIL and AS2.
+ *
+ * Membership is therefore derived from the sprint's ITEMS, which carry their
+ * own `projectKey` — verified against 18,112 rows with zero disagreement
+ * between that column and the issue-key prefix.
+ */
+describe('PlanningService — sprints belong to every project with items in them', () => {
+  let prisma: {
+    sprint: { findMany: jest.Mock };
+    story: { findMany: jest.Mock };
+  };
+  let service: PlanningService;
+
+  beforeEach(() => {
+    prisma = {
+      sprint: { findMany: jest.fn().mockResolvedValue([]) },
+      story: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    service = new PlanningService(
+      prisma as unknown as PrismaService,
+      { subscribe: jest.fn() } as unknown as EventBus,
+    );
+  });
+
+  it('offers a sprint to a project that has items in it but does not own it', async () => {
+    // NHC's items sit in a sprint whose row says ACT.
+    prisma.story.findMany.mockResolvedValue([{ sprintExternalId: '3644' }]);
+
+    await service.listSprints('t1', ['NHC']);
+
+    const where = prisma.sprint.findMany.mock.calls[0][0].where as {
+      OR?: unknown[];
+    };
+    // Either owned by NHC, or carrying an NHC item — never the owner alone.
+    expect(where.OR).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ projectKey: { in: ['NHC'] } }),
+        expect.objectContaining({ externalId: { in: ['3644'] } }),
+      ]),
+    );
+  });
+
+  it('does not filter at all when no project is selected', async () => {
+    await service.listSprints('t1', []);
+
+    const where = prisma.sprint.findMany.mock.calls[0][0].where as {
+      OR?: unknown[];
+      tenantId: string;
+    };
+    expect(where.OR).toBeUndefined();
+    expect(where.tenantId).toBe('t1');
+    // No project scope means no reason to ask which sprints hold their items.
+    expect(prisma.story.findMany).not.toHaveBeenCalled();
+  });
+
+  it('scopes the item lookup to the tenant', async () => {
+    await service.listSprints('t-other', ['NHC']);
+
+    expect(prisma.story.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenantId: 't-other',
+          projectKey: { in: ['NHC'] },
+        }),
+      }),
+    );
+  });
+
+  it('narrows a sprint to one project when asked, so a panel shows that project only', async () => {
+    await service.listItemsForSprint('t1', '3644', ['NHC']);
+
+    expect(prisma.story.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenantId: 't1',
+          sprintExternalId: '3644',
+          projectKey: { in: ['NHC'] },
+        }),
+      }),
+    );
+  });
+
+  // The whole sprint remains the right answer when nothing is selected — the
+  // board's unfiltered view is genuinely cross-project.
+  it('returns the whole sprint when no project is given', async () => {
+    await service.listItemsForSprint('t1', '3644');
+
+    const where = prisma.story.findMany.mock.calls[0][0].where as {
+      projectKey?: unknown;
+    };
+    expect(where.projectKey).toBeUndefined();
+  });
+});
