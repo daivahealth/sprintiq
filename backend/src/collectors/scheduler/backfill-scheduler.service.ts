@@ -5,6 +5,7 @@ import { GithubCommitMessageReconcilerService } from '../sources/github/github-c
 import { GithubPrCommitBackfillService } from '../sources/github/github-pr-commit-backfill.service';
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
+import { JiraSprintReconcilerService } from '../sources/jira/jira-sprint-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
 
 /**
@@ -62,6 +63,7 @@ export class BackfillSchedulerService {
     private readonly commitMessages: GithubCommitMessageReconcilerService,
     private readonly prCommits: GithubPrCommitBackfillService,
     private readonly storyDates: JiraStoryDateReconcilerService,
+    private readonly sprints: JiraSprintReconcilerService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_MINUTES)
@@ -100,6 +102,16 @@ export class BackfillSchedulerService {
       if (jira.updated > 0) {
         this.logger.log(
           `Backfill (tenant ${tenantId}): ${jira.updated} Jira story dates filled.`,
+        );
+      }
+
+      // Sprints the scope log references but that never became rows: a sprint
+      // whose work all carried forward leaves no current membership behind,
+      // and was therefore missing from every picker and board.
+      const recovered = await this.sprints.reconcile(tenantId);
+      if (recovered.created > 0 || recovered.skipped > 0) {
+        this.logger.log(
+          `Backfill (tenant ${tenantId}): ${recovered.created} sprint(s) recovered, ${recovered.skipped} unavailable.`,
         );
       }
     }

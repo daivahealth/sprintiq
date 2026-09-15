@@ -379,3 +379,98 @@ describe('JiraClient', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe('JiraClient.getSprint', () => {
+  const client = new JiraClient();
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('GETs the Agile sprint endpoint with Basic auth', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(fakeResponse({ body: {} })) as unknown as typeof fetch;
+
+    await client.getSprint('https://acme.atlassian.net', 'a@b.com', 'tok', '3238');
+
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe('https://acme.atlassian.net/rest/agile/1.0/sprint/3238');
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(
+      `Basic ${Buffer.from('a@b.com:tok').toString('base64')}`,
+    );
+  });
+
+  it('returns the sprint it was given', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: {
+          id: 3238,
+          name: 'Sprint-26-3',
+          state: 'closed',
+          startDate: '2026-03-01T00:00:00.000+0530',
+          endDate: '2026-03-30T00:00:00.000+0530',
+          completeDate: '2026-03-31T09:12:00.000+0530',
+          goal: 'Ship the referral editor',
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const sprint = await client.getSprint(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      'tok',
+      '3238',
+    );
+
+    expect(sprint).toMatchObject({
+      id: 3238,
+      name: 'Sprint-26-3',
+      state: 'closed',
+      startDate: '2026-03-01T00:00:00.000+0530',
+      endDate: '2026-03-30T00:00:00.000+0530',
+    });
+  });
+
+  // Null, not a stub sprint: a transient 401/429 must never be written to the
+  // board as a real sprint with no dates — that is worse than the gap it fills.
+  it('returns null when the request fails', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        fakeResponse({ ok: false, status: 429 }),
+      ) as unknown as typeof fetch;
+
+    expect(
+      await client.getSprint('https://acme.atlassian.net', 'a@b.com', 'tok', '3238'),
+    ).toBeNull();
+  });
+
+  // A sprint id that no longer exists in Jira (deleted board) 404s. That is a
+  // permanent answer, not a transient one, but it is still not a sprint —
+  // the caller must not create a row from it.
+  it('returns null for a sprint Jira no longer has', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        fakeResponse({ ok: false, status: 404 }),
+      ) as unknown as typeof fetch;
+
+    expect(
+      await client.getSprint('https://acme.atlassian.net', 'a@b.com', 'tok', '999'),
+    ).toBeNull();
+  });
+
+  it('returns null when no API token is available', async () => {
+    global.fetch = jest.fn() as unknown as typeof fetch;
+
+    expect(
+      await client.getSprint('https://acme.atlassian.net', 'a@b.com', '', '3238'),
+    ).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});

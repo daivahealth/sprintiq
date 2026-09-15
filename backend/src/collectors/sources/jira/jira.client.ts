@@ -98,6 +98,29 @@ export const BASE_SEARCH_FIELDS = [
  * the moment you would want to compare against it. That is why the planned
  * date is user input in SprintIQ (see planning_release.plannedReleaseAt).
  */
+/**
+ * A sprint as Jira's Agile API returns it (`SprintBean`).
+ *
+ * Note what this has that the issue-embedded sprint field does not: it exists
+ * for sprints no collected issue currently sits in. That is the whole reason
+ * this type exists — a sprint whose work all carried forward into the next one
+ * leaves no current membership behind, and was therefore invisible.
+ *
+ * `endDate` is the planned end and `completeDate` the day it was actually
+ * closed. Unlike a release version, Jira keeps both, so sprint overrun is
+ * answerable from the source rather than needing a human to record the plan.
+ */
+export interface JiraSprintBean {
+  id: number;
+  name: string;
+  state?: string; // future | active | closed
+  startDate?: string;
+  endDate?: string;
+  completeDate?: string;
+  goal?: string;
+  originBoardId?: number;
+}
+
 export interface JiraVersion {
   id: string;
   name: string;
@@ -320,6 +343,38 @@ export class JiraClient {
    * mistaken for "this project has no releases" — which would blank every RC
    * date on the board while looking like a fact.
    */
+  /**
+   * `GET /rest/agile/1.0/sprint/{sprintId}` — one sprint by its id, from the
+   * Agile API rather than the platform API (sprints do not exist in `/api/3`).
+   *
+   * Returns `null` on any non-2xx, including 404. A 404 is permanent rather
+   * than transient — the sprint's board was deleted — but it is still not a
+   * sprint, and writing a row from a failed lookup would put a dateless
+   * placeholder on a board where dates drive pace, windows and every metric.
+   * A visible gap is better than a fabricated sprint.
+   */
+  async getSprint(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+    sprintId: string,
+  ): Promise<JiraSprintBean | null> {
+    if (!apiToken) {
+      return null;
+    }
+    const url = `${siteUrl.replace(/\/$/, '')}/rest/agile/1.0/sprint/${encodeURIComponent(sprintId)}`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+
+    const res = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      this.logger.warn(`Jira sprint fetch failed (${res.status}) for ${sprintId}`);
+      return null;
+    }
+    return (await res.json()) as JiraSprintBean;
+  }
+
   async getProjectVersions(
     siteUrl: string,
     email: string,

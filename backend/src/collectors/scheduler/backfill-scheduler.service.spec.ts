@@ -3,6 +3,7 @@ import { GithubCommitMessageReconcilerService } from '../sources/github/github-c
 import { GithubPrCommitBackfillService } from '../sources/github/github-pr-commit-backfill.service';
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
+import { JiraSprintReconcilerService } from '../sources/jira/jira-sprint-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
 import { BackfillSchedulerService } from './backfill-scheduler.service';
 
@@ -15,6 +16,7 @@ describe('BackfillSchedulerService', () => {
   let commitMessages: jest.Mocked<GithubCommitMessageReconcilerService>;
   let prCommits: jest.Mocked<GithubPrCommitBackfillService>;
   let storyDates: jest.Mocked<JiraStoryDateReconcilerService>;
+  let sprints: jest.Mocked<JiraSprintReconcilerService>;
   let service: BackfillSchedulerService;
 
   beforeEach(() => {
@@ -44,6 +46,11 @@ describe('BackfillSchedulerService', () => {
     storyDates = {
       reconcile: jest.fn().mockResolvedValue(idle),
     } as unknown as jest.Mocked<JiraStoryDateReconcilerService>;
+    sprints = {
+      reconcile: jest
+        .fn()
+        .mockResolvedValue({ candidates: 0, created: 0, skipped: 0 }),
+    } as unknown as jest.Mocked<JiraSprintReconcilerService>;
     service = new BackfillSchedulerService(
       prisma as unknown as PrismaService,
       reviews,
@@ -51,6 +58,7 @@ describe('BackfillSchedulerService', () => {
       commitMessages,
       prCommits,
       storyDates,
+      sprints,
     );
   });
 
