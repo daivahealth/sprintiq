@@ -814,6 +814,73 @@ describe('SprintHealthDetailService.qualityCheck', () => {
       { priority: 'High', count: 8 },
       { priority: 'Medium', count: 11 },
       { priority: 'Low', count: 6 },
+      // Present at zero, not omitted — see the stability test below.
+      { priority: 'Lowest', count: 0 },
+    ]);
+  });
+
+  /**
+   * The axis must not change shape between sprints.
+   *
+   * Dropping empty levels made the chart re-arrange itself as the reader moved
+   * from one sprint to the next: on the reference tenant, Sprint-26-2 rendered
+   * Highest/High/Medium while Sprint-26-1 rendered High/Medium, so the top bar
+   * silently became a different severity. It also left no way to distinguish
+   * "no Lowest bugs this sprint" from "this board does not track Lowest" —
+   * across every ACT sprint, Low and Lowest never appeared at all.
+   *
+   * A zero here is a fact we hold, not an absence we are guessing at, which is
+   * why it is shown rather than rendered as the em-dash reserved for unknowns.
+   */
+  it('renders every Jira priority level, including the empty ones', async () => {
+    planning.listItemsForSprint.mockResolvedValue([
+      {
+        externalKey: 'ACT-9',
+        type: 'bug',
+        priority: 'High',
+        releases: [],
+        statusCategory: 'indeterminate',
+      },
+    ] as unknown as Awaited<ReturnType<PlanningService['listItemsForSprint']>>);
+
+    const view = await service.qualityCheck('42');
+
+    expect(view!.bugsByPriority).toEqual([
+      { priority: 'Highest', count: 0 },
+      { priority: 'High', count: 1 },
+      { priority: 'Medium', count: 0 },
+      { priority: 'Low', count: 0 },
+      { priority: 'Lowest', count: 0 },
+    ]);
+  });
+
+  // `Unprioritised` is not one of Jira's levels — it is our label for a bug
+  // with no priority set. A permanent zero row for it would imply the instance
+  // has a category it does not, so it appears only when something is in it.
+  it('shows Unprioritised only when a bug actually lacks a priority', async () => {
+    planning.listItemsForSprint.mockResolvedValue([
+      {
+        externalKey: 'ACT-9',
+        type: 'bug',
+        priority: null,
+        releases: [],
+        statusCategory: 'indeterminate',
+      },
+    ] as unknown as Awaited<ReturnType<PlanningService['listItemsForSprint']>>);
+
+    const view = await service.qualityCheck('42');
+
+    expect(view!.bugsByPriority).toContainEqual({
+      priority: 'Unprioritised',
+      count: 1,
+    });
+    expect(view!.bugsByPriority.map((b) => b.priority)).toEqual([
+      'Highest',
+      'High',
+      'Medium',
+      'Low',
+      'Lowest',
+      'Unprioritised',
     ]);
   });
 
@@ -1571,6 +1638,9 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
     expect(view![0].bugsByPriority).toEqual([
       { priority: 'Highest', count: 3 },
       { priority: 'High', count: 6 },
+      { priority: 'Medium', count: 0 },
+      { priority: 'Low', count: 0 },
+      { priority: 'Lowest', count: 0 },
     ]);
   });
 
@@ -1589,7 +1659,15 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
     ]);
     const view = await service.releaseCandidates('42');
     expect(view![0].bugSource).toBe('fix-version-fallback');
-    expect(view![0].bugsByPriority).toEqual([{ priority: 'High', count: 1 }]);
+    // Every level, zeros included — an RC card's bug axis has to stay the same
+    // shape from RC1 to RC3 for the same reason a sprint's does.
+    expect(view![0].bugsByPriority).toEqual([
+      { priority: 'Highest', count: 0 },
+      { priority: 'High', count: 1 },
+      { priority: 'Medium', count: 0 },
+      { priority: 'Low', count: 0 },
+      { priority: 'Lowest', count: 0 },
+    ]);
   });
 
   it('carries a null test-execution block for the panel placeholder', async () => {
