@@ -112,14 +112,29 @@ export interface QualityCheckView {
 }
 
 /** Canonical bug-priority ordering; any unknown name is appended after these. */
-const BUG_PRIORITY_ORDER = [
-  'Highest',
-  'High',
-  'Medium',
-  'Low',
-  'Lowest',
-  'Unprioritised',
-];
+/**
+ * Jira's five priority levels, **always rendered — including at zero**.
+ *
+ * Emitting only the levels a sprint happened to use made the chart change
+ * shape as the reader moved between sprints: on the reference tenant
+ * Sprint-26-2 showed Highest/High/Medium and Sprint-26-1 showed High/Medium,
+ * so the top bar silently became a different severity. It also erased the
+ * difference between "no Lowest bugs this sprint" and "this board does not
+ * track Lowest" — across every ACT sprint, Low and Lowest never appeared once,
+ * though the tenant holds hundreds of both.
+ *
+ * A zero here is a fact the query establishes, not an absence being guessed
+ * at, which is why it is shown as `0` rather than the em-dash this platform
+ * reserves for unknowns.
+ */
+const JIRA_PRIORITY_LEVELS = ['Highest', 'High', 'Medium', 'Low', 'Lowest'];
+
+/**
+ * Our label for a bug with no priority set — not one of Jira's levels, so it
+ * appears only when something is actually in it. A permanent zero row would
+ * imply the instance has a category it does not.
+ */
+const UNPRIORITISED = 'Unprioritised';
 
 /**
  * The composite the high/medium/low grade is cut from.
@@ -988,18 +1003,29 @@ function bugsByPriority(
   const counts = new Map<string, number>();
   const encounterOrder: string[] = [];
   for (const bug of bugs) {
-    const priority = bug.priority ?? 'Unprioritised';
+    const priority = bug.priority ?? UNPRIORITISED;
     if (!counts.has(priority)) {
       counts.set(priority, 0);
       encounterOrder.push(priority);
     }
     counts.set(priority, counts.get(priority)! + 1);
   }
-  const known = BUG_PRIORITY_ORDER.filter((p) => counts.has(p));
-  const unknown = encounterOrder.filter((p) => !BUG_PRIORITY_ORDER.includes(p));
-  return [...known, ...unknown].map((priority) => ({
+
+  // The five levels always, so the axis is the same on every sprint; then
+  // Unprioritised if anything landed there; then any name this Jira instance
+  // has that the canonical list does not, in the order it was met.
+  const rows = [...JIRA_PRIORITY_LEVELS];
+  if (counts.has(UNPRIORITISED)) {
+    rows.push(UNPRIORITISED);
+  }
+  for (const priority of encounterOrder) {
+    if (!rows.includes(priority)) {
+      rows.push(priority);
+    }
+  }
+  return rows.map((priority) => ({
     priority,
-    count: counts.get(priority)!,
+    count: counts.get(priority) ?? 0,
   }));
 }
 
