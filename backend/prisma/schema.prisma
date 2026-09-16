@@ -631,12 +631,81 @@ model DeveloperIdentity {
   /// Evidence for the link, so any attribution can be explained and audited.
   evidence     Json?
   linkedUserId String?
+  /// Kept off every figure that counts PEOPLE — pickers, head-counts, the
+  /// Watchlist, the Sprint Health table — while their commits stay in the
+  /// commit and LOC totals, so no repo-level number silently changes.
+  ///
+  /// Set from `IdentityOverride` with action `exclude`, never inferred: the
+  /// same treatment bots and deprovisioned accounts already get, extended to
+  /// the entities only a human can recognise as non-developers.
+  excluded     Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@unique([tenantId, sourceSystem, sourceKey])
   @@index([tenantId, canonicalDeveloperId])
   @@map("correlation_developer_identity")
+}
+
+/// An admin statement that overrides what identity resolution concluded about
+/// one observed source identity.
+///
+/// Resolution is deliberately conservative and evidence-only: it merges on a
+/// login, a verified email or an unambiguous normalized name, and refuses to
+/// guess (see `DeveloperIdentity`). That is the right default, and it leaves
+/// two residues no amount of evidence can clear — both visible on the
+/// reference tenant:
+///
+///  1. **Split people.** A developer who also commits from a personal laptop
+///     under a Gmail address, or from a machine whose git config carries an
+///     employee number (`a379031@CORPLPM000257.local`), produces a second
+///     entity with no evidential bridge to the first. Only a human knows the
+///     two are one person.
+///  2. **Non-developers.** Automation the bot heuristics miss, and Jira-only
+///     accounts that hold tickets and never commit. Neither belongs in a
+///     head-count, and nothing in the collected data says so.
+///
+/// This table is where a human says it. It is data rather than a code
+/// constant for the same reason `DeveloperRole` is: tenant-scoped, it names
+/// who decided, and an admin can change it without a deploy.
+///
+/// Applied DURING resolution rather than after it, which is what makes it
+/// durable. `resolveTenant` re-derives every identity row from collected
+/// commits and PRs on each pass, so a row edited by hand is gone on the next
+/// sweep; a row derived through this table survives — including across a full
+/// re-collection from empty.
+///
+/// Never widens attribution on its own. `merge` only redirects which canonical
+/// developer an identity rolls up to; `exclude` only withholds an entity from
+/// figures that count people. Neither drops a commit — the work stays in every
+/// repo and LOC total, so lineage is preserved (CLAUDE.md).
+model IdentityOverride {
+  id                   String   @id
+  tenantId             String
+  /// github | jira — the arm of `DeveloperIdentity` this statement addresses.
+  sourceSystem         String
+  /// The observed identity, keyed exactly as `DeveloperIdentity.sourceKey`:
+  /// `login:<login>` when the source resolved an account, else
+  /// `email:<lowercased email>` — or `name:<normalized>` for a Jira assignee
+  /// carrying no account reference.
+  sourceKey            String
+  /// merge | exclude — a closed set validated where overrides are applied.
+  action               String
+  /// For `merge`, the developer this identity rolls up to instead. Null for
+  /// `exclude`, which leaves the entity where it is and only hides it.
+  canonicalDeveloperId String?
+  /// Why, in a human sentence. Surfaced wherever the override is — an
+  /// unexplained merge is indistinguishable from a correlation bug.
+  reason               String
+  /// Who decided. This is a human judgement and it carries a name.
+  setByUserId          String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  /// One statement per observed identity; restating it updates the row.
+  @@unique([tenantId, sourceSystem, sourceKey])
+  @@index([tenantId, action])
+  @@map("correlation_identity_override")
 }
 
 /// A developer deliberately kept off the Watchlist's attention buckets.

@@ -1,4 +1,6 @@
 import {
+  applyOverride,
+  overrideKeyOf,
   indexLoginsByNormalizedKey,
   buildDeveloperEmailIndex,
   isAnonymizedAccount,
@@ -359,6 +361,25 @@ describe('isBotDeveloper', () => {
     expect(isBotDeveloper('dependabot')).toBe(true);
   });
 
+  it('recognises the login Copilot AUTHORS under, not just the one it opens PRs under', () => {
+    // The two differ, and only the PR-side login was covered. On the
+    // reference tenant that left 132 commits in the roster as a person,
+    // eligible for a grade on the Sprint Health table.
+    expect(isBotDeveloper('copilot-swe-agent')).toBe(true);
+    expect(isBotDeveloper('copilot-swe-agent[bot]')).toBe(true);
+  });
+
+  it('recognises the container user a commit gets when git has no identity', () => {
+    // `root` is not a GitHub account anyone holds — it is whatever machine
+    // last committed without a configured user. Every such machine shares the
+    // name, so treating it as a person merges unrelated automation into one
+    // phantom developer.
+    expect(isBotDeveloper('root')).toBe(true);
+    expect(isBotDeveloper('ROOT')).toBe(true);
+    // Anchored, so a person whose name merely starts with it is safe.
+    expect(isBotDeveloper('Rooth-Menon_athma')).toBe(false);
+  });
+
   it('does not mistake a person for automation', () => {
     expect(isBotDeveloper('Vijay-Kumar-Yadav_athma')).toBe(false);
     expect(isBotDeveloper('Junaid Haneef')).toBe(false);
@@ -561,5 +582,103 @@ describe('isAnonymizedAccount', () => {
   it('treats a missing id as a person rather than guessing', () => {
     expect(isAnonymizedAccount(null)).toBe(false);
     expect(isAnonymizedAccount('')).toBe(false);
+  });
+});
+
+describe('applyOverride', () => {
+  const matched = {
+    canonicalDeveloperId: 'Junaid Haneef',
+    confidence: 0,
+    method: 'unresolved' as const,
+    evidence: { name: 'Junaid Haneef' },
+  };
+
+  it('leaves the matcher alone when nobody has ruled on the identity', () => {
+    const out = applyOverride(matched, undefined);
+
+    expect(out.match).toBe(matched);
+    expect(out.excluded).toBe(false);
+  });
+
+  it('repoints a merge at the stated developer and records what it superseded', () => {
+    // The production case: one person committing from a corporate account and
+    // from a personal Gmail. No evidence links the two — same person, two
+    // unrelated addresses — so only a human can say so.
+    const out = applyOverride(matched, {
+      action: 'merge',
+      canonicalDeveloperId: 'Mohammed-Junaid-Haneef_athma',
+      reason: 'personal Gmail used on a second laptop',
+      setByUserId: 'user_admin',
+    });
+
+    expect(out.match.canonicalDeveloperId).toBe('Mohammed-Junaid-Haneef_athma');
+    expect(out.match.method).toBe('admin_override');
+    expect(out.match.confidence).toBe(1);
+    expect(out.excluded).toBe(false);
+    // The superseded conclusion is kept so the merge stays auditable as a
+    // decision rather than reading like a match the matcher made.
+    expect(out.match.evidence).toMatchObject({
+      source: 'admin_override',
+      supersededMethod: 'unresolved',
+      supersededDeveloperId: 'Junaid Haneef',
+      setByUserId: 'user_admin',
+    });
+  });
+
+  it('overrides a confident match, not only an unresolved one', () => {
+    // The cases this exists for are ones where the matcher is confidently
+    // wrong, so deferring to `github_login` would defeat the feature.
+    const confident = {
+      canonicalDeveloperId: 'Harish_athma',
+      confidence: 1,
+      method: 'github_login' as const,
+      evidence: { login: 'Harish_athma' },
+    };
+
+    const out = applyOverride(confident, {
+      action: 'merge',
+      canonicalDeveloperId: 'Harish-M_athma',
+      reason: 'same person',
+      setByUserId: 'user_admin',
+    });
+
+    expect(out.match.canonicalDeveloperId).toBe('Harish-M_athma');
+  });
+
+  it('withholds an excluded entity without touching its attribution', () => {
+    const out = applyOverride(matched, {
+      action: 'exclude',
+      reason: 'automation, not a colleague',
+      setByUserId: 'user_admin',
+    });
+
+    // Unchanged on purpose: exclusion hides an entity from head-counts, it
+    // does not move its commits anywhere or drop them from LOC totals.
+    expect(out.match).toBe(matched);
+    expect(out.excluded).toBe(true);
+  });
+
+  it('ignores a merge with no target rather than repointing at nothing', () => {
+    // A malformed row is a mistake, not an instruction. Failing closed keeps
+    // it from quietly sending someone's work to `undefined`.
+    const out = applyOverride(matched, {
+      action: 'merge',
+      canonicalDeveloperId: '   ',
+      reason: 'half-written row',
+      setByUserId: 'user_admin',
+    });
+
+    expect(out.match).toBe(matched);
+    expect(out.excluded).toBe(false);
+  });
+});
+
+describe('overrideKeyOf', () => {
+  it('keys the two source arms apart', () => {
+    // A Jira account reference and a GitHub login live in different
+    // namespaces; a shared key would let one arm's statement hit the other.
+    expect(overrideKeyOf('github', 'login:dev')).not.toBe(
+      overrideKeyOf('jira', 'login:dev'),
+    );
   });
 });

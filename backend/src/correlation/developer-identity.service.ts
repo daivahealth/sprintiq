@@ -3,6 +3,7 @@ import { newId } from '../common/id';
 import { PrismaService } from '../database/prisma.service';
 import {
   IdentityMatch,
+  IdentityOverrideRule,
   JiraAssigneeIdentity,
   SourceIdentity,
   indexLoginsByNormalizedKey,
@@ -17,6 +18,8 @@ import {
   resolveDisplayName,
   suggestMatches,
   normalizeIdentityKey,
+  applyOverride,
+  overrideKeyOf,
   resolveIdentity,
   resolveJiraIdentity,
   sourceKeyOf,
@@ -47,6 +50,15 @@ export interface IdentityResolveResult {
   /** Identities left deliberately unmerged: no evidence, or evidence for several people. */
   unresolved: number;
   ambiguous: number;
+  /**
+   * Identities an admin statement decided, rather than the matcher. Reported
+   * separately because it is the one figure here that is not a property of the
+   * collected data: a tenant where it climbs is one where correlation is
+   * failing and people are papering over it by hand.
+   */
+  overridden: number;
+  /** Entities an admin withheld from figures that count people. */
+  excluded: number;
 }
 
 /** Outcome of one Jira-assignee resolution pass. */
@@ -55,6 +67,9 @@ export interface JiraIdentityResult {
   observed: number;
   /** Assignees bridged to a canonical developer. */
   matched: number;
+  /** Assignees an admin statement bridged or withheld. See `IdentityResolveResult`. */
+  overridden: number;
+  excluded: number;
   /** Assignees no developer could be matched to — a known, countable gap. */
   unmatched: number;
   /** Assignees whose name points at several colleagues; left unmerged. */
@@ -142,6 +157,15 @@ export interface AttributionIndex {
   byEmail: Map<string, string>;
   /** canonicalDeveloperId → what the UI should call this person */
   displayNames: Map<string, string>;
+  /**
+   * Developers an admin has withheld from figures that count PEOPLE.
+   *
+   * Deliberately NOT removed from `byLogin`/`byEmail`: their commits must keep
+   * resolving to them so the work still lands in repo and LOC totals. This is
+   * the same split bots already live under — out of the head-count, in the
+   * work — and callers apply it beside `isBotDeveloper`.
+   */
+  excluded: Set<string>;
 }
 
 /** How much of a window's commit volume can be attributed to a person at all. */
@@ -189,6 +213,7 @@ export class DeveloperIdentityService {
    * stuck at whatever the first pass concluded.
    */
   async resolveTenant(tenantId: string): Promise<IdentityResolveResult> {
+    const overrides = await this.loadOverrides(tenantId, SOURCE_SYSTEM);
     const [commitIdentities, prLogins] = await Promise.all([
       this.prisma.commit.groupBy({
         by: ['authorLogin', 'authorEmail', 'authorName'],
@@ -242,6 +267,8 @@ export class DeveloperIdentityService {
       recovered: 0,
       unresolved: 0,
       ambiguous: 0,
+      overridden: 0,
+      excluded: 0,
     };
     const seen = new Set<string>();
     // Names already claimed by an unresolved identity, so a second unrelated
@@ -264,25 +291,52 @@ export class DeveloperIdentityService {
         continue;
       }
 
-      const resolvedMatch =
+      const matched =
         match.method === 'unresolved'
           ? this.withReadableId(match, identity, claimedNames)
           : match;
 
-      if (resolvedMatch.method === 'github_login') {
+      // The admin statement is applied LAST, so it overrides a conclusion the
+      // matcher reached on evidence as readily as one it could not reach at
+      // all. That ordering is the point: the cases this exists for — a
+      // developer committing from a personal Gmail, an employee number in a
+      // laptop's git config — are ones where the matcher is confidently wrong,
+      // not merely silent.
+      const { match: resolvedMatch, excluded } = applyOverride(
+        matched,
+        overrides.get(overrideKeyOf(SOURCE_SYSTEM, key)),
+      );
+
+      if (excluded) {
+        result.excluded++;
+      }
+      if (resolvedMatch.method === 'admin_override') {
+        result.overridden++;
+      } else if (resolvedMatch.method === 'github_login') {
         result.resolved++;
       } else if (resolvedMatch.method === 'unresolved') {
         result.unresolved++;
-        await this.upsertOrphan(tenantId, key, 'unresolved_identity');
+        // An identity a human has already ruled on is not an open question, so
+        // it does not belong on the orphan queue someone works through.
+        if (!excluded) {
+          await this.upsertOrphan(tenantId, key, 'unresolved_identity');
+        }
       } else {
         result.recovered++;
       }
 
-      await this.upsertIdentity(tenantId, key, identity, resolvedMatch);
+      await this.upsertIdentity(
+        tenantId,
+        key,
+        identity,
+        resolvedMatch,
+        SOURCE_SYSTEM,
+        excluded,
+      );
     }
 
     this.logger.log(
-      `Identity resolution (tenant ${tenantId}): ${result.observed} identities — ${result.resolved} from source, ${result.recovered} recovered, ${result.unresolved} unresolved, ${result.ambiguous} ambiguous.`,
+      `Identity resolution (tenant ${tenantId}): ${result.observed} identities — ${result.resolved} from source, ${result.recovered} recovered, ${result.overridden} set by admin, ${result.excluded} excluded, ${result.unresolved} unresolved, ${result.ambiguous} ambiguous.`,
     );
     return result;
   }
@@ -303,6 +357,7 @@ export class DeveloperIdentityService {
    * second without the first is asserting something it cannot support.
    */
   async resolveJiraAssignees(tenantId: string): Promise<JiraIdentityResult> {
+    const overrides = await this.loadOverrides(tenantId, JIRA_SOURCE_SYSTEM);
     const [assignees, githubIdentities] = await Promise.all([
       this.prisma.story.groupBy({
         by: ['assigneeLogin', 'assigneeName', 'assigneeEmail'],
@@ -315,7 +370,11 @@ export class DeveloperIdentityService {
         },
       }),
       this.prisma.developerIdentity.findMany({
-        where: { tenantId, ...GITHUB_SOURCED },
+        // Excluded entities are not bridge targets: an assignee whose name
+        // normalizes onto a withheld bot or machine account would be matched
+        // to something no board will ever render, which reads downstream as a
+        // linked developer with no work rather than as an unmatched assignee.
+        where: { tenantId, ...GITHUB_SOURCED, excluded: false },
         select: { canonicalDeveloperId: true, email: true },
       }),
     ]);
@@ -336,6 +395,8 @@ export class DeveloperIdentityService {
       matched: 0,
       unmatched: 0,
       ambiguous: 0,
+      overridden: 0,
+      excluded: 0,
     };
     const seen = new Set<string>();
 
@@ -362,19 +423,38 @@ export class DeveloperIdentityService {
       seen.add(key);
       result.observed++;
 
-      const match = resolveJiraIdentity(
+      const matched = resolveJiraIdentity(
         identity,
         loginsByNameKey,
         developerByEmail,
       );
-      if (!match) {
+      if (!matched) {
         result.ambiguous++;
         await this.upsertOrphan(tenantId, `jira:${key}`, 'ambiguous_identity');
         continue;
       }
-      if (match.method === 'unresolved') {
+
+      const { match, excluded } = applyOverride(
+        matched,
+        overrides.get(overrideKeyOf(JIRA_SOURCE_SYSTEM, key)),
+      );
+
+      if (excluded) {
+        result.excluded++;
+      }
+      if (match.method === 'admin_override') {
+        result.overridden++;
+      } else if (match.method === 'unresolved') {
         result.unmatched++;
-        await this.upsertOrphan(tenantId, `jira:${key}`, 'unresolved_identity');
+        // A QA lead an admin has marked as a non-developer is a settled
+        // question, not an unmatched assignee someone should chase.
+        if (!excluded) {
+          await this.upsertOrphan(
+            tenantId,
+            `jira:${key}`,
+            'unresolved_identity',
+          );
+        }
       } else {
         result.matched++;
       }
@@ -385,11 +465,12 @@ export class DeveloperIdentityService {
         { login: identity.login, name: identity.name, email: identity.email },
         match,
         JIRA_SOURCE_SYSTEM,
+        excluded,
       );
     }
 
     this.logger.log(
-      `Jira assignee resolution (tenant ${tenantId}): ${result.observed} assignees — ${result.matched} matched to a developer, ${result.unmatched} unmatched, ${result.ambiguous} ambiguous.`,
+      `Jira assignee resolution (tenant ${tenantId}): ${result.observed} assignees — ${result.matched} matched to a developer, ${result.overridden} set by admin, ${result.excluded} excluded, ${result.unmatched} unmatched, ${result.ambiguous} ambiguous.`,
     );
     return result;
   }
@@ -461,13 +542,21 @@ export class DeveloperIdentityService {
   bridgeCoverage(
     committers: Iterable<string>,
     index: JiraAssigneeIndex,
+    /** `AttributionIndex.excluded` — withheld entities are not missing people. */
+    excluded: ReadonlySet<string> = new Set(),
   ): JiraAssigneeCoverage {
     // Neither automation nor a deprovisioned account is a developer missing a
     // Jira account — nobody will ever fix either, so counting them only drags
     // the trust signal down. Both stay in the commit and LOC totals and stay
     // out of every head-count.
     const people = [...committers].filter(
-      (dev) => !isBotDeveloper(dev) && !isAnonymizedAccount(dev),
+      (dev) =>
+        !isBotDeveloper(dev) &&
+        !isAnonymizedAccount(dev) &&
+        // Same argument, third cause: an entity an admin has ruled is not a
+        // developer will never acquire the Jira account this measures, so
+        // counting it only drags the trust signal down for nobody's benefit.
+        !excluded.has(dev),
     );
     const unlinked = people.filter((dev) => !index.byDeveloper.has(dev));
     const linked = people.length - unlinked.length;
@@ -543,6 +632,7 @@ export class DeveloperIdentityService {
           sourceLogin: true,
           email: true,
           name: true,
+          excluded: true,
         },
       }),
       this.prisma.developerIdentity.findMany({
@@ -564,6 +654,7 @@ export class DeveloperIdentityService {
 
     const byLogin = new Map<string, string>();
     const byEmail = new Map<string, string>();
+    const excluded = new Set<string>();
     // Best source seen per developer, resolved into a name once at the end —
     // the ladder has to compare across ALL of a person's identity rows, and
     // deciding row-by-row would let whichever row arrived first win.
@@ -574,6 +665,13 @@ export class DeveloperIdentityService {
       }
       if (row.email) {
         byEmail.set(row.email.toLowerCase(), row.canonicalDeveloperId);
+      }
+      // Any excluded identity withholds the whole canonical developer. An
+      // exclusion is a statement that an ENTITY is not a person, and the two
+      // actions are mutually exclusive per row, so an excluded identity is
+      // always its own canonical rather than part of someone else's.
+      if (row.excluded) {
+        excluded.add(row.canonicalDeveloperId);
       }
       const current = sources.get(row.canonicalDeveloperId) ?? {
         canonicalDeveloperId: row.canonicalDeveloperId,
@@ -588,7 +686,7 @@ export class DeveloperIdentityService {
     for (const [developer, source] of sources) {
       displayNames.set(developer, resolveDisplayName(source));
     }
-    return { byLogin, byEmail, displayNames };
+    return { byLogin, byEmail, displayNames, excluded };
   }
 
   /**
@@ -613,11 +711,14 @@ export class DeveloperIdentityService {
     }
     const [jiraRows, ghRows] = await Promise.all([
       this.prisma.developerIdentity.findMany({
-        where: { tenantId, sourceSystem: JIRA_SOURCE_SYSTEM },
+        where: { tenantId, sourceSystem: JIRA_SOURCE_SYSTEM, excluded: false },
         select: { canonicalDeveloperId: true, name: true, method: true },
       }),
       this.prisma.developerIdentity.findMany({
-        where: { tenantId, ...GITHUB_SOURCED },
+        // Withheld entities are never merge candidates. Offering to merge a
+        // real developer into a bot or a machine account is a suggestion that
+        // can only ever destroy attribution.
+        where: { tenantId, ...GITHUB_SOURCED, excluded: false },
         select: { canonicalDeveloperId: true, sourceLogin: true, name: true },
       }),
     ]);
@@ -681,7 +782,11 @@ export class DeveloperIdentityService {
         // GitHub-sourced only: this is the picker for boards that count
         // commits, and a Jira-only assignee has none. Listing them would offer
         // a person whose every figure is structurally zero.
-        where: { tenantId, ...GITHUB_SOURCED },
+        //
+        // Excluded entities are withheld for the opposite reason — they have
+        // plenty of figures, they are just not people. Their commits stay in
+        // the repo totals; only the offer to open a board ABOUT them goes.
+        where: { tenantId, ...GITHUB_SOURCED, excluded: false },
         select: {
           canonicalDeveloperId: true,
           sourceKey: true,
@@ -714,6 +819,15 @@ export class DeveloperIdentityService {
       { displayName: string; attributed: boolean; lastActiveAt: Date | null }
     >();
     for (const row of rows) {
+      // Automation is never offered as a developer to open a board about.
+      // Exclusion rows handle the entities only a human can recognise, but a
+      // bot is recognisable from its name, and keying a rule to one would tie
+      // it to whichever machine produced it — `root@<build-host>` differs per
+      // host, so the next host would reintroduce it. Every other people-figure
+      // already applies this check; the picker was the one that did not.
+      if (isBotDeveloper(row.canonicalDeveloperId)) {
+        continue;
+      }
       const attributed = row.method !== 'unresolved';
       const existing = byCanonical.get(row.canonicalDeveloperId);
       const seen = lastCommitByKey.get(row.sourceKey) ?? null;
@@ -885,12 +999,57 @@ export class DeveloperIdentityService {
     return { ...match, canonicalDeveloperId: identity.name };
   }
 
+  /**
+   * Admin statements for one source arm, keyed for O(1) lookup during a pass.
+   *
+   * Read once per resolution rather than per identity: this is a policy table
+   * with a handful of rows, and the pass it feeds iterates hundreds of
+   * identities.
+   */
+  private async loadOverrides(
+    tenantId: string,
+    sourceSystem: string,
+  ): Promise<Map<string, IdentityOverrideRule>> {
+    const rows = await this.prisma.identityOverride.findMany({
+      where: { tenantId, sourceSystem },
+      select: {
+        sourceSystem: true,
+        sourceKey: true,
+        action: true,
+        canonicalDeveloperId: true,
+        reason: true,
+        setByUserId: true,
+      },
+    });
+
+    const out = new Map<string, IdentityOverrideRule>();
+    for (const row of rows) {
+      // `action` is a closed set the writer validates, but this reads a table
+      // an admin can edit. An unrecognised verb is dropped rather than guessed
+      // at — a typo must not become a merge.
+      if (row.action !== 'merge' && row.action !== 'exclude') {
+        this.logger.warn(
+          `Ignoring identity override ${row.sourceSystem}|${row.sourceKey} (tenant ${tenantId}): unknown action '${row.action}'.`,
+        );
+        continue;
+      }
+      out.set(overrideKeyOf(row.sourceSystem, row.sourceKey), {
+        action: row.action,
+        canonicalDeveloperId: row.canonicalDeveloperId,
+        reason: row.reason,
+        setByUserId: row.setByUserId,
+      });
+    }
+    return out;
+  }
+
   private async upsertIdentity(
     tenantId: string,
     sourceKey: string,
     identity: SourceIdentity,
     match: IdentityMatch,
     sourceSystem: string = SOURCE_SYSTEM,
+    excluded = false,
   ): Promise<void> {
     const data = {
       sourceLogin: identity.login ?? null,
@@ -903,6 +1062,10 @@ export class DeveloperIdentityService {
       confidence: match.confidence,
       method: match.method,
       evidence: match.evidence,
+      // Always written, never OR-ed with what is already stored: deleting the
+      // override row has to actually restore the person, and a flag that only
+      // ever goes true would make exclusion permanent and undiagnosable.
+      excluded,
     };
     await this.prisma.developerIdentity.upsert({
       where: {

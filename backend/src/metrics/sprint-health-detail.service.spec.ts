@@ -110,6 +110,7 @@ describe('SprintHealthDetailService.commitActivity', () => {
         byLogin: new Map<string, string>(),
         byEmail: new Map<string, string>(),
         displayNames: new Map<string, string>(),
+        excluded: new Set<string>(),
       }),
     } as unknown as jest.Mocked<DeveloperIdentityService>;
 
@@ -449,6 +450,7 @@ describe('SprintHealthDetailService.productivity', () => {
         byLogin: new Map<string, string>(),
         byEmail: new Map<string, string>(),
         displayNames: new Map<string, string>(),
+        excluded: new Set<string>(),
       }),
       jiraAssigneeIndex: jest.fn().mockResolvedValue(productivityJiraIndex()),
     } as unknown as jest.Mocked<DeveloperIdentityService>;
@@ -1096,6 +1098,7 @@ describe('SprintHealthDetailService.checkIns', () => {
         byLogin: new Map<string, string>(),
         byEmail: new Map<string, string>(),
         displayNames: new Map<string, string>(),
+        excluded: new Set<string>(),
       }),
       jiraAssigneeIndex: jest.fn().mockResolvedValue({
         byDeveloper: new Map<string, { logins: string[]; names: string[] }>(),
@@ -1325,6 +1328,7 @@ describe('SprintHealthDetailService.checkIns', () => {
       byLogin: new Map<string, string>(),
       byEmail: new Map<string, string>(),
       displayNames: new Map([['dev-priya', 'Priya Nair']]),
+      excluded: new Set<string>(),
     });
     history.findMany.mockResolvedValue([
       {

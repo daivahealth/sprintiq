@@ -49,6 +49,31 @@ npm install
 npm run start:dev
 ```
 
+### Resetting local delivery data
+
+Clearing collected data is safe, but the order matters:
+
+```bash
+cd backend
+npm run prisma:deploy      # schema
+npm run seed               # tenant + admin login only, no domain data
+npm run identity:overrides # admin identity statements — BEFORE collection restarts
+```
+
+`identity:overrides` re-applies the merges and exclusions in
+`scripts/apply-identity-overrides.ts` (DATA-MODEL.md §3.2). It has to run before
+collection, not after: the first resolution sweep otherwise republishes every
+split person and every non-developer, and someone has to notice all over again.
+It is idempotent, so re-running it is always safe.
+
+What a clear must **preserve**: the tenant, the admin user, `tenant_configuration`
+(it holds the GitHub org and Jira site needed to rebuild connections),
+`correlation_identity_override`, `developer_role`, `watchlist_exclusion` and
+`audit_log`. Collector credentials resolve from env vars via `secret_ref`, so
+they survive a database clear — but connection rows do not, and GitHub
+connections are rebuilt by re-saving the configuration as `active` and then
+calling `POST /admin/configurations/github/sync-org`.
+
 ### Frontend
 ```bash
 cd frontend
