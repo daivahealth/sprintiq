@@ -45,6 +45,7 @@ function identityStub(): jest.Mocked<DeveloperIdentityService> {
       byLogin: new Map<string, string>(),
       byEmail: new Map<string, string>(),
       displayNames: new Map<string, string>(),
+      excluded: new Set<string>(),
     }),
   } as unknown as jest.Mocked<DeveloperIdentityService>;
 }
@@ -175,6 +176,7 @@ describe('InsightsService.dailyCommitActivity', () => {
       byLogin: new Map([['Sangeetha-S_athma', 'Sangeetha-S_athma']]),
       byEmail: new Map([['372281@example.org', 'Sangeetha-S_athma']]),
       displayNames: new Map([['Sangeetha-S_athma', 'Sangeetha-S_athma']]),
+      excluded: new Set<string>(),
     });
     (code.listCommitsPage as jest.Mock).mockResolvedValue({
       commits: [
@@ -229,6 +231,7 @@ describe('InsightsService.dailyCommitActivity', () => {
         ['zara', 'zara'],
         ['amit', 'amit'],
       ]),
+      excluded: new Set<string>(),
     });
     (code.listCommitsPage as jest.Mock).mockResolvedValue({
       commits: [

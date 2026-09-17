@@ -42,7 +42,11 @@ export interface JiraAssigneeIdentity {
 }
 
 export type IdentityMethod =
-  'github_login' | 'email_exact' | 'name_normalized' | 'unresolved';
+  | 'github_login'
+  | 'email_exact'
+  | 'name_normalized'
+  | 'admin_override'
+  | 'unresolved';
 
 export interface IdentityMatch {
   canonicalDeveloperId: string;
@@ -58,9 +62,15 @@ export interface IdentityMatch {
  * is unique per person. `name_normalized` is an inference — high enough to
  * attribute on, deliberately below the two facts above so it is visibly a
  * judgement, and only ever applied to an unambiguous match.
+ *
+ * `admin_override` sits level with `github_login`, and for the same reason: it
+ * is not something the matcher inferred but something it was told. A colleague
+ * who knows that two accounts belong to one person is stronger evidence than
+ * any rung below — which is the entire point of being able to say so.
  */
 export const IDENTITY_CONFIDENCE: Record<IdentityMethod, number> = {
   github_login: 1,
+  admin_override: 1,
   email_exact: 0.95,
   name_normalized: 0.8,
   unresolved: 0,
@@ -306,12 +316,22 @@ export function suggestMatches(
 const BOT_LOGIN_SUFFIX = /\[bot\]$/i;
 const KNOWN_BOT_LOGINS = new Set([
   'copilot',
+  // Copilot raises PRs under the bare `Copilot` login but authors the commits
+  // inside them as `copilot-swe-agent`, which matches neither `copilot` nor
+  // the `[bot]` suffix. On the reference tenant that put 132 commits into the
+  // roster as a person, eligible to be graded on the Sprint Health table.
+  'copilot-swe-agent',
   'dependabot',
   'dependabot-preview',
   'github-actions',
   'renovate',
   'snyk-bot',
   'imgbot',
+  // Not a GitHub account at all: the container/CI user a commit picks up when
+  // git has no configured identity. It is one name shared by every machine
+  // that ever did it, so treating it as a person merges unrelated automation
+  // into a single phantom developer. No EMU org issues `root` to a human.
+  'root',
 ]);
 
 /**
@@ -638,5 +658,95 @@ export function resolveIdentity(
     confidence: IDENTITY_CONFIDENCE.unresolved,
     method: 'unresolved',
     evidence: { email: identity.email ?? null, name: identity.name ?? null },
+  };
+}
+
+/**
+ * One admin statement about an observed identity, as `IdentityOverride` holds
+ * it. Narrower than the row: only the fields the matcher acts on.
+ */
+export interface IdentityOverrideRule {
+  action: 'merge' | 'exclude';
+  /** Required by `merge`, meaningless to `exclude`. */
+  canonicalDeveloperId?: string | null;
+  reason: string;
+  setByUserId: string;
+}
+
+/** What resolution concluded once any admin statement has been applied. */
+export interface ResolvedIdentity {
+  match: IdentityMatch;
+  /** Withheld from every figure that counts people; work still counted. */
+  excluded: boolean;
+}
+
+/** `sourceSystem` + `sourceKey`, the shape overrides are looked up by. */
+export function overrideKeyOf(sourceSystem: string, sourceKey: string): string {
+  return `${sourceSystem}|${sourceKey}`;
+}
+
+/**
+ * Applies an admin statement to what the matcher concluded.
+ *
+ * This runs INSIDE resolution rather than over its results, and that placement
+ * is the whole design. `resolveTenant` re-derives every identity row from
+ * collected commits and PRs on each pass, so a merge applied afterwards — by
+ * hand, or by a one-off script — is undone by the next sweep and certainly by
+ * a re-collection. A merge applied here is re-derived along with everything
+ * else, which is what makes it hold.
+ *
+ * Two actions, deliberately doing very different amounts:
+ *
+ *   - `merge` redirects which canonical developer this identity rolls up to,
+ *     and nothing else. It never invents an identity, never touches a commit,
+ *     and never reaches the other direction — the target is simply asserted, so
+ *     a typo produces a developer with unexpected work rather than a silent
+ *     loss. The evidence records what the matcher had concluded on its own, so
+ *     an override can always be told apart from a correlation result and
+ *     reversed by deleting the row.
+ *   - `exclude` changes no attribution at all. It sets a flag that keeps the
+ *     entity out of pickers and head-counts while its commits stay in every
+ *     repo and LOC total — the same treatment bots already get.
+ *
+ * A `merge` row with no target is malformed, not an instruction to unmerge, so
+ * the matcher's own answer stands. Failing closed here matters: the alternative
+ * is a bad row quietly repointing someone's work at `undefined`.
+ */
+export function applyOverride(
+  match: IdentityMatch,
+  override: IdentityOverrideRule | undefined,
+): ResolvedIdentity {
+  if (!override) {
+    return { match, excluded: false };
+  }
+
+  if (override.action === 'exclude') {
+    return { match, excluded: true };
+  }
+
+  const target = override.canonicalDeveloperId?.trim();
+  if (override.action !== 'merge' || !target) {
+    return { match, excluded: false };
+  }
+
+  return {
+    excluded: false,
+    match: {
+      canonicalDeveloperId: target,
+      confidence: IDENTITY_CONFIDENCE.admin_override,
+      method: 'admin_override',
+      evidence: {
+        source: 'admin_override',
+        mergedInto: target,
+        reason: override.reason,
+        setByUserId: override.setByUserId,
+        // What resolution had concluded unaided. Kept so the override is
+        // auditable as a decision rather than appearing as a match the
+        // matcher made, and so a later pass that finds real evidence can be
+        // compared against what a human asserted.
+        supersededMethod: match.method,
+        supersededDeveloperId: match.canonicalDeveloperId,
+      },
+    },
   };
 }

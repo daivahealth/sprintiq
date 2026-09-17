@@ -461,7 +461,11 @@ export class DeveloperActivityService {
       tenantId,
       assignees.byDeveloper,
     );
-    const coverage = this.identities.bridgeCoverage(committers, assignees);
+    const coverage = this.identities.bridgeCoverage(
+      committers,
+      assignees,
+      index.excluded,
+    );
     const withoutAssignedWork =
       assignees.assignees.matched === 0
         ? null
@@ -646,6 +650,14 @@ export class DeveloperActivityService {
       if (isBotDeveloper(developer)) {
         continue;
       }
+      // The same judgement, made by a person instead of a heuristic: an entity
+      // an admin has ruled is not a developer. Unlike the Watchlist exclusion
+      // above it carries no expiry, because it is not a statement about
+      // someone being temporarily away — it is a statement that there is
+      // nobody there.
+      if (index.excluded.has(developer)) {
+        continue;
+      }
       // Same shape of error, different cause: an account GitHub anonymized on
       // deprovision has no person behind it to check on. Collected below and
       // reported separately rather than dropped.
@@ -759,6 +771,7 @@ export class DeveloperActivityService {
       assigneeCoverage: this.identities.bridgeCoverage(
         windowCommitters,
         assignees,
+        index.excluded,
       ),
       thresholds: {
         activeWithinWorkingDays: WATCHLIST_ACTIVE_WITHIN_WORKING_DAYS,
@@ -995,6 +1008,10 @@ export class DeveloperActivityService {
             jiraRefs: [...refs.logins, ...refs.names],
           }
         : null,
+      // No exclusion set passed, unlike the roster-wide calls above: this is a
+      // drill-down on ONE developer the caller has already named, so the
+      // coverage figure is about them. Filtering them out of their own page
+      // would report `null` coverage rather than an answer.
       assigneeCoverage: this.identities.bridgeCoverage([developer], assignees),
     };
   }

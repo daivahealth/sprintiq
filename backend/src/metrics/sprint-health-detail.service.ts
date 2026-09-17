@@ -251,15 +251,20 @@ export class SprintHealthDetailService {
     ]);
     const commits = commitsPage.commits;
 
-    // Bots and deprovisioned accounts stay OUT of this head-count — it is
-    // read against a Jira-assignee denominator ("N of M assigned") that can
-    // never contain a bot — but their commits still count in `commits.length`
-    // below. Matches `bridgeCoverage`'s rule exactly: excluded from figures
-    // that count people, not from the work.
+    // Bots, deprovisioned accounts and admin-withheld entities stay OUT of
+    // this head-count — it is read against a Jira-assignee denominator ("N of
+    // M assigned") that can never contain any of them — but their commits
+    // still count in `commits.length` below. Matches `bridgeCoverage`'s rule
+    // exactly: excluded from figures that count people, not from the work.
     const committers = new Set<string>();
     for (const commit of commits) {
       const person = attributeCommit(commit, index);
-      if (person && !isBotDeveloper(person) && !isAnonymizedAccount(person)) {
+      if (
+        person &&
+        !isBotDeveloper(person) &&
+        !isAnonymizedAccount(person) &&
+        !index.excluded.has(person)
+      ) {
         committers.add(person);
       }
     }
@@ -416,15 +421,22 @@ export class SprintHealthDetailService {
       return a;
     };
 
-    // Bots and deprovisioned accounts never become a ROW on this table: it is
-    // the one board on the platform that publishes an attributed per-person
-    // grade, and a bot (Dependabot raises plenty of PRs) can otherwise land
-    // in the top tertile and be graded `high` right next to the humans it's
-    // compared against. Matches `bridgeCoverage`'s rule — excluded from
-    // figures that count PEOPLE. Their commits still land in `commits`/LOC
-    // totals elsewhere (`commitActivity`'s `commits.length`, unaffected).
+    // Bots, deprovisioned accounts and admin-withheld entities never become a
+    // ROW on this table: it is the one board on the platform that publishes an
+    // attributed per-person grade, and a bot (Dependabot raises plenty of PRs)
+    // can otherwise land in the top tertile and be graded `high` right next to
+    // the humans it's compared against. Matches `bridgeCoverage`'s rule —
+    // excluded from figures that count PEOPLE. Their commits still land in
+    // `commits`/LOC totals elsewhere (`commitActivity`'s `commits.length`,
+    // unaffected).
     const isExcludedPerson = (person: string) =>
-      isBotDeveloper(person) || isAnonymizedAccount(person);
+      isBotDeveloper(person) ||
+      isAnonymizedAccount(person) ||
+      // An admin-withheld entity, for the same reason and with more force: a
+      // person has looked at it and said it is not a developer. This board is
+      // the one that publishes a per-person GRADE, so a wrong row here is
+      // attributed to someone by name.
+      index.excluded.has(person);
 
     for (const commit of commitsPage.commits) {
       const person = attributeCommit(commit, index);

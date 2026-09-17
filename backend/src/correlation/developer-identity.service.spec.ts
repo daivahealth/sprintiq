@@ -7,7 +7,11 @@ interface Row {
   authorName: string | null;
 }
 
-function prismaStub(commitRows: Row[], prLogins: string[]) {
+function prismaStub(
+  commitRows: Row[],
+  prLogins: string[],
+  overrides: Record<string, unknown>[] = [],
+) {
   const upserted: Record<string, unknown>[] = [];
   const orphans: Record<string, unknown>[] = [];
   const prisma = {
@@ -33,6 +37,11 @@ function prismaStub(commitRows: Row[], prLogins: string[]) {
         orphans.push(args.data);
         return args.data;
       }),
+    },
+    identityOverride: {
+      findMany: jest.fn(async (args: { where?: { sourceSystem?: string } }) =>
+        overrides.filter((o) => o.sourceSystem === args?.where?.sourceSystem),
+      ),
     },
   };
   return { prisma, upserted, orphans };
@@ -247,6 +256,7 @@ describe('DeveloperIdentityService.aliasesFor', () => {
 function jiraPrismaStub(
   assignees: { assigneeLogin: string | null; assigneeName: string | null }[],
   canonicalDeveloperIds: string[],
+  overrides: Record<string, unknown>[] = [],
 ) {
   const upserted: Record<string, unknown>[] = [];
   const orphans: Record<string, unknown>[] = [];
@@ -269,6 +279,11 @@ function jiraPrismaStub(
         orphans.push(args.data);
         return args.data;
       }),
+    },
+    identityOverride: {
+      findMany: jest.fn(async (args: { where?: { sourceSystem?: string } }) =>
+        overrides.filter((o) => o.sourceSystem === args?.where?.sourceSystem),
+      ),
     },
   };
   return { prisma, upserted, orphans };
@@ -388,6 +403,7 @@ describe('DeveloperIdentityService read scoping', () => {
           groupBy: jest.fn().mockResolvedValue([]),
           count: jest.fn().mockResolvedValue(0),
         },
+        identityOverride: { findMany: jest.fn().mockResolvedValue([]) },
       },
       findMany,
     };
@@ -457,6 +473,45 @@ describe('DeveloperIdentityService read scoping', () => {
     });
   });
 
+  it('never offers automation as a selectable developer', async () => {
+    // The picker filtered on `excluded` alone, so a bot stayed selectable
+    // unless someone wrote a rule for it. `root` is the case that proves the
+    // rule approach cannot work on its own: its identity key is
+    // `root@<build-host>`, so a row only ever covers the host it was written
+    // for and the next build machine reintroduces it.
+    const { prisma } = stubWith([
+      ...ROWS,
+      {
+        sourceSystem: 'github',
+        canonicalDeveloperId: 'root',
+        sourceKey: 'email:root@some-build-host.example.org',
+        sourceLogin: null,
+        name: 'root',
+        method: 'unresolved',
+        excluded: false,
+      },
+      {
+        sourceSystem: 'github',
+        canonicalDeveloperId: 'copilot-swe-agent',
+        sourceKey: 'login:copilot-swe-agent',
+        sourceLogin: 'copilot-swe-agent',
+        name: null,
+        method: 'github_login',
+        excluded: false,
+      },
+    ]);
+    const service = new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    );
+
+    const devs = await service.listDevelopers('t');
+
+    const ids = devs.map((d) => d.canonicalDeveloperId);
+    expect(ids).not.toContain('root');
+    expect(ids).not.toContain('copilot-swe-agent');
+    expect(ids).toContain('dev');
+  });
+
   it('scopes the attribution-coverage read to github identities', async () => {
     const { prisma, findMany } = stubWith(ROWS);
     const service = new DeveloperIdentityService(
@@ -469,5 +524,257 @@ describe('DeveloperIdentityService read scoping', () => {
     for (const call of findMany.mock.calls) {
       expect(call[0].where).toMatchObject({ sourceSystem: 'github' });
     }
+  });
+});
+
+describe('DeveloperIdentityService admin overrides', () => {
+  it('merges a stray git identity into the developer an admin named', async () => {
+    // The production case: `Junaid Haneef` commits from a personal Gmail with
+    // no login, no shared address and a name matching no known login, so every
+    // evidential rung correctly declines. Only a colleague knows this is
+    // `Mohammed-Junaid-Haneef_athma`.
+    const { prisma, upserted } = prismaStub(
+      [
+        {
+          authorLogin: null,
+          authorEmail: 'junaid.mumtaz567@gmail.com',
+          authorName: 'Junaid Haneef',
+        },
+      ],
+      ['Mohammed-Junaid-Haneef_athma'],
+      [
+        {
+          sourceSystem: 'github',
+          sourceKey: 'email:junaid.mumtaz567@gmail.com',
+          action: 'merge',
+          canonicalDeveloperId: 'Mohammed-Junaid-Haneef_athma',
+          reason: 'personal Gmail on a second laptop',
+          setByUserId: 'user_admin',
+        },
+      ],
+    );
+    const service = new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.resolveTenant('tenant-a');
+
+    expect(result.overridden).toBe(1);
+    expect(
+      upserted.find(
+        (row) => row.sourceKey === 'email:junaid.mumtaz567@gmail.com',
+      ),
+    ).toMatchObject({
+      canonicalDeveloperId: 'Mohammed-Junaid-Haneef_athma',
+      method: 'admin_override',
+      excluded: false,
+    });
+  });
+
+  it('re-derives the merge on a later pass, which is what makes it durable', async () => {
+    // Why this lives in resolution rather than in a one-off UPDATE:
+    // resolveTenant rebuilds every row from collected commits on each sweep,
+    // so a merge applied afterwards is gone within one cycle — and certainly
+    // gone once the database is cleared and collection restarts.
+    const overrides = [
+      {
+        sourceSystem: 'github',
+        sourceKey: 'email:357486@narayanahealth.org',
+        action: 'merge',
+        canonicalDeveloperId: 'Saravanakumar-N_athma',
+        reason: 'employee number in a work laptop git config',
+        setByUserId: 'user_admin',
+      },
+    ];
+    const commits = [
+      {
+        authorLogin: null,
+        authorEmail: '357486@narayanahealth.org',
+        authorName: 'saravanakumar_athma',
+      },
+    ];
+
+    const first = prismaStub(commits, [], overrides);
+    await new DeveloperIdentityService(
+      first.prisma as unknown as PrismaService,
+    ).resolveTenant('tenant-a');
+
+    // A second pass over the same facts: the sweep that would otherwise undo a
+    // hand-applied merge.
+    const second = prismaStub(commits, [], overrides);
+    await new DeveloperIdentityService(
+      second.prisma as unknown as PrismaService,
+    ).resolveTenant('tenant-a');
+
+    expect(second.upserted[0]).toMatchObject({
+      canonicalDeveloperId: 'Saravanakumar-N_athma',
+      method: 'admin_override',
+    });
+    // Identical row-for-row apart from the generated primary key, which is
+    // fresh per upsert and says nothing about the conclusion reached.
+    const withoutId = (rows: Record<string, unknown>[]) =>
+      rows.map(({ id: _id, ...rest }) => rest);
+    expect(withoutId(second.upserted)).toEqual(withoutId(first.upserted));
+  });
+
+  it('withholds an excluded entity without moving its attribution', async () => {
+    const { prisma, upserted } = prismaStub(
+      [
+        {
+          authorLogin: null,
+          authorEmail: 'kritikajain0209@gmail.com',
+          authorName: 'kritika jain',
+        },
+      ],
+      [],
+      [
+        {
+          sourceSystem: 'github',
+          sourceKey: 'email:kritikajain0209@gmail.com',
+          action: 'exclude',
+          canonicalDeveloperId: null,
+          reason: 'not a member of this engineering org',
+          setByUserId: 'user_admin',
+        },
+      ],
+    );
+    const service = new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    );
+
+    const result = await service.resolveTenant('tenant-a');
+
+    expect(result.excluded).toBe(1);
+    // Still its own canonical developer, still carrying its email, so commits
+    // keep resolving and stay in every repo and LOC total. Only the flag that
+    // keeps it out of head-counts is new.
+    expect(upserted[0]).toMatchObject({
+      canonicalDeveloperId: 'kritika jain',
+      excluded: true,
+    });
+  });
+
+  it('does not queue an excluded entity as an orphan for someone to chase', async () => {
+    // An identity a human has ruled on is a settled question, not an open one.
+    // Leaving it queued asks a reviewer to re-decide it every sweep.
+    const { prisma, orphans } = prismaStub(
+      [
+        {
+          authorLogin: null,
+          authorEmail: 'kritikajain0209@gmail.com',
+          authorName: 'kritika jain',
+        },
+      ],
+      [],
+      [
+        {
+          sourceSystem: 'github',
+          sourceKey: 'email:kritikajain0209@gmail.com',
+          action: 'exclude',
+          canonicalDeveloperId: null,
+          reason: 'not a member of this engineering org',
+          setByUserId: 'user_admin',
+        },
+      ],
+    );
+
+    await new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    ).resolveTenant('tenant-a');
+
+    expect(orphans).toHaveLength(0);
+  });
+
+  it('ignores an override written against the other source arm', async () => {
+    // A Jira account reference and a GitHub login are different namespaces, so
+    // a github-keyed pass must not pick up a jira-keyed statement.
+    const { prisma, upserted } = prismaStub(
+      [
+        {
+          authorLogin: null,
+          authorEmail: 'junaid.mumtaz567@gmail.com',
+          authorName: 'Junaid Haneef',
+        },
+      ],
+      [],
+      [
+        {
+          sourceSystem: 'jira',
+          sourceKey: 'email:junaid.mumtaz567@gmail.com',
+          action: 'merge',
+          canonicalDeveloperId: 'Someone-Else_athma',
+          reason: 'wrong arm',
+          setByUserId: 'user_admin',
+        },
+      ],
+    );
+
+    const result = await new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    ).resolveTenant('tenant-a');
+
+    expect(result.overridden).toBe(0);
+    expect(upserted[0]).toMatchObject({
+      canonicalDeveloperId: 'Junaid Haneef',
+    });
+  });
+
+  it('drops an override with an unrecognised action instead of guessing at it', async () => {
+    const { prisma, upserted } = prismaStub(
+      [
+        {
+          authorLogin: null,
+          authorEmail: 'junaid.mumtaz567@gmail.com',
+          authorName: 'Junaid Haneef',
+        },
+      ],
+      [],
+      [
+        {
+          sourceSystem: 'github',
+          sourceKey: 'email:junaid.mumtaz567@gmail.com',
+          action: 'merrge',
+          canonicalDeveloperId: 'Mohammed-Junaid-Haneef_athma',
+          reason: 'typo in the verb',
+          setByUserId: 'user_admin',
+        },
+      ],
+    );
+
+    const result = await new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    ).resolveTenant('tenant-a');
+
+    expect(result.overridden).toBe(0);
+    expect(upserted[0]).toMatchObject({
+      canonicalDeveloperId: 'Junaid Haneef',
+    });
+  });
+
+  it('bridges a Jira-only assignee an admin pointed at a developer', async () => {
+    const { prisma, upserted } = jiraPrismaStub(
+      [{ assigneeLogin: '63a93194', assigneeName: 'Pavankumar M' }],
+      ['Some-Other-Dev_athma'],
+      [
+        {
+          sourceSystem: 'jira',
+          sourceKey: 'login:63a93194',
+          action: 'merge',
+          canonicalDeveloperId: '366296',
+          reason: 'commits under an employee number',
+          setByUserId: 'user_admin',
+        },
+      ],
+    );
+
+    const result = await new DeveloperIdentityService(
+      prisma as unknown as PrismaService,
+    ).resolveJiraAssignees('tenant-a');
+
+    expect(result.overridden).toBe(1);
+    expect(upserted[0]).toMatchObject({
+      canonicalDeveloperId: '366296',
+      method: 'admin_override',
+    });
   });
 });

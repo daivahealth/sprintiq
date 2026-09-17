@@ -66,12 +66,12 @@ Authoritative reference for SprintIQ's logical data model — the raw-event stor
 | `team` | `id`, `tenant_id`, `org_id`, `name` | Primary aggregation unit for metrics. |
 | `user` | `id`, `tenant_id`, `email` (**globally unique**), `display_name`, `status`, `sso_subject?`, `roles[]` | Platform users (the people who log in). Email is globally unique — a user belongs to exactly one tenant, so login resolves the tenant from the user (ADR-0006). |
 | `role` / `user_role` | RBAC | Roles: developer, team_lead, scrum_master, eng_manager, product_owner, cto, exec, admin. |
-| `developer_identity` | `id`, `tenant_id`, `source_system`, `source_key`, `source_login?`, `email?`, `name?`, `canonical_developer_id`, `confidence`, `method`, `evidence` (JSONB), `linked_user_id?` | **Identity resolution**: maps many source identities (Git author, Jira account, SSO) to one canonical developer. Implemented as `correlation_developer_identity`, owned by BC-5 — GitHub (§3) and Jira assignees (§3.1); SSO is still open. |
+| `developer_identity` | `id`, `tenant_id`, `source_system`, `source_key`, `source_login?`, `email?`, `name?`, `canonical_developer_id`, `confidence`, `method`, `evidence` (JSONB), `linked_user_id?`, `excluded` | **Identity resolution**: maps many source identities (Git author, Jira account, SSO) to one canonical developer. Implemented as `correlation_developer_identity`, owned by BC-5 — GitHub (§3) and Jira assignees (§3.1); SSO is still open. |
 | `developer` | `id`, `tenant_id`, `display_name`, `primary_team_id?` | Canonical person referenced by the graph & metrics. May or may not be a platform `user`. **Not yet implemented** — `developer_identity.canonical_developer_id` is the canonical person today (a login, or the git name/email where no account was matched). |
 | `tenant_configuration` | `id`, `tenant_id`, `namespace` (`github`, `jira`, `llm`, `notifications`, `metrics`, `security`), `key`, `values` (JSONB), `secret_refs` (JSONB), `status` | Tenant-wide admin settings and policy defaults. Secret values are never stored here; only references to vault/KMS/env secret names. |
 | `connection` | `id`, `tenant_id`, `source_system`, `name`, `config`, `secret_ref` (OAuth/app-install/PAT token), `webhook_secret_ref`, `sync_cursors` (JSONB), `rate_limit_state`, `status`, `last_sync_at`, `sync_lag`, `last_error`, `last_error_at` | BC-0 registry; one per Jira instance / GitHub org / etc. Holds collector credentials, webhook secrets, and per-entity poll cursors (all secrets by reference). `last_error` records why the most recent pass failed and is cleared on the next clean one — without it a rejected pass is indistinguishable from an idle healthy one, since both collect zero events and both stamp `last_sync_at`. |
 
-> Identity resolution is a **core risk** (§16 R1). Links carry `confidence` and `method`; ambiguous matches are queued for review, not silently merged.
+> Identity resolution is a **core risk** (§16 R1). Links carry `confidence` and `method`; ambiguous matches are queued for review, not silently merged. Where no evidence can ever settle a case, an admin may state the answer explicitly — see §3.2.
 
 **Why this entity is load-bearing, and how the GitHub implementation works.**
 
@@ -81,6 +81,7 @@ A git identity and a GitHub account are not the same thing. GitHub populates `co
 
 | Rung | `method` | `confidence` | Evidence |
 |---|---|---|---|
+| 0 | `admin_override` | 1.0 | A human stated it (§3.2). Applied last, so it overrides every rung below — including a confident one. |
 | 1 | `github_login` | 1.0 | The source resolved the account itself. |
 | 2 | `email_exact` | 0.95 | This exact email appears on a commit GitHub *did* attribute. Only unambiguous mappings are used — an address seen under several logins identifies no one. |
 | 3 | `name_normalized` | 0.8 | The git author name normalizes to exactly one known login. Normalization drops a trailing `_<shortcode>` (GitHub Enterprise Managed User logins are `<name>_<shortcode>`, a shape no git `user.name` carries) and every non-alphanumeric. |
@@ -119,6 +120,47 @@ Two invariants follow, and both are enforced in code:
 - **Every read that answers "whose commit is this" filters `source_system = 'github'`.** `aliasesFor`, `attributionIndex`, `listDevelopers` and `attributionCoverage` share this table; unfiltered, a Jira `accountId` would enter `AttributionIndex.byLogin` (the map commit attribution is looked up in) and would widen a developer's commit query with an identifier git has never seen. Tested per-read (api/README.md §12 #41).
 
 Because the bridge is the weak link, everything derived from it publishes `assigneeCoverage` and distinguishes **unmatched** (`null`) from **nothing assigned** (`false`). Those look identical on screen and are opposite findings — a data gap versus the finding itself.
+
+### 3.2 Admin overrides (`correlation_identity_override`)
+
+Added 2026-09-16 (api/README.md §12 #52). The ladders in §3 and §3.1 merge only on evidence and refuse to guess, which is the right default and leaves two residues no amount of evidence can clear:
+
+1. **Split people.** A developer who also commits from a personal laptop under a Gmail address, or from a machine whose git config carries an employee number (`a379031@CORPLPM000257.local`, `357486@narayanahealth.org`), produces a second entity with no evidential bridge to the first. Every rung correctly declines: no login, no shared address, and a name matching no known login.
+2. **Non-developers.** Automation the bot heuristics miss, and Jira-only accounts that hold tickets and never commit. Neither belongs in a head-count and nothing in the collected data says so.
+
+Only a human can settle either, so this table is where a human says it.
+
+| Entity | Key fields | Notes |
+|---|---|---|
+| `identity_override` | `id`, `tenant_id`, `source_system`, `source_key`, `action` (`merge` \| `exclude`), `canonical_developer_id?`, `reason`, `set_by_user_id` | Implemented as `correlation_identity_override`. One statement per observed identity (`@@unique` on tenant + system + key); restating it updates the row. `source_key` is keyed exactly as `developer_identity.source_key`. |
+
+Data rather than a code constant, for the same reason `developer_role` is: tenant-scoped, it names who decided, and an admin can change it without a deploy. `reason` is required — an unexplained merge is indistinguishable from a correlation bug six months later.
+
+**Applied during resolution, not after it.** This placement is the whole design. `resolveTenant` re-derives every identity row from collected commits and PRs on each pass, so a merge applied afterwards — by hand, or by a one-off `UPDATE` — is undone by the next 30-minute sweep and certainly by a re-collection from empty. A merge applied through this table is re-derived along with everything else, which is what makes it hold.
+
+| `action` | Effect | What it does **not** do |
+|---|---|---|
+| `merge` | Redirects which canonical developer the identity rolls up to. Records `method = 'admin_override'`, `confidence = 1.0`, and evidence naming the reason, the actor, and the conclusion it superseded. | Never invents an identity, never moves a commit row, never reaches in the other direction. The target is asserted, so a typo yields a developer with unexpected work rather than a silent loss. |
+| `exclude` | Sets `developer_identity.excluded`, withholding the entity from pickers, head-counts, the Watchlist and the Sprint Health table. | Changes no attribution at all. The commits stay in every repo and LOC total, so no number moves when a rule is added or removed. |
+
+`admin_override` sits level with `github_login` at confidence 1.0 and is applied **last**, overriding a conclusion the matcher reached on evidence as readily as one it could not reach at all. That ordering is deliberate: the cases this exists for are ones where the matcher is confidently wrong, so deferring to `github_login` would defeat the feature. Evidence retains `supersededMethod` and `supersededDeveloperId`, so an override is always distinguishable from a match the matcher made, and reversing it is a row deletion.
+
+Three guards, all tested:
+
+- A `merge` with no target is malformed, not an instruction to unmerge — the matcher's own answer stands. The alternative is a bad row quietly repointing someone's work at `undefined`.
+- An unrecognised `action` is logged and dropped rather than guessed at; a typo must not become a merge.
+- An excluded identity is **not** queued as an orphan. A question a human has already ruled on is settled, and leaving it queued asks a reviewer to re-decide it every sweep.
+
+`excluded` is written on every pass rather than OR-ed with the stored value, so deleting the override row actually restores the person. A flag that only ever went true would make exclusion permanent and undiagnosable.
+
+**Exclusion is not `watchlist_exclusion`.** They read similarly and mean opposite things. A Watchlist exclusion is a temporary statement that someone is away, carries a mandatory `expires_at`, and keeps that person in every commit, PR and metric figure. An identity exclusion is a standing statement that the entity is *not a person*, has no expiry, and is the same treatment bots and deprovisioned accounts already receive.
+
+**Bots stay in code.** `copilot-swe-agent` (the login Copilot *authors* commits under, as distinct from the `Copilot` login its pull requests are opened under) and `root` (the container user a commit picks up when git has no configured identity) are global truths rather than statements about one tenant, so they live in `KNOWN_BOT_LOGINS`. The developer picker applies that list too: it previously filtered on `excluded` alone, which meant automation stayed selectable unless someone hand-wrote a row for it — unworkable for `root`, whose identity key is `root@<build-host>` and so differs per machine, so the next build host would reintroduce it.
+
+**An evidence-based merge is not a durable one.** `nahid8n` was linked to `Nahid-Noushathu_athma` by `email_exact` and needed no override — until the database was cleared, after which it split back onto its own entity carrying 23 commits. The email index is built from commits GitHub *did* attribute, so it is only ever as complete as the current backfill, and a link that exists today can be absent tomorrow. Any merge that must hold across a re-collection has to be stated here, including ones the matcher currently gets right on its own.
+
+**Name the identities, not the person.** A rule keys on one `source_key`, and people have several: Lohith commits under two git names from one address and also holds a Jira account; Shubham Jain has two corporate addresses plus a Jira account. Excluding one identity leaves the others on the roster under a different spelling, which reads as the rule having silently failed. The same trap catches source arms — three entities first ruled on as Jira-only turned out to have GitHub identities as well once the sweep widened from 195 repos to 299, and their Jira-keyed rules could never have reached those.
+
 
 ---
 
