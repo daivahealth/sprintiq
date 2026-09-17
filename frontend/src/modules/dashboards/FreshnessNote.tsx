@@ -1,5 +1,9 @@
 import { StatusDot } from '../../components/ui';
 import { timeAgo } from '../../lib/utils';
+import {
+  freshnessHeadline,
+  type FreshnessHeadline,
+} from './freshness-headline';
 import { useFreshness } from './useInsights';
 
 /**
@@ -30,6 +34,34 @@ import { useFreshness } from './useInsights';
 /** Beyond this, being behind is worth flagging rather than just stating. */
 const BEHIND_WARN_SECONDS = 6 * 60 * 60;
 
+/**
+ * How many failing connection names to print before summarising the rest.
+ *
+ * This note annotates a board; it must not become the board. On a tenant with
+ * one connection per repository a transient outage fails them all at once —
+ * 185 of 195 here — and printing every name pushed a wall of red text down the
+ * page, burying the dashboard it was describing. The count is the fact that
+ * matters; a few names make it identifiable, and the rest are a number.
+ *
+ * Deliberately small. Anyone who needs the full list needs Sync Status, not a
+ * one-line banner.
+ */
+const FAILING_NAMES_SHOWN = 3;
+
+/** The headline decision is in `freshness-headline.ts`; this is its wording. */
+function headlineText(headline: FreshnessHeadline): string {
+  switch (headline.kind) {
+    case 'complete':
+      return `Data complete through ${timeAgo(headline.through)}`;
+    case 'backfilling':
+      return 'Still collecting history — coverage is incomplete';
+    case 'never-synced':
+      return 'No source has synced yet';
+    case 'no-watermark':
+      return `Synced ${timeAgo(headline.lastSyncAt)}, but no source reports how far collection has reached`;
+  }
+}
+
 export function FreshnessNote({
   windowFrom,
   windowTo,
@@ -44,7 +76,7 @@ export function FreshnessNote({
 
   const { collectedThroughAt, collectedBackTo, behindSeconds, incomplete } =
     data;
-  const { neverSynced, failing } = data;
+  const { neverSynced, failing, lastSyncAt } = data;
 
   // Does this board's window reach past what has been collected? Only
   // answerable when the board has a window AND a lower bound exists.
@@ -59,12 +91,21 @@ export function FreshnessNote({
   // ignore the real ones.
   const rangeEnded = windowTo != null && new Date(windowTo) < new Date();
   const behind =
-    !rangeEnded && behindSeconds !== null && behindSeconds > BEHIND_WARN_SECONDS;
+    !rangeEnded &&
+    behindSeconds !== null &&
+    behindSeconds > BEHIND_WARN_SECONDS;
   const hasProblem = failing.length > 0 || neverSynced > 0;
   // Backfill only matters to THIS board if it actually clips its window, or if
   // nothing has been collected at all yet.
   const backfillAffectsThisBoard =
     incomplete > 0 && (windowFrom == null || collectedBackTo == null);
+
+  const headline = freshnessHeadline({
+    collectedThroughAt,
+    backfillAffectsThisBoard,
+    neverSynced,
+    lastSyncAt,
+  });
 
   const tone = hasProblem
     ? 'bad'
@@ -76,13 +117,7 @@ export function FreshnessNote({
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pb-2 text-xs text-fg-faint">
       <StatusDot tone={tone} aria-hidden />
 
-      <span>
-        {collectedThroughAt
-          ? `Data complete through ${timeAgo(collectedThroughAt)}`
-          : backfillAffectsThisBoard
-            ? 'Still collecting history — coverage is incomplete'
-            : 'No source has synced yet'}
-      </span>
+      <span>{headlineText(headline)}</span>
 
       {/* The one that matters for a windowed board: the range on screen
           extends past where collection has reached, so these numbers are
@@ -122,8 +157,13 @@ export function FreshnessNote({
       {failing.length > 0 && (
         <span className="text-danger">
           {failing.length} connection{failing.length === 1 ? '' : 's'} failing (
-          {failing.map((f) => f.name).join(', ')}) — those numbers are frozen at
-          an unknown age
+          {failing
+            .slice(0, FAILING_NAMES_SHOWN)
+            .map((f) => f.name)
+            .join(', ')}
+          {failing.length > FAILING_NAMES_SHOWN &&
+            ` +${failing.length - FAILING_NAMES_SHOWN} more`}
+          ) — those numbers are frozen at an unknown age
         </span>
       )}
     </p>

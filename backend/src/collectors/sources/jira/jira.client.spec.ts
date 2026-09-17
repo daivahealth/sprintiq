@@ -392,7 +392,12 @@ describe('JiraClient.getSprint', () => {
       .fn()
       .mockResolvedValue(fakeResponse({ body: {} })) as unknown as typeof fetch;
 
-    await client.getSprint('https://acme.atlassian.net', 'a@b.com', 'tok', '3238');
+    await client.getSprint(
+      'https://acme.atlassian.net',
+      'a@b.com',
+      'tok',
+      '3238',
+    );
 
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0] as [
       string,
@@ -446,7 +451,12 @@ describe('JiraClient.getSprint', () => {
       ) as unknown as typeof fetch;
 
     expect(
-      await client.getSprint('https://acme.atlassian.net', 'a@b.com', 'tok', '3238'),
+      await client.getSprint(
+        'https://acme.atlassian.net',
+        'a@b.com',
+        'tok',
+        '3238',
+      ),
     ).toBeNull();
   });
 
@@ -461,7 +471,12 @@ describe('JiraClient.getSprint', () => {
       ) as unknown as typeof fetch;
 
     expect(
-      await client.getSprint('https://acme.atlassian.net', 'a@b.com', 'tok', '999'),
+      await client.getSprint(
+        'https://acme.atlassian.net',
+        'a@b.com',
+        'tok',
+        '999',
+      ),
     ).toBeNull();
   });
 
@@ -469,7 +484,12 @@ describe('JiraClient.getSprint', () => {
     global.fetch = jest.fn() as unknown as typeof fetch;
 
     expect(
-      await client.getSprint('https://acme.atlassian.net', 'a@b.com', '', '3238'),
+      await client.getSprint(
+        'https://acme.atlassian.net',
+        'a@b.com',
+        '',
+        '3238',
+      ),
     ).toBeNull();
     expect(global.fetch).not.toHaveBeenCalled();
   });

@@ -369,7 +369,9 @@ export class JiraClient {
       headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
     });
     if (!res.ok) {
-      this.logger.warn(`Jira sprint fetch failed (${res.status}) for ${sprintId}`);
+      this.logger.warn(
+        `Jira sprint fetch failed (${res.status}) for ${sprintId}`,
+      );
       return null;
     }
     return (await res.json()) as JiraSprintBean;
