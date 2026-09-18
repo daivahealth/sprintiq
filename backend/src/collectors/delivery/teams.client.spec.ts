@@ -45,6 +45,24 @@ describe('TeamsClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('retries a 500 server error and succeeds on a later attempt', async () => {
+    // 5xx status codes are transient; retry is the right move. This test
+    // ensures the RETRYABLE predicate covers >= 500, locking retry behavior
+    // for 5xx the same way 429 is tested.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => 'internal server error',
+      })
+      .mockResolvedValueOnce({ ok: true, status: 202, text: async () => '' });
+    const { client } = clientWith(fetchMock);
+
+    await client.postAdaptiveCard('tenant_a', 'teamsWebhookRef', card);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not retry a 403 — the flow is gone or the URL rotated', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: false,

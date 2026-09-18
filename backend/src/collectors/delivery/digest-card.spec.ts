@@ -17,6 +17,14 @@ describe('escapeCardText', () => {
   it('leaves an ordinary name untouched', () => {
     expect(escapeCardText('Alice Anand')).toBe('Alice Anand');
   });
+
+  it('does not escape hyphens, which appear in real developer names', () => {
+    // `Hari-Krishnan-P-C` is on the tracked roster. Under the brief's wider
+    // regex `/[\\`*_[\]()#+\-!>|]/g`, this would render as
+    // `Hari\-Krishnan\-P\-C` with visible backslashes in the channel. This
+    // test guards against re-widening the character class to include `-`.
+    expect(escapeCardText('Hari-Krishnan-P-C')).toBe('Hari-Krishnan-P-C');
+  });
 });
 
 describe('buildDigestCard', () => {
@@ -83,5 +91,15 @@ describe('buildDigestCard', () => {
     expect(card.attachments[0].contentType).toBe(
       'application/vnd.microsoft.card.adaptive',
     );
+  });
+
+  it('renders collection freshness as unknown when collectedThroughAt is null', () => {
+    // When `collectedThroughAt` is null (e.g., collection is broken or not yet
+    // started), the card renders 'unknown' so the user knows the data is not
+    // current. This is the withheld path this feature leans on.
+    const body = textOf(
+      buildDigestCard({ ...input, collectedThroughAt: null }),
+    );
+    expect(body).toContain('unknown');
   });
 });
