@@ -135,3 +135,41 @@ export function istWeekKey(date: Date): string {
   shifted.setUTCDate(shifted.getUTCDate() - shifted.getUTCDay());
   return shifted.toISOString().slice(0, 10);
 }
+
+/**
+ * The timezone every IST-anchored cron pins itself to.
+ *
+ * Exported from here, beside the offset the rest of this file uses, so that a
+ * second scheduler in a second context cannot hardcode its own copy of the
+ * string and drift.
+ */
+export const IST_TIMEZONE = 'Asia/Kolkata';
+
+/** Day-of-week (0 = Sunday) of an IST date key, independent of server locale. */
+function istWeekday(key: string): number {
+  return new Date(`${key}T00:00:00.000Z`).getUTCDay();
+}
+
+/**
+ * The most recent Mon–Fri IST calendar day strictly before `now`.
+ *
+ * Working days rather than calendar days because the daily digest reports on
+ * this window: a Monday run reporting Sunday would name almost the whole
+ * roster for a day nobody was expected to work, which is the noise that makes
+ * a daily notification ignored.
+ *
+ * Weekday is derived from the IST date key rather than `Date#getDay()`, which
+ * answers in the server's timezone — on a UTC host, 19:00 Thursday UTC is
+ * already Friday in IST, and the two implementations disagree.
+ */
+export function previousWorkingDayKey(now: Date = new Date()): string {
+  let cursor = istDayStart(istDateKey(now));
+  for (;;) {
+    cursor = new Date(cursor.getTime() - 86_400_000);
+    const key = istDateKey(cursor);
+    const weekday = istWeekday(key);
+    if (weekday !== 0 && weekday !== 6) {
+      return key;
+    }
+  }
+}

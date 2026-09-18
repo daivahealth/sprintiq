@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Connection } from '@prisma/client';
 import { newId } from '../../common/id';
+import { IST_TIMEZONE } from '../../common/time';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { PrismaService } from '../../database/prisma.service';
 import {
@@ -38,13 +39,6 @@ import { IngestionService } from '../ingestion/ingestion.service';
  * within the hour rather than stranding the source permanently.
  */
 const SWEEP_STALE_AFTER_MS = 45 * 60_000;
-
-/**
- * The dashboards bucket on IST calendar days (DASHBOARDS.md §4.1.1), so the
- * day the collection deadline refers to has to be the same one — hardcoded for
- * the same reason `common/time.ts` hardcodes the offset.
- */
-const IST_TIMEZONE = 'Asia/Kolkata';
 
 /**
  * Hour (IST) at which the day-close pass runs. Default 22:00 — late enough to
