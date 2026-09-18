@@ -6,6 +6,7 @@ import { PlanningModule } from '../modules/planning/planning.module';
 import { DeveloperActivityService } from './developer-activity.service';
 import { InsightsService } from './insights.service';
 import { MetricsService } from './metrics.service';
+import { NoCommitDetectionService } from './no-commit-detection.service';
 import { SprintHealthDetailService } from './sprint-health-detail.service';
 
 /** BC-8 Metrics & Aggregation Engine + dashboard insight read models. */
@@ -18,12 +19,14 @@ import { SprintHealthDetailService } from './sprint-health-detail.service';
     InsightsService,
     DeveloperActivityService,
     SprintHealthDetailService,
+    NoCommitDetectionService,
   ],
   exports: [
     MetricsService,
     InsightsService,
     DeveloperActivityService,
     SprintHealthDetailService,
+    NoCommitDetectionService,
   ],
 })
 export class MetricsModule {}
