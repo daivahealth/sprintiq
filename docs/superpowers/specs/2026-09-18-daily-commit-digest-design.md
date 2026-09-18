@@ -1,4 +1,4 @@
-# Daily commit digest: tracked-roster no-commit notification to Teams
+# Daily commit digest: tracked-roster inactivity notification to Teams
 
 **Date:** 2026-09-18
 **Status:** Approved design, not yet implemented
@@ -13,10 +13,16 @@ belongs in `docs/ADR/0009-*.md`.
 ## 1. Problem
 
 A named roster of developers (66 at seeding, all GitHub EMU logins in the
-`athmahealth` org) must be checked daily for commit activity. Anyone with no
-commit in the preceding day is named in a list posted to a Microsoft Teams
-group at 10:30 IST the following morning. The roster must be editable by an
-admin so that developers joining later are covered without a deploy.
+`athmahealth` org) must be checked daily for delivery activity. Anyone with no
+tracked signal in the preceding working day is named in a list posted to a
+Microsoft Teams group at 10:30 IST the following morning. The roster must be
+editable by an admin so that developers joining later are covered without a
+deploy.
+
+The request was phrased as "no commit in the last 24 hours". The rule settled
+in §5 is deliberately wider than that — commit, PR opened or merged, or review
+submitted — because the narrower reading names reviewers and PR-only days as
+idle. The window is the previous **working** day, so Monday reports Friday.
 
 The data is read from the delivery graph on the hosted deployment, not from a
 local workspace.
@@ -62,9 +68,14 @@ notification requires its own decision.
 Two honesty constraints follow from the rule and are load-bearing in the
 design rather than advisory:
 
-1. **The message states what it measured.** "No commit yesterday" is not "did
-   no work": reviewers, developers mid-branch, and people on Jira-only tasks
-   all produce zero commits. The card says so in the text.
+1. **The message states what it measured.** "No tracked signal yesterday" is
+   not "did no work": a developer mid-branch, someone pairing, someone on
+   Jira-only or design work, and anyone whose commits are not yet collected
+   all read as inactive. The card names the signals it counted, in the text.
+
+   This is also why the active set is defined broadly (§5.3) rather than on
+   commits alone: each additional signal is a person the message no longer
+   names wrongly.
 2. **The list is never ordered by volume.** Alphabetical by display name,
    always — the same constraint the Watchlist enforces, for the same stated
    reason: a volume ordering converts a prompt-to-check-in into the
@@ -105,14 +116,17 @@ model NoCommitDigestRun {
   tenantId     String
   /// The IST calendar day reported on (YYYY-MM-DD).
   reportedDay  String
-  /// sent | sent_all_clear | withheld_stale_data | withheld_implausible | failed
+  /// sent | sent_all_clear | withheld_stale_data | withheld_truncated_read
+  /// | withheld_implausible | failed
   outcome      String
   rosterCount  Int
   flaggedCount Int
-  /// The exact list sent, and the roster entries whose identity did not
-  /// resolve — the latter reported, never counted as "no commit".
+  /// The exact list sent; the roster entries whose identity did not resolve;
+  /// and those withheld because their commit data for the day was incomplete
+  /// (§5.4). The latter two are reported, never counted as inactive.
   flagged      Json
   unresolved   Json
+  incomplete   Json
   detail       String?
   deliveredAt  DateTime?
   createdAt    DateTime  @default(now())
@@ -137,12 +151,25 @@ there, so the job can be turned off without a deploy.
 
 ## 5. Detection
 
-New file `backend/src/metrics/no-commit-detection.service.ts` — its own
-service rather than an addition to `developer-activity.service.ts`, which is
-already ~1,400 lines. Takes `tenantId` explicitly (a cron has no request
-context, so `TenantContextService.requireTenantId()` is unavailable) and
-returns a plain result object. It has no knowledge of Teams and is unit
-testable without a webhook URL.
+**The rule, in one sentence:** take the set of developers active on the
+reported day, subtract it from the editable roster, and the remainder is the
+list. Everything below is that subtraction plus the guards that stop it
+naming someone unfairly.
+
+New file `backend/src/metrics/no-commit-detection.service.ts`. Takes
+`tenantId` explicitly and returns a plain result object; it has no knowledge
+of Teams and is unit testable without a webhook URL.
+
+**Why not call `overview()` directly.** It resolves tenancy through
+`TenantContextService.requireTenantId()`, which is request-scoped and
+unavailable in a cron. The service therefore performs the *same* reads the
+Overview performs internally — `CodeService.listCommitsPage` plus the exported
+`attributeCommit()` — with `tenantId` passed explicitly. Same query, same
+attribution primitive, so the commit component reconciles with the board
+rather than becoming a second competing definition. The codebase has already
+paid for that mistake once: the comment above `planningGapDevelopers` records
+Overview and Watchlist disagreeing on real data (3 versus 0) because two
+places computed one number differently.
 
 The pass, in order:
 
@@ -157,40 +184,75 @@ The pass, in order:
    connections named in `detail`.
 
    Ingest is poll-based (no webhooks). A stalled collector or an expired token
-   makes *every* roster member read as having no commit, and the automation
-   would then confidently name all 66 people in a channel. This gate exists
-   for that case specifically.
+   makes *every* roster member read as inactive, and the automation would then
+   confidently name all 66 people in a channel. This gate exists for that case
+   specifically.
 
    Requiring *all* connections to be fresh is strict, and on an org-scale
    tenant (one connection per repo) it may withhold often at first. Strict is
    the correct starting point; if it proves too noisy the adjustment is a
    coverage threshold, not removal of the gate.
 
-3. **Attribute commits on `committedAt` OR `authoredAt`.** This deliberately
-   differs from `committersBetween()`, which filters on `committedAt` alone.
-   `Commit.committedAt` is nullable and
-   `github-commit-reconciler.service.ts` exists precisely to backfill rows
-   missing it, so at 10:30 a real commit from the reported day may still carry
-   a null `committedAt` and would otherwise place a developer who committed
-   onto a list of people who did not.
+3. **Build the active set for the day.** A developer is active if any of these
+   falls inside the window:
 
-   The asymmetry is the argument: missing an idle developer costs nothing;
-   naming a developer who shipped code costs the feature its credibility
-   permanently. Identity resolution still goes through the exported
-   `attributeCommit()` primitive, so attribution stays single-sourced. The
-   divergence is documented in a docblock so the two queries are not later
-   "unified" by someone who does not know why they differ.
+   | Signal | Read | Window field |
+   |---|---|---|
+   | Commit | `listCommitsPage` + `attributeCommit` | `committedAt` |
+   | PR opened | `pullRequest` | `openedAt` |
+   | PR merged | `pullRequest` | `mergedAt` |
+   | Review submitted | `prReview.groupBy` on `reviewerLogin` | `submittedAt` |
 
-4. **Resolve each roster entry** against `attributionIndex(tenantId)`.
+   This is a **superset** of the Overview's `withSignal`, which covers only
+   commits and PRs *opened* in the window (its PR read filters `openedAt`, so
+   a PR merged yesterday but opened last week is absent, and reviews are not
+   in it at all). The review read reuses the `prReview.groupBy` shape
+   `lastSignalPerDeveloper` already uses.
+
+   The consequence is deliberate and must not be "fixed" later: the digest's
+   active set is broader than the board's, so the digest flags *fewer* people
+   than a reader might infer from the board. Broader is the safe direction —
+   every signal added is a person no longer wrongly named — but it means the
+   card must state exactly which signals count (§6).
+
+4. **Refuse to flag on an incomplete read.**
+
+   `listCommitsPage` windows on `committedAt`, which is nullable, and
+   `github-commit-reconciler.service.ts` — the only thing that backfills it —
+   is *one-off maintenance* triggered from an admin endpoint, not a scheduled
+   job. Its docblock names an ongoing cause, not merely a historical one:
+   commits "that outran the enrichment's bounded per-tick budget". So a commit
+   can land today with a null `committedAt` and stay that way indefinitely,
+   invisible to the Overview read.
+
+   The digest therefore also checks for commits dated in the window by
+   `authoredAt`. A roster member with such a commit whose `committedAt` is
+   null is classed **`incomplete`** — left off the list, not named — and
+   recorded with that reason in the run row. This is the only place the digest
+   knowingly diverges from the board, and it diverges only where the board is
+   provably missing a commit.
+
+   (The Overview's own day-bucketing already uses `c.committedAt ??
+   c.authoredAt`, so this fallback is the established idiom for this column,
+   not a new invention.)
+
+   Separately, if `listCommitsPage` returns `truncated: true`, the commit read
+   is short and the active set is unreliable: no named list, outcome
+   `withheld_truncated_read`. At `COMMIT_READ_LIMIT` (20,000) a single day
+   will not normally reach this, but the flag exists so that hitting the
+   ceiling is "reported rather than quietly changing the answer", and a
+   silently short set would flag everyone it omitted.
+
+5. **Resolve each roster entry** against `attributionIndex(tenantId)`.
    Unresolvable entries go to the `unresolved` bucket and are never reported
-   as "no commit".
+   as inactive.
 
-5. **Subtract existing suppressions** — live `WatchlistExclusion` rows,
+6. **Subtract existing suppressions** — live `WatchlistExclusion` rows,
    `isBotDeveloper`, `AttributionIndex.excluded`, `isAnonymizedAccount` —
    reusing the predicates the Watchlist applies rather than reimplementing
    them.
 
-6. **Sanity gate on the result.** If the flagged share of the roster exceeds
+7. **Sanity gate on the result.** If the flagged share of the roster exceeds
    `IMPLAUSIBLE_FLAGGED_SHARE` (an exported constant, 0.8), withhold the names
    and send the count with an explanatory note — outcome
    `withheld_implausible`. This covers the public-holiday case, which SprintIQ
@@ -199,16 +261,16 @@ The pass, in order:
    dressed as a fact". A constant rather than tenant config, until there is a
    tenant that needs a different value.
 
-7. **When nobody is flagged, still post** — "all N tracked developers
-   committed on <day>", outcome `sent_all_clear`. Silence is
-   indistinguishable from a dead cron, and a daily job whose liveness cannot
-   be observed stops being trusted.
+8. **When nobody is flagged, still post** — "all N tracked developers were
+   active on <day>", outcome `sent_all_clear`. Silence is indistinguishable
+   from a dead cron, and a daily job whose liveness cannot be observed stops
+   being trusted.
 
-Two conditions withhold the named list — stale collection and an implausible
-share — and both still post something, so the channel always distinguishes
-"nothing to report" from "this job is broken". Every outcome records its
-reason in `NoCommitDigestRun`. The design prefers under-reporting loudly to
-over-reporting confidently.
+Three conditions withhold the named list — stale collection, a truncated
+commit read, and an implausible share — and all three still post something, so
+the channel always distinguishes "nothing to report" from "this job is
+broken". Every outcome records its reason in `NoCommitDigestRun`. The design
+prefers under-reporting loudly to over-reporting confidently.
 
 ## 6. Delivery
 
@@ -248,12 +310,12 @@ connector.
 **Card contents.** Alphabetical by display name, never ordered by any
 quantity (§3).
 
-- Heading naming the IST day reported on, e.g. *Daily commit check — Fri 18 Sep*.
+- Heading naming the IST day reported on, e.g. *Daily activity check — Fri 18 Sep*.
 - The count (`9 of 66 tracked developers`) and the names.
-- **The rule, displayed inline:** "Flagged = no commit authored or committed
-  on this day (IST). Excludes bots, admin-excluded accounts, and developers on
-  recorded leave. Commits are the only signal counted — reviews, PRs and Jira
-  work are not."
+- **The rule, displayed inline:** "Flagged = no commit, pull request opened or
+  merged, or review submitted on this day (IST). Excludes bots,
+  admin-excluded accounts, and developers on recorded leave. Jira ticket
+  activity is not counted."
 - A freshness line: "Data collected through <timestamp>."
 - Framed as a prompt to check in, not a verdict, matching the "go ask, don't
   conclude" stance the existing boards are written to.
@@ -287,7 +349,8 @@ every other IST primitive, and both schedulers import it — so a second context
 does not hardcode `'Asia/Kolkata'`.
 
 **Failure handling.** Outcomes are `sent`, `sent_all_clear`,
-`withheld_stale_data`, `withheld_implausible`, `failed`, each with a reason in
+`withheld_stale_data`, `withheld_truncated_read`, `withheld_implausible`,
+`failed`, each with a reason in
 `detail`. A failed day is **not** auto-retried the following morning: a list
 of yesterday's names arriving a day late is worse than no list. Recovery is an
 explicit manual act, and the run row makes the gap visible rather than silent.
@@ -331,14 +394,24 @@ Shaped by how the hosted deployment actually operates.
    posted until the disagreement is understood.
 6. One deliberate live post to the channel, then enable the cron.
 
-**Testing.** Unit coverage on: `previousWorkingDay` (Monday→Friday);
-detection against a fixture attribution index, specifically the
-null-`committedAt` commit, an unresolved roster entry, and each suppression
-path; the freshness gate and the 80% gate; the empty case producing the
-positive message; the card builder (alphabetical order, markdown escaping,
-rule text present); the client (202 is success, 429 retries, 403 does not, URL
-absent from logs). Plus a tenant-isolation test, which CLAUDE.md requires for
-any new data path, asserting tenant A's roster never reaches tenant B's run.
+**Testing.** Unit coverage on:
+
+- `previousWorkingDay` — Monday reports Friday.
+- The set subtraction itself: a roster member active by **each** of the four
+  signals in §5.3 is not flagged (four separate cases, since a regression in
+  any one read silently re-adds people to the list).
+- The `incomplete` path: a commit dated in the window by `authoredAt` with a
+  null `committedAt` leaves that person off the list and records the reason.
+- Each suppression path — leave, bot, admin-excluded, anonymized — and an
+  unresolved roster entry.
+- All three withhold gates: stale collection, `truncated: true`, and the 80%
+  share; plus the all-clear case producing a positive message.
+- The card builder — alphabetical order, markdown escaping, rule text present
+  and naming all four signals.
+- The client — 202 is success, 429 retries, 403 does not, URL absent from
+  logs.
+- A tenant-isolation test, which CLAUDE.md requires for any new data path,
+  asserting tenant A's roster never reaches tenant B's run.
 
 No test posts to Teams; the client is mocked throughout.
 
