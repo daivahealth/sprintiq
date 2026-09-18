@@ -19,7 +19,13 @@
 - **Names are sorted alphabetically by display name, never by any volume.** CLAUDE.md forbids volume ranking.
 - **Ingested display names are untrusted** and must be markdown-escaped before embedding in a card.
 - **New IDs use `newId()`** from `src/common/id.ts` (ULID), supplied on create.
-- Lint verification is `npm run lint:ci`. **Never** use `npm run lint` to verify — it passes `--fix` and cannot fail.
+- **Lint verification (corrected 2026-09-18 during execution).** Never use `npm run lint` — it passes `--fix` and therefore cannot fail. But `npm run lint:ci` cannot pass on this Windows checkout either: `core.autocrlf=true` rewrites every file to CRLF and `prettier/prettier` flags every line, so an untouched file such as `developer-activity.service.ts` reports 1391 errors on its own. It is a checkout artifact, not a code defect. Verify with:
+
+  ```bash
+  cd backend && npx eslint "{src,test}/**/*.ts" 2>&1 | grep -v 'Delete `␍`'
+  ```
+
+  The gate is **zero errors**, and no warnings beyond the 3 pre-existing `@typescript-eslint/no-explicit-any` warnings that are the repo's baseline.
 - Migrations are **not** applied automatically on the host. Generate SQL; a human applies it.
 - Commit after every task. Branch is `feat/daily-commit-digest`.
 
