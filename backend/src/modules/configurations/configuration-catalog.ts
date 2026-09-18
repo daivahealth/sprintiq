@@ -186,6 +186,11 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         label: 'Teams webhook ref',
         kind: 'secret-ref',
       },
+      {
+        key: 'dailyDigestEnabled',
+        label: 'Daily activity digest enabled',
+        kind: 'boolean',
+      },
       { key: 'emailFrom', label: 'Email from address', kind: 'text' },
     ],
   },
