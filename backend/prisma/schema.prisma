@@ -859,7 +859,9 @@ model NoCommitDigestRun {
   incomplete   Json
   /// Machine-readable reason or explanation if the run did not send or was withheld.
   detail       String?
-  /// When the notification was delivered, if it was sent. Null if withheld or failed.
+  /// When a card was posted to the channel. Set for `sent`, `sent_all_clear`
+  /// and all three `withheld_*` outcomes, since a card is posted for those
+  /// too — only the names are missing from it. Null only for `failed`.
   deliveredAt  DateTime?
   createdAt    DateTime  @default(now())
 
