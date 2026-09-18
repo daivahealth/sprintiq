@@ -19,10 +19,12 @@ Microsoft Teams group at 10:30 IST the following morning. The roster must be
 editable by an admin so that developers joining later are covered without a
 deploy.
 
-The request was phrased as "no commit in the last 24 hours". The rule settled
-in §5 is deliberately wider than that — commit, PR opened or merged, or review
-submitted — because the narrower reading names reviewers and PR-only days as
-idle. The window is the previous **working** day, so Monday reports Friday.
+The request was phrased as "no commit in the last 24 hours". Two refinements
+were settled during design: the window is the previous **working** day, so
+Monday reports Friday rather than naming the roster for a quiet Sunday; and
+"active" is whatever the Activity Overview board already counts — commits plus
+pull requests opened — so the notification and the dashboard can never
+disagree about the same person on the same day (§5.3).
 
 The data is read from the delivery graph on the hosted deployment, not from a
 local workspace.
@@ -69,13 +71,15 @@ Two honesty constraints follow from the rule and are load-bearing in the
 design rather than advisory:
 
 1. **The message states what it measured.** "No tracked signal yesterday" is
-   not "did no work": a developer mid-branch, someone pairing, someone on
-   Jira-only or design work, and anyone whose commits are not yet collected
-   all read as inactive. The card names the signals it counted, in the text.
+   not "did no work": a reviewer, a developer mid-branch, someone pairing,
+   someone on Jira-only or design work, someone merging work opened last
+   week, and anyone whose commits are not yet collected all read as inactive.
 
-   This is also why the active set is defined broadly (§5.3) rather than on
-   commits alone: each additional signal is a person the message no longer
-   names wrongly.
+   The active set is deliberately narrow — exact parity with the Overview
+   board (§5.3) — so this constraint carries more weight than it otherwise
+   would: the card must enumerate what it counted **and** name reviewing
+   explicitly as uncounted. That text is what makes the message defensible to
+   the person named in it, and it is not optional decoration.
 2. **The list is never ordered by volume.** Alphabetical by display name,
    always — the same constraint the Watchlist enforces, for the same stated
    reason: a volume ordering converts a prompt-to-check-in into the
@@ -193,27 +197,34 @@ The pass, in order:
    the correct starting point; if it proves too noisy the adjustment is a
    coverage threshold, not removal of the gate.
 
-3. **Build the active set for the day.** A developer is active if any of these
-   falls inside the window:
+3. **Build the active set for the day** — exactly the Overview's `withSignal`,
+   no wider and no narrower:
 
    | Signal | Read | Window field |
    |---|---|---|
    | Commit | `listCommitsPage` + `attributeCommit` | `committedAt` |
    | PR opened | `pullRequest` | `openedAt` |
-   | PR merged | `pullRequest` | `mergedAt` |
-   | Review submitted | `prReview.groupBy` on `reviewerLogin` | `submittedAt` |
 
-   This is a **superset** of the Overview's `withSignal`, which covers only
-   commits and PRs *opened* in the window (its PR read filters `openedAt`, so
-   a PR merged yesterday but opened last week is absent, and reviews are not
-   in it at all). The review read reuses the `prReview.groupBy` shape
-   `lastSignalPerDeveloper` already uses.
+   **Exact parity with the board is the requirement here** (decided
+   2026-09-18), and it is the reason the set stops at these two. The digest
+   must never be arguable against the dashboard someone opens to check it:
+   one definition, one number, no explaining why two SprintIQ surfaces
+   disagree about the same person on the same day.
 
-   The consequence is deliberate and must not be "fixed" later: the digest's
-   active set is broader than the board's, so the digest flags *fewer* people
-   than a reader might infer from the board. Broader is the safe direction —
-   every signal added is a person no longer wrongly named — but it means the
-   card must state exactly which signals count (§6).
+   What parity costs, recorded so it is not rediscovered as a bug:
+
+   - **A reviewer reads as inactive.** `prReview` is not in the Overview's
+     set, so someone who spent the day reviewing is flagged. The card must
+     say so (§3.1, §6) — this is the single largest source of a
+     justified objection to being named, and the text is what answers it.
+   - **A PR merged but opened earlier does not count.** The Overview's PR read
+     filters `openedAt`; `mergedAt` is used only for counting, never for
+     window membership. So finishing and merging week-old work is not a
+     signal.
+
+   Widening the set later is a real improvement to both surfaces, but it must
+   be made **in the Overview first** and inherited here — never added here
+   alone, which is exactly how the two would drift apart again.
 
 4. **Refuse to flag on an incomplete read.**
 
@@ -312,10 +323,11 @@ quantity (§3).
 
 - Heading naming the IST day reported on, e.g. *Daily activity check — Fri 18 Sep*.
 - The count (`9 of 66 tracked developers`) and the names.
-- **The rule, displayed inline:** "Flagged = no commit, pull request opened or
-  merged, or review submitted on this day (IST). Excludes bots,
-  admin-excluded accounts, and developers on recorded leave. Jira ticket
-  activity is not counted."
+- **The rule, displayed inline:** "Flagged = no commit and no pull request
+  opened on this day (IST) — the same reads as the Activity Overview board.
+  Code review, merging earlier work, and Jira activity are **not** counted,
+  so a day spent reviewing shows here as inactive. Excludes bots,
+  admin-excluded accounts, and developers on recorded leave."
 - A freshness line: "Data collected through <timestamp>."
 - Framed as a prompt to check in, not a verdict, matching the "go ask, don't
   conclude" stance the existing boards are written to.
@@ -397,17 +409,21 @@ Shaped by how the hosted deployment actually operates.
 **Testing.** Unit coverage on:
 
 - `previousWorkingDay` — Monday reports Friday.
-- The set subtraction itself: a roster member active by **each** of the four
-  signals in §5.3 is not flagged (four separate cases, since a regression in
-  any one read silently re-adds people to the list).
+- The set subtraction itself: a roster member active by **each** of the two
+  signals in §5.3 is not flagged (separate cases, since a regression in
+  either read silently re-adds people to the list).
+- A parity test: for one fixture day, the digest's active set equals the set
+  the Overview computes from the same rows. This is the guard on §5.3 — the
+  two are required to agree, so something has to fail when they stop.
 - The `incomplete` path: a commit dated in the window by `authoredAt` with a
   null `committedAt` leaves that person off the list and records the reason.
 - Each suppression path — leave, bot, admin-excluded, anonymized — and an
   unresolved roster entry.
 - All three withhold gates: stale collection, `truncated: true`, and the 80%
   share; plus the all-clear case producing a positive message.
-- The card builder — alphabetical order, markdown escaping, rule text present
-  and naming all four signals.
+- The card builder — alphabetical order, markdown escaping, and rule text
+  present that both names the two counted signals and states that reviewing
+  is not counted (§3.1 depends on that sentence being there).
 - The client — 202 is success, 429 retries, 403 does not, URL absent from
   logs.
 - A tenant-isolation test, which CLAUDE.md requires for any new data path,
@@ -443,5 +459,9 @@ Per CLAUDE.md's documentation-routing rules:
   this iteration.
 - A holiday calendar. The 80% gate is the mitigation; a real calendar is a
   separate decision with its own per-tenant data.
+- Reviews and merge-of-earlier-work as activity signals. Excluded by the
+  parity requirement in §5.3, not because they are the wrong signals. If they
+  should count, the change belongs in the Overview's `withSignal` and is
+  inherited here — never added here alone.
 - Extending attributed notifications to any other metric. §3 covers this
   digest only.
