@@ -66,4 +66,25 @@ describe('TrackedDevelopersController', () => {
       data: { active: false },
     });
   });
+
+  it('reactivates a developer who was previously removed from the roster', async () => {
+    // Guard: if update loses active: true, a removed developer can never be
+    // re-added. The upsert's update branch must explicitly flip active back.
+    const prisma = {
+      trackedDeveloper: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const controller = new TrackedDevelopersController(prisma as never);
+
+    await controller.upsert(user, 'Adarsh-Naik_athma', {
+      note: 'returned from leave',
+    });
+
+    const call = prisma.trackedDeveloper.upsert.mock.calls[0][0];
+    expect(call.update).toEqual({
+      active: true,
+      note: 'returned from leave',
+    });
+  });
 });
