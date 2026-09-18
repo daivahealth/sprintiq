@@ -10,6 +10,7 @@ import { DashboardsService } from './dashboards.service';
 import { DeveloperRolesController } from './developer-roles.controller';
 import { InsightsController } from './insights.controller';
 import { ReleasePlanController } from './release-plan.controller';
+import { TrackedDevelopersController } from './tracked-developers.controller';
 import { WatchlistExclusionsController } from './watchlist-exclusions.controller';
 
 /** BC-13 Dashboards & Reporting (read-model / BFF) + entity catalogs. */
@@ -28,6 +29,7 @@ import { WatchlistExclusionsController } from './watchlist-exclusions.controller
     CatalogController,
     InsightsController,
     ReleasePlanController,
+    TrackedDevelopersController,
     WatchlistExclusionsController,
     DeveloperRolesController,
   ],
