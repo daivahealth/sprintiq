@@ -467,4 +467,28 @@ describe('activeDeveloperSet', () => {
     const set = activeDeveloperSet([], [{ authorLogin: null }], index);
     expect(set.size).toBe(0);
   });
+
+  it('attributes a commit login unknown to the index by the raw login', () => {
+    // `attributeCommit`'s fallback for a login the resolution pass hasn't
+    // reached yet. If this regresses, the person it drops is exactly someone
+    // who committed but would be named in a Teams channel as having done
+    // nothing — the highest-cost failure this function can have.
+    const set = activeDeveloperSet(
+      [{ authorLogin: 'dave_unresolved', authorEmail: null }],
+      [],
+      index,
+    );
+    expect([...set]).toEqual(['dave_unresolved']);
+  });
+
+  it('dedupes a person who is both a commit author and a PR author', () => {
+    // The union must be a set of people, not a tally of events. Two records
+    // for the same person should never inflate developersWithSignal by one.
+    const set = activeDeveloperSet(
+      [{ authorLogin: 'alice_athma', authorEmail: null }],
+      [{ authorLogin: 'alice_athma' }],
+      index,
+    );
+    expect([...set]).toEqual(['alice_athma']);
+  });
 });
