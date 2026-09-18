@@ -262,12 +262,10 @@ describe('implausible-share gate', () => {
     const result = await service.detect('tenant_a', REPORTED_DAY);
 
     expect(result.withhold?.outcome).toBe('withheld_implausible');
-    expect(result.evaluation.flagged.length).toBe(5);
-    // detect() itself does not empty the list for this gate (unlike the
-    // stale/truncated gates, which return an empty evaluation outright) — see
-    // the report for why that asymmetry is worth a second look. The consumer
-    // (NotificationsService.runDigest) is what turns `withhold !== null` into
-    // an empty `flagged` array before anything is sent.
+    // flagged is emptied at this gate too (see the invariant test below), so
+    // the real count lives only in the detail message now.
+    expect(result.evaluation.flagged).toEqual([]);
+    expect(result.withhold?.detail).toContain('5 of 5');
   });
 
   it('does not withhold at exactly the threshold share — the comparison is strictly greater-than, not greater-or-equal', async () => {
@@ -325,8 +323,47 @@ describe('implausible-share gate', () => {
 
     expect(result.evaluation.unresolved.length).toBe(3);
     expect(result.evaluation.suppressed.length).toBe(2);
-    expect(result.evaluation.flagged.length).toBe(5);
+    // The real flagged count (5) is what drove the gate — asserted via the
+    // detail message, since the array itself is emptied at this gate.
+    expect(result.evaluation.flagged).toEqual([]);
     expect(result.withhold?.outcome).toBe('withheld_implausible');
+    expect(result.withhold?.detail).toContain('5 of 5');
+  });
+
+  it('empties flagged at this gate while keeping unresolved and incomplete intact, and keeps the real count in the detail message', async () => {
+    // Pins the invariant documented on `DigestDetection.evaluation`: after
+    // detect() returns, `flagged` is populated only when `withhold` is null,
+    // at every gate — not just the two that had nothing computed yet. A
+    // future caller that reads `evaluation.flagged` without first checking
+    // `withhold` must never be able to see a name here. `unresolved` and
+    // `incomplete` are untouched because they are lineage the spec requires
+    // be reported even when names are withheld, and neither can name someone
+    // as idle in a channel.
+    const roster7 = roster(['u1', 'inc1', 'f1', 'f2', 'f3', 'f4', 'f5']);
+    const { service } = harness({
+      roster: roster7,
+      // u1 deliberately excluded — that absence is what makes it unresolved.
+      displayNames: names(
+        ['inc1', 'f1', 'f2', 'f3', 'f4', 'f5'].map((id) => [id, id]),
+      ) as Map<string, string>,
+      // inc1 has a commit the day's ordinary read cannot see, so it lands in
+      // `incomplete`, not `flagged`.
+      invisibleRows: [{ authorLogin: 'inc1', authorEmail: null }],
+      // f1..f5 have no signal at all: evaluated = 7 - 1 unresolved = 6,
+      // flagged = 5, share = 5/6 ≈ 0.83 > 0.8 — implausible.
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('withheld_implausible');
+    expect(result.evaluation.flagged).toEqual([]);
+    expect(result.evaluation.unresolved.map((u) => u.developer)).toEqual([
+      'u1',
+    ]);
+    expect(result.evaluation.incomplete.map((d) => d.developer)).toEqual([
+      'inc1',
+    ]);
+    expect(result.withhold?.detail).toContain('5 of 6');
   });
 });
 

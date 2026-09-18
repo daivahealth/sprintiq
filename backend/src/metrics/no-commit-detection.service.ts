@@ -126,6 +126,17 @@ export function implausible(flaggedCount: number, evaluated: number): boolean {
 export interface DigestDetection {
   reportedDay: string;
   rosterCount: number;
+  /**
+   * Invariant: `evaluation.flagged` is populated only when `withhold` is
+   * null — at every gate, not just the ones that had nothing to compute yet.
+   * Gates 1 and 2 return an empty evaluation because nothing has been
+   * computed at that point; gate 3 has already computed a real evaluation by
+   * the time it decides to withhold, and empties `flagged` before returning
+   * it rather than relying on every caller to remember to check `withhold`
+   * first. `unresolved`, `incomplete` and `suppressed` are left intact at
+   * every gate — they are lineage the spec requires be reported even when
+   * names are withheld, and none of them can name someone in a channel.
+   */
   evaluation: RosterEvaluation;
   /** Non-null when the names must not be sent, with the reason to record. */
   withhold: { outcome: DigestOutcome; detail: string } | null;
@@ -256,13 +267,24 @@ export class NoCommitDetectionService {
 
     // Gate 3: too many to be a finding about people.
     if (implausible(evaluation.flagged.length, evaluated)) {
+      // Built from the REAL flagged count before `flagged` is emptied below
+      // — this count is the entire diagnostic value of the message ("N of M
+      // evaluated developers..."). Reading it off the emptied evaluation
+      // instead would report "0 of M", which hides the exact thing this gate
+      // exists to surface.
+      const detail = `${evaluation.flagged.length} of ${evaluated} evaluated developers had no signal on ${reportedDay} — more likely a holiday or a collection problem than that many idle developers. Names withheld.`;
       return {
         reportedDay,
         rosterCount: roster.length,
-        evaluation,
+        // Only `flagged` is emptied — see the invariant documented on
+        // `DigestDetection.evaluation`. `unresolved`/`incomplete`/`suppressed`
+        // survive because they are lineage the spec requires be reported even
+        // when names are withheld, and emptying the whole evaluation here
+        // (matching gates 1 and 2) would silently discard it.
+        evaluation: { ...evaluation, flagged: [] },
         withhold: {
           outcome: 'withheld_implausible',
-          detail: `${evaluation.flagged.length} of ${evaluated} evaluated developers had no signal on ${reportedDay} — more likely a holiday or a collection problem than that many idle developers. Names withheld.`,
+          detail,
         },
         collectedThroughAt: freshness.collectedThroughAt,
       };
