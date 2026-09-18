@@ -387,7 +387,6 @@ export class DeveloperActivityService {
       byDeveloper: Map<string, number>;
     }
     const byDay = new Map<string, DayAcc>();
-    const withSignal = new Set<string>();
     const committers = new Set<string>();
     // Window totals per person, accumulated from the same passes the day
     // buckets already make — the roster costs no extra query.
@@ -426,7 +425,6 @@ export class DeveloperActivityService {
         loc.additions += c.additions;
         loc.deletions += c.deletions;
         locByDeveloper.set(person, loc);
-        withSignal.add(person);
         committers.add(person);
       } else {
         acc.unattributed += 1;
@@ -441,7 +439,6 @@ export class DeveloperActivityService {
       }
       if (pr.authorLogin) {
         const person = index.byLogin.get(pr.authorLogin) ?? pr.authorLogin;
-        withSignal.add(person);
         const acc = prsByDeveloper.get(person) ?? { opened: 0, merged: 0 };
         acc.opened += 1;
         if (pr.mergedAt) {
@@ -450,6 +447,9 @@ export class DeveloperActivityService {
         prsByDeveloper.set(person, acc);
       }
     }
+
+    // One definition, shared with the daily digest — see `activeDeveloperSet`.
+    const withSignal = activeDeveloperSet(commits, prs, index);
 
     // Same definition the Watchlist reports, via the same function — these two
     // numbers are the same claim on two pages and disagreed on real data while
@@ -1327,6 +1327,47 @@ export function attributeCommit(
     return index.byEmail.get(commit.authorEmail.toLowerCase());
   }
   return undefined;
+}
+
+/**
+ * Who had a delivery signal in a window: commit authors ∪ PR authors.
+ *
+ * **The single definition of "active", used by both the Activity Overview
+ * board and the daily digest notification.** It exists as one function
+ * because these are the same claim on two surfaces, and the codebase has
+ * already paid once for computing one number in two places — see the comment
+ * above `planningGapDevelopers`, where Overview and Watchlist disagreed on
+ * real data (3 versus 0).
+ *
+ * That matters more for the digest than for the board: the digest NAMES the
+ * people who are absent from this set, so any signal the board counts and the
+ * digest does not becomes a person wrongly named in a Teams channel. Widening
+ * this set is a legitimate improvement; widening it for only one caller is
+ * not, and is impossible while both go through here.
+ */
+export function activeDeveloperSet(
+  commits: readonly {
+    authorLogin: string | null;
+    authorEmail: string | null;
+  }[],
+  prs: readonly { authorLogin: string | null }[],
+  index: { byLogin: Map<string, string>; byEmail: Map<string, string> },
+): Set<string> {
+  const active = new Set<string>();
+  for (const commit of commits) {
+    const person = attributeCommit(commit, index);
+    if (person) {
+      active.add(person);
+    }
+  }
+  for (const pr of prs) {
+    if (pr.authorLogin) {
+      // Same fallback `attributeCommit` uses: a login is an identity even
+      // before the resolution pass has reached it.
+      active.add(index.byLogin.get(pr.authorLogin) ?? pr.authorLogin);
+    }
+  }
+  return active;
 }
 
 function hoursBetween(from: Date, to: Date): number {

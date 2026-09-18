@@ -2,6 +2,7 @@ import {
   WATCHLIST_ACTIVE_WITHIN_WORKING_DAYS,
   WATCHLIST_QUIET_WITHIN_WORKING_DAYS,
   activeDeveloperRoster,
+  activeDeveloperSet,
   DEVELOPER_ROLES,
   bucketFor,
   isDeveloperRole,
@@ -422,5 +423,48 @@ describe('isDeveloperRole', () => {
     for (const bad of ['dev', 'qa', 'Dev', 'DEVELOPER', '', 'OTHER', null]) {
       expect(isDeveloperRole(bad)).toBe(false);
     }
+  });
+});
+
+describe('activeDeveloperSet', () => {
+  const index = {
+    byLogin: new Map([['alice_athma', 'alice_athma']]),
+    byEmail: new Map([['bob@example.com', 'bob_athma']]),
+  };
+
+  it('is the union of commit authors and PR authors', () => {
+    // The Overview's "developers with a signal" tile counts both. A set built
+    // from committers alone is a different, quietly narrower definition.
+    const set = activeDeveloperSet(
+      [{ authorLogin: 'alice_athma', authorEmail: null }],
+      [{ authorLogin: 'carol_athma' }],
+      index,
+    );
+    expect([...set].sort()).toEqual(['alice_athma', 'carol_athma']);
+  });
+
+  it('attributes a commit with no login through its email', () => {
+    // GitHub omits author.login unless the commit email is verified on an
+    // account, so this is the ordinary case, not an edge case.
+    const set = activeDeveloperSet(
+      [{ authorLogin: null, authorEmail: 'BOB@example.com' }],
+      [],
+      index,
+    );
+    expect([...set]).toEqual(['bob_athma']);
+  });
+
+  it('ignores a commit that cannot be attributed to anyone', () => {
+    const set = activeDeveloperSet(
+      [{ authorLogin: null, authorEmail: 'nobody@example.com' }],
+      [],
+      index,
+    );
+    expect(set.size).toBe(0);
+  });
+
+  it('ignores a PR with no author login', () => {
+    const set = activeDeveloperSet([], [{ authorLogin: null }], index);
+    expect(set.size).toBe(0);
   });
 });
