@@ -308,7 +308,18 @@ Materialized/derived views over the graph + history:
 
 ---
 
-## 14. Cross-cutting rules (enforced in code & tests)
+## 14. Notifications context (BC-15)
+
+| Entity | Key fields | Notes |
+|---|---|---|
+| `notification_tracked_developer` | `id`, `tenant_id`, `canonical_developer_id`, `added_as`, `active`, `note`, `created_by_user_id`, `created_at`, `updated_at` | The editable roster the daily commit digest evaluates (`@@unique(tenant_id, canonical_developer_id)`). Data rather than a code constant, for the same reason `DeveloperRole`/`IdentityOverride` are (§3.2): an admin adds a joiner without a deploy. `added_as` keeps the entry's original string verbatim, so a login that never resolves to a `DeveloperIdentity` stays displayable and diagnosable instead of reading as a developer who did nothing — those two states are otherwise indistinguishable, and one of them is a false accusation. `active` is soft-deleted (`false`, not a deleted row): removing someone from the roster is a recorded act, not a gap. |
+| `notification_no_commit_run` | `id`, `tenant_id`, `reported_day`, `outcome`, `roster_count`, `flagged_count`, `flagged` (JSON), `unresolved` (JSON), `incomplete` (JSON), `detail`, `delivered_at`, `created_at` | One row per tenant per reported IST day (`@@unique(tenant_id, reported_day)`) — lineage for a message that names people ("why was I on Tuesday's list?" must stay answerable) and the idempotency key that stops a restart or an overlapping cron fire from double-posting one day's list, since the second insert loses. `outcome` is one of `sent \| sent_all_clear \| withheld_stale_data \| withheld_truncated_read \| withheld_implausible \| failed`. `flagged` is the exact list sent; `unresolved` and `incomplete` are reported but never counted as inactive. `delivered_at` is set whenever a card reached the channel — true for `sent`, `sent_all_clear`, and all three `withheld_*` outcomes, since a card posts for those too with only the names missing — and is `null` only for `failed`. |
+
+Full behavior spec: [features/NOTIFICATIONS.md](../features/NOTIFICATIONS.md). Governance: [ADR-0009](../ADR/0009-attributed-commit-digest.md) — this is the second individual-attributed feature under CLAUDE.md's "Metrics are ethics-first" rule, after the Sprint Health board's `sprint_productivity_grade` (METRICS.md).
+
+---
+
+## 15. Cross-cutting rules (enforced in code & tests)
 
 - **Tenant scope:** composite indexes lead with `tenant_id`; repository/query layer injects `tenant_id`; isolation tests assert no cross-tenant read path exists.
 - **Soft lifecycle:** domain entities prefer state + history over destructive deletes; raw events are never deleted (retention policy archives, not drops).
