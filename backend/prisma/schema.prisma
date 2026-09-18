@@ -820,7 +820,9 @@ model TrackedDeveloper {
   addedAs              String
   /// Soft, so removing someone from the roster is a recorded act, not a gap.
   active               Boolean  @default(true)
+  /// Free-text context. Displayed to admins only.
   note                 String?
+  /// Who added this roster entry. This is a human judgement and it carries a name.
   createdByUserId      String
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -845,7 +847,9 @@ model NoCommitDigestRun {
   /// sent | sent_all_clear | withheld_stale_data | withheld_truncated_read
   /// | withheld_implausible | failed
   outcome      String
+  /// How many developers were on the roster that day.
   rosterCount  Int
+  /// How many developers were flagged (named in the notification).
   flaggedCount Int
   /// The exact list sent; roster entries whose identity did not resolve; and
   /// those withheld because their commit data for the day was incomplete.
@@ -853,7 +857,9 @@ model NoCommitDigestRun {
   flagged      Json
   unresolved   Json
   incomplete   Json
+  /// Machine-readable reason or explanation if the run did not send or was withheld.
   detail       String?
+  /// When the notification was delivered, if it was sent. Null if withheld or failed.
   deliveredAt  DateTime?
   createdAt    DateTime  @default(now())
 
