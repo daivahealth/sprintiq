@@ -801,3 +801,63 @@ model MetricValue {
   @@index([tenantId, metricKey, scopeType, scopeId])
   @@map("metrics_value")
 }
+
+/// The editable roster of developers whose daily activity is tracked by the
+/// digest notification.
+///
+/// Data rather than a code constant, for the same reason `DeveloperRole` and
+/// `IdentityOverride` are: an admin adds a new joiner without a deploy, and
+/// the entry carries the name of whoever added it.
+model TrackedDeveloper {
+  id                   String   @id
+  tenantId             String
+  /// Who this tracks, as `DeveloperIdentity.canonicalDeveloperId`.
+  canonicalDeveloperId String
+  /// The string the entry was ADDED as, kept verbatim. An entry whose
+  /// identity never resolved stays displayable and diagnosable instead of
+  /// reading as a developer who did nothing — the two are indistinguishable
+  /// without this column, and one of them is a false accusation.
+  addedAs              String
+  /// Soft, so removing someone from the roster is a recorded act, not a gap.
+  active               Boolean  @default(true)
+  note                 String?
+  createdByUserId      String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([tenantId, canonicalDeveloperId])
+  @@index([tenantId, active])
+  @@map("notification_tracked_developer")
+}
+
+/// One row per reported day: what was evaluated, who was named, what was
+/// delivered.
+///
+/// Lineage for a message that names people. "Why was I on Tuesday's list?"
+/// must be answerable after the fact, and `@@unique([tenantId, reportedDay])`
+/// is also the idempotency key — a restart or a redeploy at 10:30 cannot
+/// double-post one day's list, because the second insert loses.
+model NoCommitDigestRun {
+  id           String    @id
+  tenantId     String
+  /// The IST calendar day reported on (YYYY-MM-DD).
+  reportedDay  String
+  /// sent | sent_all_clear | withheld_stale_data | withheld_truncated_read
+  /// | withheld_implausible | failed
+  outcome      String
+  rosterCount  Int
+  flaggedCount Int
+  /// The exact list sent; roster entries whose identity did not resolve; and
+  /// those withheld because their commit data for the day was incomplete.
+  /// The latter two are reported, never counted as inactive.
+  flagged      Json
+  unresolved   Json
+  incomplete   Json
+  detail       String?
+  deliveredAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@unique([tenantId, reportedDay])
+  @@index([tenantId, createdAt])
+  @@map("notification_no_commit_run")
+}
