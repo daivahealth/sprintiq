@@ -1,5 +1,6 @@
 import { Logger, Module } from '@nestjs/common';
 import { ConnectionsModule } from '../modules/connections/connections.module';
+import { SecretsModule } from '../common/secrets/secrets.module';
 import { CollectorRegistry } from './framework/collector.registry';
 import { IngestionService } from './ingestion/ingestion.service';
 import { CollectionProgressService } from './scheduler/collection-progress.service';
@@ -18,6 +19,7 @@ import {
 } from './sources/github/github-source-client';
 import { GithubClient } from './sources/github/github.client';
 import { GithubCollector } from './sources/github/github.collector';
+import { TeamsClient } from './delivery/teams.client';
 import { JiraAssigneeEmailReconcilerService } from './sources/jira/jira-assignee-email-reconciler.service';
 import { JiraSprintReconcilerService } from './sources/jira/jira-sprint-reconciler.service';
 import { JiraStoryDateReconcilerService } from './sources/jira/jira-story-date-reconciler.service';
@@ -34,7 +36,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
  * raw-event store.
  */
 @Module({
-  imports: [ConnectionsModule],
+  imports: [ConnectionsModule, SecretsModule],
   controllers: [WebhooksController],
   providers: [
     IngestionService,
@@ -73,6 +75,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     CollectorSchedulerService,
     BackfillSchedulerService,
     CollectionProgressService,
+    TeamsClient,
   ],
   exports: [
     IngestionService,
@@ -86,6 +89,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     JiraStoryDateReconcilerService,
     JiraAssigneeEmailReconcilerService,
     CollectionProgressService,
+    TeamsClient,
   ],
 })
 export class CollectorsModule {}
