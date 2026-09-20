@@ -837,15 +837,20 @@ model TrackedDeveloper {
 ///
 /// Lineage for a message that names people. "Why was I on Tuesday's list?"
 /// must be answerable after the fact, and `@@unique([tenantId, reportedDay])`
-/// is also the idempotency key — a restart or a redeploy at 10:30 cannot
-/// double-post one day's list, because the second insert loses.
+/// is also the idempotency primitive: `NotificationsService.runNoCommitDigest`
+/// claims this row with a `create` BEFORE posting to Teams, and a losing
+/// concurrent `create` (unique-violation `P2002`) means another runner
+/// already owns this day and returns without posting — closing the window a
+/// bare upsert-after-send leaves open, where two runners racing the same day
+/// (a role-ungated cron firing on multiple pods, or a manual re-run racing
+/// the cron) would both read "no row yet" and both post.
 model NoCommitDigestRun {
   id           String    @id
   tenantId     String
   /// The IST calendar day reported on (YYYY-MM-DD).
   reportedDay  String
   /// sent | sent_all_clear | withheld_stale_data | withheld_truncated_read
-  /// | withheld_implausible | failed
+  /// | withheld_implausible | withheld_unevaluable | failed
   outcome      String
   /// How many developers were on the roster that day.
   rosterCount  Int
@@ -857,10 +862,10 @@ model NoCommitDigestRun {
   flagged      Json
   unresolved   Json
   incomplete   Json
-  /// Machine-readable reason or explanation if the run did not send or was withheld.
+  /// Human-readable reason or explanation if the run did not send or was withheld.
   detail       String?
   /// When a card was posted to the channel. Set for `sent`, `sent_all_clear`
-  /// and all three `withheld_*` outcomes, since a card is posted for those
+  /// and all four `withheld_*` outcomes, since a card is posted for those
   /// too — only the names are missing from it. Null only for `failed`.
   deliveredAt  DateTime?
   createdAt    DateTime  @default(now())

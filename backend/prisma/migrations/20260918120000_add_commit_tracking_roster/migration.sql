@@ -30,11 +30,14 @@ CREATE TABLE "notification_tracked_developer" (
 -- delivered. Lineage for a message that names people — "Why was I on Tuesday's
 -- list?" must be answerable after the fact.
 --
--- The (tenantId, reportedDay) unique constraint is also the idempotency key.
--- A restart or redeploy at 10:30 cannot double-post one day's list, because
--- the second insert loses to the unique constraint. This is how a notification
--- that names people stays durable: once sent for a day, it is not sent again
--- for that day, ever.
+-- The (tenantId, reportedDay) unique constraint is the idempotency primitive:
+-- NotificationsService.runNoCommitDigest claims this row with an INSERT
+-- BEFORE posting to Teams, and a losing concurrent INSERT (unique-violation
+-- P2002) means another runner already owns this day and returns without
+-- posting. That claim-before-post ordering is what makes a restart, a
+-- redeploy, or a role-ungated cron firing on multiple pods unable to
+-- double-post one day's list — the constraint alone does nothing if the row
+-- is only written after the POST, which is what an upsert-after-send does.
 --
 -- The "incomplete" column holds developers withheld from the list because
 -- their commit data for the day was incomplete — deliberately distinct from

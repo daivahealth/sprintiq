@@ -42,19 +42,20 @@ Resolution is checked before suppression, suppression before activity, activity 
 
 ---
 
-## 4. The three withhold gates
+## 4. The four withhold gates
 
-Three conditions cause `NoCommitDetectionService.detect()` to withhold the **named list** while still posting a card with a reason (§7). All three exist because naming people confidently on data the pipeline cannot stand behind is worse than a visibly withheld morning.
+Four conditions cause `NoCommitDetectionService.detect()` to withhold the **named list** while still posting a card with a reason (§7). All four exist because naming people confidently on data the pipeline cannot stand behind is worse than a visibly withheld morning.
 
 | Gate | Outcome | Condition | Why |
 |---|---|---|---|
 | 1. Freshness | `withheld_stale_data` | Any active connection's `collectedThroughAt` does not cover the reported day's end | Ingest is poll-based (webhooks stay deferred — [ADR-0008](../ADR/0008-github-graphql-over-webhooks.md)). A stalled collector or an expired token makes every roster member read as inactive; without this gate the job would confidently name all of them. |
 | 2. Truncated read | `withheld_truncated_read` | `CodeService.listCommitsPage` returns `truncated: true` | A short commit read makes the active set unreliable — every developer it omitted would be flagged. This surfaces hitting the row ceiling rather than silently changing the answer. |
-| 3. Implausible share | `withheld_implausible` | Flagged share of the *evaluated* roster (roster minus unresolved minus suppressed) exceeds `IMPLAUSIBLE_FLAGGED_SHARE` (0.8, exported constant) | Covers the public-holiday case SprintIQ cannot model — there is no per-tenant holiday calendar, and inventing one would be a guess dressed as a fact. Naming most of the roster at once is a finding about the day or the pipeline, not about that many people being idle. A constant rather than tenant config until a tenant needs a different value. |
+| 3. Unevaluable roster | `withheld_unevaluable` | Roster is non-empty but every entry is unresolved or suppressed — `evaluated === 0` | Canonical ids can shift after a re-collection ([api/README.md gap #52](../api/README.md)) or a roster can be seeded before identity resolution has run; both leave nothing evaluable. Left unguarded, `evaluated === 0` makes `flagged.length === 0` trivially true and the card would read "All 0 tracked developers had activity" — a confident false all-clear about a roster nothing could actually be said about. |
+| 4. Implausible share | `withheld_implausible` | Flagged share of the *evaluated* roster (roster minus unresolved minus suppressed) exceeds `IMPLAUSIBLE_FLAGGED_SHARE` (0.8, exported constant) | Covers the public-holiday case SprintIQ cannot model — there is no per-tenant holiday calendar, and inventing one would be a guess dressed as a fact. Naming most of the roster at once is a finding about the day or the pipeline, not about that many people being idle. A constant rather than tenant config until a tenant needs a different value. |
 
-Gates run in this order: 1 and 2 return before any per-developer evaluation happens (an empty `RosterEvaluation`); gate 3 has already computed a real evaluation by the time it decides to withhold, and empties only `flagged` before returning — `unresolved`, `incomplete`, and `suppressed` survive on every gate, because they are lineage the ADR-0009 conditions require be reported even when names are withheld, and none of them can name someone in a channel. This is a documented invariant on `DigestDetection.evaluation`: **`evaluation.flagged` is populated only when `withhold` is `null`.**
+Gates run in this order: 1 and 2 return before any per-developer evaluation happens (an empty `RosterEvaluation`); gate 3 has computed a real evaluation, but `flagged` is already empty there by construction (nothing evaluable means nothing flagged); gate 4 has already computed a real, non-empty evaluation by the time it decides to withhold, and empties only `flagged` before returning — `unresolved`, `incomplete`, and `suppressed` survive on every gate, because they are lineage the ADR-0009 conditions require be reported even when names are withheld, and none of them can name someone in a channel. This is a documented invariant on `DigestDetection.evaluation`: **`evaluation.flagged` is populated only when `withhold` is `null`.**
 
-Detail messages carry the diagnostic content — gate 3's message states the real flagged count computed *before* it was emptied ("N of M evaluated developers had no signal..."), which is the entire point of the message; reading the count off the already-emptied evaluation would report "0 of M" and hide the thing the gate exists to surface.
+Detail messages carry the diagnostic content — gate 4's message states the real flagged count computed *before* it was emptied ("N of M evaluated developers had no signal..."), which is the entire point of the message; reading the count off the already-emptied evaluation would report "0 of M" and hide the thing the gate exists to surface. Gate 3's message states plainly that no roster entry could be evaluated and that the roster likely needs re-seeding or identity resolution to catch up.
 
 ---
 
@@ -76,10 +77,11 @@ Every run — `dryRun` excepted, see §8 — produces exactly one of:
 | `sent_all_clear` | Nobody flagged; posted as good news | Yes | No (none to name) |
 | `withheld_stale_data` | Gate 1 | Yes — a card is still posted | No |
 | `withheld_truncated_read` | Gate 2 | Yes — a card is still posted | No |
-| `withheld_implausible` | Gate 3 | Yes — a card is still posted | No |
+| `withheld_unevaluable` | Gate 3 | Yes — a card is still posted | No |
+| `withheld_implausible` | Gate 4 | Yes — a card is still posted | No |
 | `failed` | Delivery itself failed (webhook ref missing, POST rejected after retries) | **No** | N/A — nothing reached the channel |
 
-**A card is posted for all three `withheld_*` outcomes** — only the names are withheld from it, not the send itself. `NoCommitDigestRun.deliveredAt` therefore answers "did a card reach the channel" (true for `sent`, `sent_all_clear`, and every `withheld_*`), which is a different question from `flaggedCount`/`flagged` ("were names in it," empty for every withheld or failed outcome). It is null only for `failed`. A daily job whose liveness cannot be observed stops being trusted — every outcome except an actual delivery failure produces a visible morning message, so silence in the channel means the job did not run at all, never that it decided quietly not to say anything.
+**A card is posted for all four `withheld_*` outcomes** — only the names are withheld from it, not the send itself. `NoCommitDigestRun.deliveredAt` therefore answers "did a card reach the channel" (true for `sent`, `sent_all_clear`, and every `withheld_*`), which is a different question from `flaggedCount`/`flagged` ("were names in it," empty for every withheld or failed outcome). It is null only for `failed`. A daily job whose liveness cannot be observed stops being trusted — every outcome except an actual delivery failure produces a visible morning message, so silence in the channel means the job did not run at all, never that it decided quietly not to say anything.
 
 A `failed` day is **not** auto-retried the next morning — a list of yesterday's names arriving a day late is worse than no list. Recovery is the explicit `force` re-run (§8).
 
@@ -95,7 +97,7 @@ A `failed` day is **not** auto-retried the next morning — a list of yesterday'
 - **The rule text, on every card, including all-clear and withheld cards:** what counted (commit or PR opened, same as the Overview board), what explicitly did **not** count (review, merging earlier work, Jira activity), and what is excluded (bots, admin-excluded accounts, developers on recorded leave). This is the ADR-0009 condition that makes the message defensible — see §2's cost list for exactly what it is compensating for.
 - A freshness line: "Data collected through `<collectedThroughAt>`."
 
-**Untrusted input.** Display names originate in ingested GitHub/Jira data, which CLAUDE.md classifies as untrusted, and an Adaptive Card `TextBlock` renders a markdown subset. `escapeCardText()` escapes backslash, backtick, asterisk, underscore, and square brackets/parentheses before any name is embedded, so a crafted display name cannot inject a link or format text in a channel message that posts every morning.
+**Untrusted input.** Display names originate in ingested GitHub/Jira data, which CLAUDE.md classifies as untrusted, and an Adaptive Card `TextBlock` renders a markdown subset. `escapeCardText()` escapes backslash, backtick, asterisk, underscore, square brackets/parentheses, and angle brackets before any name is embedded, so a crafted display name cannot inject a link (including a bare `<https://...>` autolink, which needs no brackets or parens at all) or format text in a channel message that posts every morning.
 
 ---
 
