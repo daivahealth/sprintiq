@@ -245,6 +245,54 @@ describe('truncated read gate', () => {
   });
 });
 
+describe('unevaluable roster gate', () => {
+  it('withholds instead of an all-clear when a non-empty roster resolves to nothing evaluable', async () => {
+    // Every roster entry unresolved: evaluated === 0. Without this gate,
+    // `evaluation.flagged.length === 0` is trivially true and the digest
+    // would post "All 0 tracked developers had activity" — a confident false
+    // all-clear for a roster nothing could actually be said about (canonical
+    // ids can shift after a re-collection — api/README.md gap #52 — or a
+    // roster can be seeded before identity resolution runs).
+    const { service } = harness({
+      roster: roster(['ghost1', 'ghost2']),
+      // No displayNames entries: both roster entries are unresolved.
+      displayNames: names([]),
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('withheld_unevaluable');
+    expect(result.evaluation.flagged).toEqual([]);
+    expect(result.evaluation.unresolved.map((u) => u.developer)).toEqual([
+      'ghost1',
+      'ghost2',
+    ]);
+    expect(result.withhold?.detail).toContain('2 tracked developers');
+    expect(result.withhold?.detail).toMatch(/re-seed|identity resolution/);
+  });
+
+  it('does not withhold as unevaluable when the roster is empty — there is nothing to say the roster needs re-seeding about', async () => {
+    const { service } = harness({ roster: [] });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold).toBeNull();
+    expect(result.evaluation.flagged).toEqual([]);
+  });
+
+  it('does not withhold as unevaluable when at least one roster entry is evaluable', async () => {
+    const { service } = harness({
+      roster: roster(['erin_athma', 'ghost1']),
+      displayNames: names([['erin_athma', 'Erin E']]),
+      commits: [{ authorLogin: 'erin_athma', authorEmail: null }],
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold).toBeNull();
+  });
+});
+
 describe('implausible-share gate', () => {
   it('withholds when more than the threshold share of the roster is flagged — that many idle people at once is a holiday or a broken pipeline, not a finding about people', async () => {
     // 5 resolvable, non-suppressed developers, none with any signal: 5/5 = 100%.

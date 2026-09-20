@@ -29,6 +29,7 @@ export type DigestOutcome =
   | 'sent_all_clear'
   | 'withheld_stale_data'
   | 'withheld_truncated_read'
+  | 'withheld_unevaluable'
   | 'withheld_implausible'
   | 'failed';
 
@@ -130,12 +131,15 @@ export interface DigestDetection {
    * Invariant: `evaluation.flagged` is populated only when `withhold` is
    * null — at every gate, not just the ones that had nothing to compute yet.
    * Gates 1 and 2 return an empty evaluation because nothing has been
-   * computed at that point; gate 3 has already computed a real evaluation by
-   * the time it decides to withhold, and empties `flagged` before returning
-   * it rather than relying on every caller to remember to check `withhold`
-   * first. `unresolved`, `incomplete` and `suppressed` are left intact at
-   * every gate — they are lineage the spec requires be reported even when
-   * names are withheld, and none of them can name someone in a channel.
+   * computed at that point; gate 3 has computed a real evaluation but
+   * `flagged` is already empty by construction (nothing evaluable means
+   * nothing flagged); gate 4 has already computed a real, non-empty
+   * evaluation by the time it decides to withhold, and empties `flagged`
+   * before returning it rather than relying on every caller to remember to
+   * check `withhold` first. `unresolved`, `incomplete` and `suppressed` are
+   * left intact at every gate — they are lineage the spec requires be
+   * reported even when names are withheld, and none of them can name someone
+   * in a channel.
    */
   evaluation: RosterEvaluation;
   /** Non-null when the names must not be sent, with the reason to record. */
@@ -265,7 +269,35 @@ export class NoCommitDetectionService {
       evaluation.unresolved.length -
       evaluation.suppressed.length;
 
-    // Gate 3: too many to be a finding about people.
+    // Gate 3: a non-empty roster that resolved and suppressed away to
+    // nothing evaluable is not the same claim as "everyone had activity".
+    // Canonical ids can shift after a re-collection (api/README.md gap #52,
+    // identity resolution re-derives every row from scratch each sweep) or a
+    // roster can be seeded before identity resolution has run, and both
+    // produce exactly this shape: every entry lands in `unresolved`.
+    // Unguarded, `evaluated === 0` makes `evaluation.flagged.length === 0`
+    // trivially true — `implausible()` also returns `false` for the same
+    // reason, since a share over zero is undefined, not zero — and the card
+    // would read "All 0 tracked developers had activity", a confident false
+    // all-clear for a roster nothing could actually be said about.
+    if (roster.length > 0 && evaluated === 0) {
+      return {
+        reportedDay,
+        rosterCount: roster.length,
+        // `flagged` is already empty here — it can only hold evaluated
+        // entries, and there are none — so nothing needs stripping, unlike
+        // gate 4 below. `unresolved`/`incomplete`/`suppressed` survive, same
+        // as every other gate.
+        evaluation,
+        withhold: {
+          outcome: 'withheld_unevaluable',
+          detail: `None of the ${roster.length} tracked developers could be evaluated for ${reportedDay} — every roster entry is unresolved or suppressed. The roster likely needs re-seeding or identity resolution to catch up. Names withheld.`,
+        },
+        collectedThroughAt: freshness.collectedThroughAt,
+      };
+    }
+
+    // Gate 4: too many to be a finding about people.
     if (implausible(evaluation.flagged.length, evaluated)) {
       // Built from the REAL flagged count before `flagged` is emptied below
       // — this count is the entire diagnostic value of the message ("N of M

@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
+import { AppRole, roleRunsScheduler } from '../../config/app-role';
 import { IST_TIMEZONE } from '../../common/time';
 import { NotificationsService } from './notifications.service';
 
@@ -14,16 +16,31 @@ import { NotificationsService } from './notifications.service';
  * 10:30 rather than at the day's close also buys the poll-based collectors
  * roughly ten hours to bring in late commits before anyone is named.
  *
- * This class holds no logic deliberately — it decides only *when*.
+ * This class holds no digest logic deliberately — it decides only *when*, and
+ * (see `shouldSweep`) *whether this process is the one that should*.
  */
 @Injectable()
 export class NotificationSchedulerService {
   private readonly logger = new Logger(NotificationSchedulerService.name);
 
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
+  ) {}
 
   @Cron('30 10 * * 1-5', { timeZone: IST_TIMEZONE })
   async sendDailyDigest(): Promise<void> {
+    if (!this.shouldSweep()) {
+      // The same image runs as api | collector | worker via APP_ROLE, all
+      // three loaded with every module (app.module.ts), and @nestjs/schedule
+      // fires this handler in every one of them. Outbound egress — this cron
+      // included — is worker-only (docs/deployment/README.md §1: "External
+      // egress ... originates from collector/worker pods only — never from
+      // api"); without this gate, production runs `api`, `collector` and
+      // `worker` pods of the same image and the digest fires three times.
+      return;
+    }
+
     const tenants = await this.notifications.tenantsToDigest();
     for (const tenantId of tenants) {
       // Per-tenant isolation: one tenant's rotated webhook or empty roster
@@ -41,5 +58,24 @@ export class NotificationSchedulerService {
         );
       }
     }
+  }
+
+  /**
+   * Worker-only in production; unrestricted everywhere else.
+   *
+   * `docs/deployment/README.md` §1: "In dev, all three roles run in **one**
+   * process" — and that dev process's `APP_ROLE` defaults to `api`
+   * (`backend/.env.example`, `docker-compose.yml`), same as `configuration.ts`
+   * defaulting an unset `APP_ROLE` to `AppRole.API`. Gating on role alone
+   * would silently stop this cron from ever firing in dev or in the Jest
+   * environment (`NODE_ENV=test`), which is not what "all three roles run in
+   * one process" means. So the gate is scoped to `env === 'production'`: a
+   * deployed `api` pod is skipped, but a dev or test process — where "worker"
+   * has no separate identity — still sweeps.
+   */
+  private shouldSweep(): boolean {
+    const role = this.config.get<AppRole>('appRole') ?? AppRole.API;
+    const env = this.config.get<string>('env') ?? 'development';
+    return env !== 'production' || roleRunsScheduler(role);
   }
 }

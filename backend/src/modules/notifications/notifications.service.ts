@@ -43,6 +43,9 @@ const DELIVERED: ReadonlySet<DigestOutcome> = new Set([
   'sent_all_clear',
 ]);
 
+/** Prisma's unique-constraint-violation error code. */
+const UNIQUE_VIOLATION = 'P2002';
+
 export interface RunDigestOptions {
   /** IST day key to report on. Defaults to the previous working day. */
   day?: string;
@@ -61,6 +64,18 @@ export interface RunDigestResult {
   detail: string | null;
   dryRun: boolean;
 }
+
+/** Fields written when a run is first claimed, before the Teams POST. */
+type ClaimData = {
+  outcome: DigestOutcome;
+  rosterCount: number;
+  flaggedCount: number;
+  flagged: Prisma.InputJsonValue;
+  unresolved: Prisma.InputJsonValue;
+  incomplete: Prisma.InputJsonValue;
+  detail: string | null;
+  deliveredAt: null;
+};
 
 /**
  * BC-15 Notifications & Action. Decides *whether* to notify and *whom*;
@@ -114,9 +129,11 @@ export class NotificationsService {
   ): Promise<RunDigestResult> {
     const reportedDay = options.day ?? previousWorkingDayKey();
     const dryRun = options.dryRun === true;
+    const force = options.force === true;
 
+    let existing: { outcome: string } | null = null;
     if (!dryRun) {
-      const existing = await this.prisma.noCommitDigestRun.findUnique({
+      existing = await this.prisma.noCommitDigestRun.findUnique({
         where: {
           tenantId_reportedDay: { tenantId, reportedDay },
         },
@@ -125,7 +142,7 @@ export class NotificationsService {
       if (
         existing &&
         DELIVERED.has(existing.outcome as DigestOutcome) &&
-        options.force !== true
+        !force
       ) {
         throw new BadRequestException(
           `${reportedDay} was already sent for this tenant. Re-sending would post the same names twice; pass force to override.`,
@@ -163,6 +180,53 @@ export class NotificationsService {
       return result;
     }
 
+    // Claim the (tenantId, reportedDay) row BEFORE the Teams POST, not after
+    // it. This is the actual idempotency guard: two runners racing the same
+    // fresh day (three role-ungated cron pods, or a manual re-run racing the
+    // cron) must not both read "no row yet" and both post. `existing` was
+    // read moments ago and may already be stale by the time we write — that
+    // staleness is exactly the race — so a null `existing` attempts a bare
+    // `create`, which only one of two concurrent callers can win; the loser's
+    // unique-constraint violation means another runner already owns this
+    // day, and it returns without posting. A non-null `existing` means this
+    // call is a deliberate overwrite (an explicit `force`, or the documented
+    // "a failed/withheld day may be re-run normally" path — the only way to
+    // reach here with force absent and a row already present, since a
+    // DELIVERED existing row without force already threw above), so it goes
+    // straight to `update` rather than racing a `create` that would
+    // predictably lose.
+    const claimData: ClaimData = {
+      outcome,
+      rosterCount: detected.rosterCount,
+      flaggedCount: result.flagged.length,
+      flagged: result.flagged as unknown as Prisma.InputJsonValue,
+      unresolved: result.unresolved as unknown as Prisma.InputJsonValue,
+      incomplete: result.incomplete as unknown as Prisma.InputJsonValue,
+      detail,
+      deliveredAt: null,
+    };
+
+    if (existing) {
+      await this.prisma.noCommitDigestRun.update({
+        where: { tenantId_reportedDay: { tenantId, reportedDay } },
+        data: claimData,
+      });
+    } else {
+      try {
+        await this.prisma.noCommitDigestRun.create({
+          data: { id: newId(), tenantId, reportedDay, ...claimData },
+        });
+      } catch (error) {
+        if (isUniqueConstraintViolation(error)) {
+          // Another runner claimed this day between our read and our write.
+          // That runner owns the send; returning here rather than posting is
+          // what stops the same names reaching the channel twice.
+          return result;
+        }
+        throw error;
+      }
+    }
+
     const card = buildDigestCard({
       reportedDay,
       flagged: result.flagged,
@@ -179,11 +243,24 @@ export class NotificationsService {
       const webhookRef = await this.resolveTeamsWebhookRef(tenantId);
       await this.teams.postAdaptiveCard(tenantId, webhookRef, card);
     } catch (error) {
-      await this.recordRun(tenantId, detected, 'failed', errorDetail(error));
+      await this.prisma.noCommitDigestRun.update({
+        where: { tenantId_reportedDay: { tenantId, reportedDay } },
+        data: {
+          outcome: 'failed',
+          flaggedCount: 0,
+          flagged: [] as unknown as Prisma.InputJsonValue,
+          detail: errorDetail(error),
+          deliveredAt: null,
+        },
+      });
       throw error;
     }
 
-    await this.recordRun(tenantId, detected, outcome, detail);
+    await this.prisma.noCommitDigestRun.update({
+      where: { tenantId_reportedDay: { tenantId, reportedDay } },
+      data: { deliveredAt: new Date() },
+    });
+
     await this.audit?.record({
       tenantId,
       actorType: 'system',
@@ -231,57 +308,16 @@ export class NotificationsService {
     }
     return webhookRef;
   }
+}
 
-  private async recordRun(
-    tenantId: string,
-    detected: {
-      reportedDay: string;
-      rosterCount: number;
-      evaluation: {
-        flagged: NamedDeveloper[];
-        unresolved: { developer: string; addedAs: string }[];
-        incomplete: NamedDeveloper[];
-      };
-    },
-    outcome: DigestOutcome,
-    detail: string | null,
-  ): Promise<void> {
-    const delivered = outcome !== 'failed';
-    const flagged = DELIVERED.has(outcome) ? detected.evaluation.flagged : [];
-    const data = {
-      outcome,
-      rosterCount: detected.rosterCount,
-      flaggedCount: flagged.length,
-      flagged: flagged as unknown as Prisma.InputJsonValue,
-      unresolved: detected.evaluation
-        .unresolved as unknown as Prisma.InputJsonValue,
-      incomplete: detected.evaluation
-        .incomplete as unknown as Prisma.InputJsonValue,
-      detail,
-      // A card is posted for the three withheld outcomes too — only the
-      // names are withheld from it. `deliveredAt` answers "did a card reach
-      // the channel?", which is true for `sent`, `sent_all_clear` AND the
-      // withheld_* outcomes; it is null only when delivery itself failed.
-      // `flagged` (above) is the separate question of "were names in it?",
-      // which stays empty for every withheld/failed outcome.
-      deliveredAt: delivered ? new Date() : null,
-    };
-    await this.prisma.noCommitDigestRun.upsert({
-      where: {
-        tenantId_reportedDay: {
-          tenantId,
-          reportedDay: detected.reportedDay,
-        },
-      },
-      create: {
-        id: newId(),
-        tenantId,
-        reportedDay: detected.reportedDay,
-        ...data,
-      },
-      update: data,
-    });
-  }
+/** Duck-typed so tests can simulate a Prisma unique-violation without the real error class. */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === UNIQUE_VIOLATION
+  );
 }
 
 function errorDetail(error: unknown): string {

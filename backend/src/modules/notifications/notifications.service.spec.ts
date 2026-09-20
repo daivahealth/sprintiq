@@ -12,6 +12,13 @@ import { NotificationsService } from './notifications.service';
  */
 const TEAMS_WEBHOOK_REF = 'TEAMS_DIGEST_WEBHOOK';
 
+/** Duck-typed Prisma unique-violation, matching what `isUniqueConstraintViolation` checks for. */
+function uniqueViolation(): Error & { code: string } {
+  return Object.assign(new Error('Unique constraint failed'), {
+    code: 'P2002',
+  });
+}
+
 const detection = {
   reportedDay: '2026-09-17',
   rosterCount: 66,
@@ -34,7 +41,8 @@ function build(overrides: { detect?: unknown; existing?: unknown } = {}) {
   const prisma = {
     noCommitDigestRun: {
       findUnique: jest.fn().mockResolvedValue(overrides.existing ?? null),
-      upsert: jest.fn().mockResolvedValue({}),
+      create: jest.fn().mockResolvedValue({}),
+      update: jest.fn().mockResolvedValue({}),
     },
     tenantConfiguration: {
       findUnique: jest.fn().mockResolvedValue({
@@ -65,7 +73,28 @@ describe('NotificationsService.runNoCommitDigest', () => {
 
     expect(teams.postAdaptiveCard).toHaveBeenCalledTimes(1);
     expect(result.outcome).toBe('sent');
-    expect(prisma.noCommitDigestRun.upsert).toHaveBeenCalled();
+    // Claimed via `create` (no existing row), delivery confirmed via `update`.
+    expect(prisma.noCommitDigestRun.create).toHaveBeenCalledTimes(1);
+    expect(prisma.noCommitDigestRun.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims the row with a `create` BEFORE posting to Teams, not after', async () => {
+    // The idempotency guarantee lives entirely in this ordering: if the claim
+    // happened after the POST, two racers could both read "no row" and both
+    // post before either one writes anything.
+    const { service, teams, prisma } = build();
+    const callOrder: string[] = [];
+    prisma.noCommitDigestRun.create.mockImplementation(async () => {
+      callOrder.push('create');
+      return {};
+    });
+    teams.postAdaptiveCard.mockImplementation(async () => {
+      callOrder.push('post');
+    });
+
+    await service.runNoCommitDigest('tenant_a');
+
+    expect(callOrder).toEqual(['create', 'post']);
   });
 
   it('resolves the ref from secretRefs.teamsWebhookRef, not the config field key', async () => {
@@ -149,7 +178,7 @@ describe('NotificationsService.runNoCommitDigest', () => {
   });
 
   it('sets deliveredAt for a withheld outcome, because a card was still posted', async () => {
-    // CORRECTION 2: a card IS posted for the three withheld outcomes — only
+    // CORRECTION 2: a card IS posted for the withheld outcomes — only
     // the names are missing from it. deliveredAt answers "did a card reach
     // the channel", which is true here; `flagged` (a separate field) is what
     // stays empty.
@@ -165,10 +194,16 @@ describe('NotificationsService.runNoCommitDigest', () => {
 
     await service.runNoCommitDigest('tenant_a');
 
-    const call = prisma.noCommitDigestRun.upsert.mock.calls[0][0];
-    expect(call.create.deliveredAt).toBeInstanceOf(Date);
-    expect(call.create.outcome).toBe('withheld_stale_data');
-    expect(call.create.flagged).toEqual([]);
+    const claimCall = prisma.noCommitDigestRun.create.mock.calls[0][0];
+    expect(claimCall.data.outcome).toBe('withheld_stale_data');
+    expect(claimCall.data.flagged).toEqual([]);
+    expect(claimCall.data.deliveredAt).toBeNull();
+    // The final update (after a successful POST) is what actually sets it.
+    const finalUpdateCall =
+      prisma.noCommitDigestRun.update.mock.calls[
+        prisma.noCommitDigestRun.update.mock.calls.length - 1
+      ][0];
+    expect(finalUpdateCall.data.deliveredAt).toBeInstanceOf(Date);
   });
 
   it('posts nothing and writes nothing on a dry run', async () => {
@@ -179,14 +214,13 @@ describe('NotificationsService.runNoCommitDigest', () => {
     });
 
     expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
-    expect(prisma.noCommitDigestRun.upsert).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.create).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.update).not.toHaveBeenCalled();
     expect(result.dryRun).toBe(true);
     expect(result.flagged).toHaveLength(1);
   });
 
   it('refuses to re-send a day already sent', async () => {
-    // The unique key on (tenantId, reportedDay) is the idempotency guard; a
-    // restart or redeploy at 10:30 must not double-post.
     const { service, teams } = build({ existing: { outcome: 'sent' } });
 
     await expect(service.runNoCommitDigest('tenant_a')).rejects.toThrow(
@@ -195,12 +229,59 @@ describe('NotificationsService.runNoCommitDigest', () => {
     expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
   });
 
-  it('re-sends a day already sent when forced', async () => {
-    const { service, teams } = build({ existing: { outcome: 'sent' } });
+  it('re-sends a day already sent when forced, via update rather than create', async () => {
+    const { service, teams, prisma } = build({ existing: { outcome: 'sent' } });
 
     await service.runNoCommitDigest('tenant_a', { force: true });
 
     expect(teams.postAdaptiveCard).toHaveBeenCalledTimes(1);
+    // A row already exists for this day — `create` would only ever lose this
+    // race, so the deliberate-overwrite path goes straight to `update`.
+    expect(prisma.noCommitDigestRun.create).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.update).toHaveBeenCalled();
+  });
+
+  it('re-runs a previously failed day normally, without force, via update', async () => {
+    // api/README.md §8.1: "A day that is failed or one of the withheld_*
+    // outcomes may be re-run normally... without force". A row already
+    // exists (non-delivered), so this is not a race — it goes to `update`.
+    const { service, teams, prisma } = build({
+      existing: { outcome: 'failed' },
+    });
+
+    const result = await service.runNoCommitDigest('tenant_a');
+
+    expect(teams.postAdaptiveCard).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe('sent');
+    expect(prisma.noCommitDigestRun.create).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.update).toHaveBeenCalled();
+  });
+
+  it('loses the race when a concurrent runner claims the day first, and returns without posting', async () => {
+    // The core fix: two runners racing a FRESH day (no existing row) both
+    // read "no row yet". Only one `create` can win; the loser must not post.
+    const { service, teams, prisma } = build();
+    prisma.noCommitDigestRun.create.mockRejectedValue(uniqueViolation());
+
+    const result = await service.runNoCommitDigest('tenant_a');
+
+    expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
+    expect(result.outcome).toBe('sent');
+    expect(result.dryRun).toBe(false);
+    // No update either — this runner does not own the row it lost.
+    expect(prisma.noCommitDigestRun.update).not.toHaveBeenCalled();
+  });
+
+  it('propagates a non-unique-violation error from the claim rather than swallowing it', async () => {
+    const { service, teams, prisma } = build();
+    prisma.noCommitDigestRun.create.mockRejectedValue(
+      new Error('connection reset'),
+    );
+
+    await expect(service.runNoCommitDigest('tenant_a')).rejects.toThrow(
+      'connection reset',
+    );
+    expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
   });
 
   it('records a failed run when delivery throws, and rethrows', async () => {
@@ -209,9 +290,15 @@ describe('NotificationsService.runNoCommitDigest', () => {
 
     await expect(service.runNoCommitDigest('tenant_a')).rejects.toThrow('403');
 
-    const call = prisma.noCommitDigestRun.upsert.mock.calls[0][0];
-    expect(call.create.outcome).toBe('failed');
-    expect(call.create.deliveredAt).toBeNull();
+    // Claimed first...
+    expect(prisma.noCommitDigestRun.create).toHaveBeenCalledTimes(1);
+    // ...then updated to `failed` after the POST rejected.
+    const finalUpdateCall =
+      prisma.noCommitDigestRun.update.mock.calls[
+        prisma.noCommitDigestRun.update.mock.calls.length - 1
+      ][0];
+    expect(finalUpdateCall.data.outcome).toBe('failed');
+    expect(finalUpdateCall.data.deliveredAt).toBeNull();
   });
 
   it('records a failed run and throws when no webhook ref is configured', async () => {
@@ -228,9 +315,12 @@ describe('NotificationsService.runNoCommitDigest', () => {
     );
 
     expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
-    const call = prisma.noCommitDigestRun.upsert.mock.calls[0][0];
-    expect(call.create.outcome).toBe('failed');
-    expect(call.create.deliveredAt).toBeNull();
+    const finalUpdateCall =
+      prisma.noCommitDigestRun.update.mock.calls[
+        prisma.noCommitDigestRun.update.mock.calls.length - 1
+      ][0];
+    expect(finalUpdateCall.data.outcome).toBe('failed');
+    expect(finalUpdateCall.data.deliveredAt).toBeNull();
   });
 });
 
