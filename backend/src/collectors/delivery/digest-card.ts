@@ -43,14 +43,19 @@ const RULE_TEXT =
  *
  * Display names arrive from ingested GitHub and Jira data, which CLAUDE.md
  * classifies as untrusted. An unescaped crafted name could post a live link
- * into a channel every morning. This escapes only the characters that can
+ * into a channel every morning. This escapes the characters that can
  * actually form links, images, code spans or emphasis in Adaptive Card
- * markdown: backslash, backtick, asterisk, underscore, square brackets, and
- * parentheses. Characters like # + - ! > | carry meaning only at the start of
- * a line in block contexts, and escaping them would mangle ordinary names.
+ * markdown: backslash, backtick, asterisk, underscore, square brackets,
+ * parentheses, and angle brackets — `<https://evil.example>` is a live
+ * CommonMark autolink on its own, with no need for the brackets/parens this
+ * function already escapes. Characters like # + - ! | carry meaning only at
+ * the start of a line in block contexts, and escaping them would mangle
+ * ordinary names (`Hari-Krishnan-P-C` is on the tracked roster) — `<`/`>` are
+ * the one pair from that set that also does damage mid-string, which is why
+ * they are escaped here and the rest are not.
  */
 export function escapeCardText(value: string): string {
-  return value.replace(/[\\`*_[\]()]/g, (ch) => `\\${ch}`);
+  return value.replace(/[\\`*_[\]()<>]/g, (ch) => `\\${ch}`);
 }
 
 function block(text: string, extra: Record<string, unknown> = {}) {

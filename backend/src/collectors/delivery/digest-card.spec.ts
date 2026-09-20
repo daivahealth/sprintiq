@@ -25,6 +25,15 @@ describe('escapeCardText', () => {
     // test guards against re-widening the character class to include `-`.
     expect(escapeCardText('Hari-Krishnan-P-C')).toBe('Hari-Krishnan-P-C');
   });
+
+  it('escapes angle brackets so a display name cannot form a live autolink', () => {
+    // Square brackets and parens alone do not stop this: CommonMark (and the
+    // Adaptive Card TextBlock renderer) treats `<https://evil.example>` as a
+    // live autolink with no `[...](...)` needed at all.
+    expect(escapeCardText('<https://evil.example>')).toBe(
+      '\\<https://evil.example\\>',
+    );
+  });
 });
 
 describe('buildDigestCard', () => {
