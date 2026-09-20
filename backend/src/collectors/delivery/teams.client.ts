@@ -43,13 +43,37 @@ export class TeamsClient {
     let lastStatus = 0;
     let lastBody = '';
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(card),
-        // A hung POST must not wedge the cron that called it.
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(card),
+          // A hung POST must not wedge the cron that called it.
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (error) {
+        // `fetch` REJECTS rather than resolving with a bad status for a
+        // malformed URL, a DNS failure, or a network reset — no response
+        // object ever exists, so the no-logging discipline below (which only
+        // handles the status-code path) never runs. The rejection's own
+        // message can embed the whole URL: Node throws exactly
+        // `TypeError: Failed to parse URL from <the whole string>` for a
+        // malformed URL, and this ref is a Power Automate Workflows URL,
+        // which carries its credential in the query string (`&sig=...`) — a
+        // copy-paste line wrap is enough to produce this. Nothing from
+        // `error` (its message, its stack) may reach a log or a stored
+        // column; only the secret ref name and the failure's class survive
+        // into what this method raises.
+        const failureClass =
+          error instanceof Error ? error.constructor.name : typeof error;
+        this.logger.error(
+          `Teams delivery for ref "${ref}" failed before a response was received (${failureClass}).`,
+        );
+        throw new Error(
+          `Teams delivery failed for ref "${ref}": request could not be sent (${failureClass}).`,
+        );
+      }
 
       // Any 2xx. Power Automate returns 202 Accepted with an empty body.
       if (response.ok) {

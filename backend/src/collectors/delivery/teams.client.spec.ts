@@ -100,6 +100,51 @@ describe('TeamsClient', () => {
     expect(logged.join('\n')).not.toContain('logic.azure.com');
   });
 
+  it('never leaks the URL when fetch rejects instead of resolving', async () => {
+    // Node throws `TypeError: Failed to parse URL from <the whole string>`
+    // for a malformed URL — a copy-paste line wrap is enough to trigger it —
+    // and that rejection message embeds the URL and its credential. Unlike a
+    // bad HTTP status, this never produces a `response` object, so it must be
+    // caught separately from the status-code path below.
+    const rejection = new TypeError(
+      `Failed to parse URL from ${URL_WITH_CREDENTIAL}`,
+    );
+    const fetchMock = jest.fn().mockRejectedValue(rejection);
+    const { client } = clientWith(fetchMock);
+
+    await expect(
+      client.postAdaptiveCard('tenant_a', 'teamsWebhookRef', card),
+    ).rejects.toThrow(/teamsWebhookRef/);
+
+    let thrown: unknown;
+    try {
+      await client.postAdaptiveCard('tenant_a', 'teamsWebhookRef', card);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String((thrown as Error).message)).not.toContain('SUPERSECRET');
+    expect(String((thrown as Error).message)).not.toContain('logic.azure.com');
+  });
+
+  it('does not log the URL when fetch rejects instead of resolving', async () => {
+    const logged: string[] = [];
+    jest.spyOn(Logger.prototype, 'error').mockImplementation((message) => {
+      logged.push(String(message));
+    });
+    const rejection = new TypeError(
+      `Failed to parse URL from ${URL_WITH_CREDENTIAL}`,
+    );
+    const fetchMock = jest.fn().mockRejectedValue(rejection);
+    const { client } = clientWith(fetchMock);
+
+    await expect(
+      client.postAdaptiveCard('tenant_a', 'teamsWebhookRef', card),
+    ).rejects.toThrow();
+
+    expect(logged.join('\n')).not.toContain('SUPERSECRET');
+    expect(logged.join('\n')).not.toContain('logic.azure.com');
+  });
+
   it('fails clearly when no webhook is configured', async () => {
     const fetchMock = jest.fn();
     const { client, secrets } = clientWith(fetchMock);
