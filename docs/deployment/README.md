@@ -140,9 +140,14 @@ JWT_SIGNING_KEY_REF=secret://…       # BC-2
 LLM_API_KEY_REF=secret://…           # BC-11, per-tenant budgets enforced in-app
 PUBLIC_WEBHOOK_BASE_URL=https://hooks.sprintiq.io   # used when registering source webhooks
 SECRETS_PROVIDER=vault|aws-kms|gcp-sm
+DIGEST_CRON_ENABLED=                 # BC-15 daily digest cron kill switch — see table below
 ```
 
 **Source credentials & webhook secrets** are **not** global env. Tenant-wide defaults/policy live in `tenant_configuration` (`values` + `secret_refs`); concrete collector registrations remain **per-tenant, per-connection** records in BC-0 (`connection.secret_ref`, `connection.webhook_secret_ref`) pointing into the secret store. Rotation updates the referenced secret without code change. See [security/AUTH-AND-RBAC.md §7](../security/AUTH-AND-RBAC.md).
+
+| Variable | Values | Restart to take effect? | Purpose |
+|---|---|---|---|
+| `DIGEST_CRON_ENABLED` | unset/empty, `true`\|`1`\|`on`, `false`\|`0`\|`off` (case-insensitive) | **Yes** — parsed once into typed config at boot (`configuration.ts`) | Deployment-wide kill switch for the daily commit digest cron (§6.4, [features/NOTIFICATIONS.md](../features/NOTIFICATIONS.md)), layered on top of — never a replacement for — the per-tenant `dailyDigestEnabled` DB flag. Unset/empty is the no-change path: the per-tenant flag alone decides. Falsey disarms the sweep for every tenant regardless of the DB flag. Truthy still defers to the per-tenant flag — it does **not** force-enable every tenant; that asymmetry is deliberate (see the docblocks on `configuration.ts`'s `notifications.digestCronEnabled` and `NotificationSchedulerService.envArmed()`). An unrecognised value fails `validateEnv` at boot rather than silently arming the cron. The per-tenant `dailyDigestEnabled` flag remains the **live, no-restart control** — flip it in `admin/configuration` and it takes effect on the next sweep; this env var only takes effect on the next process boot. |
 
 ---
 
@@ -173,6 +178,20 @@ The tracked-roster inactivity digest to Microsoft Teams — full behavior spec [
 4. **Seed for real** — `npm run digest:roster -- --apply` — once the report from step 3 has been reviewed. Then, in `admin/configuration` under the `notifications` namespace, paste the Power Automate Workflows URL as the `teamsWebhookRef` secret value (never as a plaintext value in `values` — see [security/AUTH-AND-RBAC.md §7](../security/AUTH-AND-RBAC.md)). **Leave `dailyDigestEnabled` off for now** — it is the flag that makes the unattended cron pick this tenant up (`NotificationsService.tenantsToDigest()`), and it stays off until step 6, so nothing posts automatically before a human has verified the output.
 5. **`dryRun` the digest and reconcile by hand.** `POST /admin/notifications/no-commit-digest/run` with `{ "dryRun": true }` — this needs only the seeded roster, not the webhook secret, since a dry run posts nothing. Compare its `flagged`/`unresolved`/`incomplete` output against the Activity Overview board (DASHBOARDS.md §4.4.1) for the same IST day. If the two disagree, stop and understand why before anything is posted — a disagreement here means the parity guarantee ADR-0009 depends on has broken.
 6. **One deliberate live post, then flip `dailyDigestEnabled` on.** With the webhook secret already set (step 4), `POST .../run` **without** `dryRun` sends one real card to the channel — this works regardless of `dailyDigestEnabled`, since that flag only gates the cron sweep, not a manual admin-triggered run. Confirm the card actually landed in the target Teams channel and reads correctly (the mandatory rule line included, §7 of the feature doc) before turning `dailyDigestEnabled` on. Only after that does the 10:30 IST Monday–Friday cron take over unattended.
+
+### 6.4.1 `DIGEST_CRON_ENABLED`: the deployment-wide kill switch
+
+On top of `dailyDigestEnabled`, `NotificationSchedulerService` also checks the `DIGEST_CRON_ENABLED` environment variable (parsed into `notifications.digestCronEnabled` in `configuration.ts`, tri-state `boolean | undefined`) before it sweeps, alongside the existing role/environment gate (`shouldSweep()`, §1). It exists to let an operator arm and disarm the *entire deployment's* cron without touching per-tenant DB state — an incident, a maintenance window, or "we are not confident in this yet and want to hold every tenant back at once."
+
+- **Unset/empty** (the default — leave it this way in normal operation): identical to today. The per-tenant `dailyDigestEnabled` flag alone decides who gets swept.
+- **Falsey** (`false`/`0`/`off`, case-insensitive): the sweep does not run **at all**, for any tenant, no matter what any tenant's `dailyDigestEnabled` says. The scheduler logs one clear line (`Daily digest cron disabled by DIGEST_CRON_ENABLED environment variable...`) so a quiet channel is diagnosable from the log rather than assumed to be a bug.
+- **Truthy** (`true`/`1`/`on`, case-insensitive): still just permission to run — the per-tenant flag still decides who is actually swept. **It does not force-enable any tenant.** This is deliberate and asymmetric: a symmetric switch that could turn on notifications for every tenant with a webhook configured would let one env edit start naming people in Teams channels belonging to tenants who never opted in, which is exactly what CLAUDE.md's multi-tenant isolation and ethics-first rules forbid. Do not "simplify" this into a force-enable switch.
+
+**Takes effect only on restart.** `configuration.ts` parses `process.env.DIGEST_CRON_ENABLED` once at process boot; changing it in a running deployment's environment has no effect until the affected `worker` pods restart. The per-tenant `dailyDigestEnabled` flag has no such lag — it is read fresh on every sweep from `tenantsToDigest()`, so it remains the **live, no-restart control** for day-to-day per-tenant enable/disable.
+
+An unrecognised value (e.g. `DIGEST_CRON_ENABLED=flase`) fails `validateEnv` at boot rather than being silently treated as unset — a typo here has an unusually bad failure mode (a real person's name reaching a channel because an operator believed the cron was disarmed), so it fails loudly instead of guessing.
+
+**Does not affect `POST /admin/notifications/no-commit-digest/run`.** The manual endpoint calls `NotificationsService.runNoCommitDigest()` directly and never passes through the scheduler, so it keeps working regardless of `DIGEST_CRON_ENABLED` — including with the cron disarmed. This is how step 5's `dryRun` and step 6's one deliberate live post are performed, and it must keep working precisely when an operator has reason to hold the unattended cron back.
 
 ---
 

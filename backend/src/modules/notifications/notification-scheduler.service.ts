@@ -41,6 +41,17 @@ export class NotificationSchedulerService {
       return;
     }
 
+    if (!this.envArmed()) {
+      // One clear line so an operator wondering why nothing posted this
+      // morning finds the reason in the log instead of assuming a bug.
+      this.logger.log(
+        'Daily digest cron disabled by DIGEST_CRON_ENABLED environment ' +
+          'variable — sweep skipped for all tenants regardless of the ' +
+          'per-tenant dailyDigestEnabled flag.',
+      );
+      return;
+    }
+
     const tenants = await this.notifications.tenantsToDigest();
     for (const tenantId of tenants) {
       // Per-tenant isolation: one tenant's rotated webhook or empty roster
@@ -77,5 +88,48 @@ export class NotificationSchedulerService {
     const role = this.config.get<AppRole>('appRole') ?? AppRole.API;
     const env = this.config.get<string>('env') ?? 'development';
     return env !== 'production' || roleRunsScheduler(role);
+  }
+
+  /**
+   * The `DIGEST_CRON_ENABLED` deployment-wide kill switch
+   * (`configuration.ts`'s `notifications.digestCronEnabled` — see its
+   * docblock for the full tri-state contract), gating the sweep alongside
+   * `shouldSweep()`'s role/environment check rather than inside
+   * `NotificationsService.tenantsToDigest()` — that method is about *which
+   * tenants* to sweep; this is about whether the deployment is armed to
+   * sweep *at all*, a question `tenantsToDigest()` has no reason to answer.
+   *
+   * ASYMMETRIC BY DESIGN, do not "simplify" this into a switch that mirrors
+   * the per-tenant flag:
+   *   - config value `undefined` (env unset/empty) → armed. Current
+   *     behaviour, unchanged — the per-tenant `dailyDigestEnabled` flag
+   *     alone decides who gets swept.
+   *   - config value `false` (env falsey: false/0/off) → disarmed. The
+   *     sweep does not run at all, for any tenant, regardless of what the
+   *     database says.
+   *   - config value `true` (env truthy: true/1/on) → still armed, but this
+   *     does **not** force-enable every tenant. It only means "this
+   *     deployment permits the cron to run" — `tenantsToDigest()` still
+   *     filters to tenants with `dailyDigestEnabled === true`.
+   *
+   * A symmetric switch (truthy force-enabling every tenant) would let one
+   * process-wide env edit start naming people in Teams channels belonging to
+   * tenants who never opted in — exactly the cross-tenant blast radius
+   * CLAUDE.md's multi-tenant isolation and ethics-first rules forbid.
+   *
+   * Does not gate `DigestAdminController`'s manual
+   * `POST /admin/notifications/no-commit-digest/run` — that endpoint calls
+   * `NotificationsService.runNoCommitDigest()` directly and never passes
+   * through this scheduler, deliberately: it is how a human triggers a
+   * single deliberate send and how the rollout's dry run is performed
+   * (docs/deployment/README.md §6.4), and it must keep working under an
+   * env-level disarm — disarming the unattended cron is not the same
+   * decision as taking away an admin's ability to run it by hand.
+   */
+  private envArmed(): boolean {
+    const flag = this.config.get<boolean | undefined>(
+      'notifications.digestCronEnabled',
+    );
+    return flag !== false;
   }
 }

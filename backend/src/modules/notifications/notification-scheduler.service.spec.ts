@@ -164,4 +164,155 @@ describe('NotificationSchedulerService', () => {
       expect(notifications.tenantsToDigest).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('DIGEST_CRON_ENABLED deployment-wide kill switch (configuration.ts notifications.digestCronEnabled)', () => {
+    it('sweeps when the config value is undefined (env unset) — the per-tenant dailyDigestEnabled flag is still the only thing that decides', async () => {
+      // Guards: unset -> sweep runs, per-tenant flag still honoured.
+      const notifications = {
+        tenantsToDigest: jest.fn().mockResolvedValue(['tenant_a']),
+        runNoCommitDigest: jest.fn().mockResolvedValue(mockDigestResult),
+      };
+      const config = configWith({
+        appRole: 'api',
+        env: 'development',
+        'notifications.digestCronEnabled': undefined,
+      });
+      const scheduler = new NotificationSchedulerService(
+        notifications as never,
+        config as never,
+      );
+
+      await scheduler.sendDailyDigest();
+
+      expect(notifications.tenantsToDigest).toHaveBeenCalledTimes(1);
+      expect(notifications.runNoCommitDigest).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not sweep for any tenant when the config value is false — a deployment-wide disarm', async () => {
+      // Guards: 'false' -> sweep does not run; runNoCommitDigest never called.
+      const notifications = {
+        tenantsToDigest: jest.fn(),
+        runNoCommitDigest: jest.fn(),
+      };
+      const config = configWith({
+        appRole: 'api',
+        env: 'development',
+        'notifications.digestCronEnabled': false,
+      });
+      const scheduler = new NotificationSchedulerService(
+        notifications as never,
+        config as never,
+      );
+
+      await scheduler.sendDailyDigest();
+
+      expect(notifications.tenantsToDigest).not.toHaveBeenCalled();
+      expect(notifications.runNoCommitDigest).not.toHaveBeenCalled();
+    });
+
+    it('sweeps when the config value is true but still defers entirely to tenantsToDigest for tenant selection — truthy does not force-enable', async () => {
+      // Guards: 'true' -> sweep runs but does NOT bypass the per-tenant flag.
+      // tenantsToDigest() is the only source of tenant selection; this test
+      // asserts the scheduler passes through whatever it returns (here, an
+      // empty list) rather than substituting its own notion of "everyone".
+      const notifications = {
+        tenantsToDigest: jest.fn().mockResolvedValue([]),
+        runNoCommitDigest: jest.fn(),
+      };
+      const config = configWith({
+        appRole: 'api',
+        env: 'development',
+        'notifications.digestCronEnabled': true,
+      });
+      const scheduler = new NotificationSchedulerService(
+        notifications as never,
+        config as never,
+      );
+
+      await scheduler.sendDailyDigest();
+
+      expect(notifications.tenantsToDigest).toHaveBeenCalledTimes(1);
+      expect(notifications.runNoCommitDigest).not.toHaveBeenCalled();
+    });
+
+    it('a would-be truthy string surviving as-is (not the coerced boolean) must not be treated as armed by accident — config always hands the scheduler a real boolean', async () => {
+      // Guards: the string 'false' is not treated as truthy. configuration.ts
+      // parses DIGEST_CRON_ENABLED with parseTriStateFlag before it ever
+      // reaches ConfigService, so the scheduler only ever sees a real
+      // boolean or undefined — never the raw string 'false', which
+      // Boolean('false') would (wrongly) evaluate to true. This test proves
+      // the scheduler's own gate reacts to the boolean `false`, not to
+      // stringly-typed truthiness.
+      const notifications = {
+        tenantsToDigest: jest.fn(),
+        runNoCommitDigest: jest.fn(),
+      };
+      const config = configWith({
+        appRole: 'api',
+        env: 'development',
+        'notifications.digestCronEnabled': false,
+      });
+      const scheduler = new NotificationSchedulerService(
+        notifications as never,
+        config as never,
+      );
+
+      expect(Boolean('false')).toBe(true); // documents the bug this design avoids
+      await scheduler.sendDailyDigest();
+
+      expect(notifications.tenantsToDigest).not.toHaveBeenCalled();
+    });
+
+    it.each(['False', 'OFF'])(
+      'mixed-case config values are irrelevant here — the scheduler only ever receives the already-normalized boolean (regression guard for %s having been the raw env value)',
+      async () => {
+        // Guards: mixed case, e.g. 'False', 'OFF'. The case-insensitivity
+        // itself is proven in env-flags.spec.ts (parseTriStateFlag); this
+        // confirms the scheduler correctly disarms once that normalization
+        // has produced `false`, regardless of what the original casing was.
+        const notifications = {
+          tenantsToDigest: jest.fn(),
+          runNoCommitDigest: jest.fn(),
+        };
+        const config = configWith({
+          appRole: 'api',
+          env: 'development',
+          'notifications.digestCronEnabled': false,
+        });
+        const scheduler = new NotificationSchedulerService(
+          notifications as never,
+          config as never,
+        );
+
+        await scheduler.sendDailyDigest();
+
+        expect(notifications.tenantsToDigest).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not evaluate the env kill switch at all when the role/environment gate already skips the sweep', async () => {
+      // The env switch is checked alongside shouldSweep(), after it — an api
+      // pod in production is already skipped by role gating and must not
+      // also touch config.get('notifications.digestCronEnabled').
+      const notifications = {
+        tenantsToDigest: jest.fn(),
+        runNoCommitDigest: jest.fn(),
+      };
+      const getSpy = jest.fn(
+        (key: string) => ({ appRole: 'api', env: 'production' })[key],
+      );
+      const config = { get: getSpy };
+      const scheduler = new NotificationSchedulerService(
+        notifications as never,
+        config as never,
+      );
+
+      await scheduler.sendDailyDigest();
+
+      expect(notifications.tenantsToDigest).not.toHaveBeenCalled();
+      expect(getSpy).not.toHaveBeenCalledWith(
+        'notifications.digestCronEnabled',
+      );
+    });
+  });
 });

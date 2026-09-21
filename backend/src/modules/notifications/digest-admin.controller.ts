@@ -93,6 +93,18 @@ export class RunDigestDto {
  * and the collection freshness — and posts nothing. It is how the rule is
  * validated against real data before a single name reaches a channel, and how
  * a failed morning is inspected afterwards.
+ *
+ * **Deliberately not gated by `DIGEST_CRON_ENABLED`.** This calls
+ * `NotificationsService.runNoCommitDigest()` directly, never through
+ * `NotificationSchedulerService` — so the deployment-wide env kill switch
+ * (`configuration.ts`'s `notifications.digestCronEnabled`) has no effect
+ * here, on purpose. That switch disarms the *unattended* 10:30 IST cron; it
+ * is not a statement that nobody may trigger a digest right now. This
+ * endpoint is how a human performs one deliberate send and how the rollout's
+ * dry run is performed (docs/deployment/README.md §6.4) — both must keep
+ * working during an env-level disarm, e.g. investigating why the cron is
+ * quiet, or validating output before turning per-tenant `dailyDigestEnabled`
+ * on. Do not add an env-switch check here to "match" the scheduler.
  */
 @Controller('admin/notifications/no-commit-digest')
 export class DigestAdminController {
