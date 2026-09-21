@@ -30,6 +30,7 @@ const detection = {
   },
   withhold: null,
   collectedThroughAt: new Date('2026-09-18T04:00:00.000Z'),
+  unattributedCommits: 0,
 };
 
 function build(overrides: { detect?: unknown; existing?: unknown } = {}) {
@@ -136,6 +137,23 @@ describe('NotificationsService.runNoCommitDigest', () => {
         action: 'notification.no_commit_digest.sent',
       }),
     );
+  });
+
+  it('carries unattributedCommits from detection through to the persisted run row and the card', async () => {
+    // The value this task exists to disclose must actually reach the row a
+    // reader would open to answer "why was I on the list" — and the card a
+    // channel reader sees. A regression here would silently strand the count
+    // in `DigestDetection` without ever being recorded or shown.
+    const { service, teams, prisma } = build({
+      detect: { ...detection, unattributedCommits: 4 },
+    });
+
+    await service.runNoCommitDigest('tenant_a');
+
+    const claimCall = prisma.noCommitDigestRun.create.mock.calls[0][0];
+    expect(claimCall.data.unattributedCommits).toBe(4);
+    const card = JSON.stringify(teams.postAdaptiveCard.mock.calls[0][2]);
+    expect(card).toContain('4 commits');
   });
 
   it('posts an all-clear when nobody is flagged', async () => {

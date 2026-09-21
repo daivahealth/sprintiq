@@ -75,6 +75,8 @@ type ClaimData = {
   incomplete: Prisma.InputJsonValue;
   detail: string | null;
   deliveredAt: null;
+  /** See `DigestDetection.unattributedCommits` — carried straight through. */
+  unattributedCommits: number;
 };
 
 /**
@@ -204,6 +206,7 @@ export class NotificationsService {
       incomplete: result.incomplete as unknown as Prisma.InputJsonValue,
       detail,
       deliveredAt: null,
+      unattributedCommits: detected.unattributedCommits,
     };
 
     if (existing) {
@@ -232,6 +235,7 @@ export class NotificationsService {
       flagged: result.flagged,
       evaluatedCount,
       collectedThroughAt: detected.collectedThroughAt,
+      unattributedCommits: detected.unattributedCommits,
       ...(detail ? { withheldDetail: detail } : {}),
     });
 

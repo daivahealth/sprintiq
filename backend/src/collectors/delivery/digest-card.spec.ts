@@ -45,6 +45,7 @@ describe('buildDigestCard', () => {
     ],
     evaluatedCount: 66,
     collectedThroughAt: new Date('2026-09-18T04:00:00.000Z'),
+    unattributedCommits: 0,
   };
 
   it('states the rule it was computed from', () => {
@@ -110,5 +111,29 @@ describe('buildDigestCard', () => {
       buildDigestCard({ ...input, collectedThroughAt: null }),
     );
     expect(body).toContain('unknown');
+  });
+
+  it('discloses unattributed commits as counter-evidence when the count is positive', () => {
+    // The fix this task ships: a name on the list can be wrong because the
+    // person's commit was unattributable, not because they did nothing. This
+    // guards against the disclosure line silently going missing.
+    const body = textOf(buildDigestCard({ ...input, unattributedCommits: 3 }));
+    expect(body).toContain('3 commits');
+    expect(body).toContain('2026-09-17');
+    expect(body).toMatch(/could not be matched/);
+  });
+
+  it('uses the singular for exactly one unattributed commit', () => {
+    const body = textOf(buildDigestCard({ ...input, unattributedCommits: 1 }));
+    expect(body).toContain('1 commit ');
+    expect(body).not.toContain('1 commits');
+  });
+
+  it('omits the unattributed-commits line entirely when the count is zero', () => {
+    // A zero line every ordinary morning is noise that trains readers to
+    // ignore it on the one morning it is non-zero and matters — the whole
+    // point of the disclosure decision is that it is NOT a permanent line.
+    const body = textOf(buildDigestCard({ ...input, unattributedCommits: 0 }));
+    expect(body).not.toMatch(/could not be matched/);
   });
 });

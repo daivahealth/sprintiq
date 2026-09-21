@@ -415,6 +415,67 @@ describe('implausible-share gate', () => {
   });
 });
 
+describe('unattributedCommits count', () => {
+  it('counts commits that attributeCommit cannot place against anyone, alongside an already-attributable one', async () => {
+    // Guards the actual fix: a commit with no known login and no known email
+    // must be counted as unattributed rather than silently vanishing from
+    // the read the way it does from the active set.
+    const { service } = harness({
+      roster: roster(['erin_athma']),
+      displayNames: names([['erin_athma', 'Erin E']]),
+      byLogin: new Map([['erin_login', 'erin_athma']]),
+      commits: [
+        // Attributable via a known login.
+        { authorLogin: 'erin_login', authorEmail: null },
+        // Unattributable: no login, and the email is not in the index —
+        // the ordinary GitHub case this task exists to disclose.
+        { authorLogin: null, authorEmail: 'ghost@personal.example' },
+        // Unattributable: an unrecognised login is still attributed to
+        // itself by `attributeCommit`'s fallback, so this one must NOT be
+        // counted — only a commit with neither wins.
+        { authorLogin: null, authorEmail: null },
+      ],
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.unattributedCommits).toBe(2);
+  });
+
+  it('is zero when every commit is attributable', async () => {
+    const { service } = harness({
+      roster: roster(['erin_athma']),
+      displayNames: names([['erin_athma', 'Erin E']]),
+      byEmail: new Map([['erin@example.com', 'erin_athma']]),
+      commits: [
+        { authorLogin: 'erin_athma', authorEmail: null },
+        { authorLogin: null, authorEmail: 'erin@example.com' },
+        // A commit whose login is unknown to the index is still attributed
+        // to that raw login by `attributeCommit`'s fallback — not unattributed.
+        { authorLogin: 'some_unindexed_login', authorEmail: null },
+      ],
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.unattributedCommits).toBe(0);
+  });
+
+  it('is zero at the freshness gate, which returns before the commit read runs', async () => {
+    const { service, code } = harness({
+      roster: roster(['erin_athma']),
+      displayNames: names([['erin_athma', 'Erin E']]),
+      collectedThroughAt: null,
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('withheld_stale_data');
+    expect(result.unattributedCommits).toBe(0);
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+  });
+});
+
 describe('commitsInvisibleToTheDayRead query shape', () => {
   it('queries commit.groupBy for committedAt: null within the reported day, and withholds a developer found only that way as incomplete rather than flagging them', async () => {
     const { service, prisma } = harness({

@@ -868,6 +868,12 @@ model NoCommitDigestRun {
   /// and all four `withheld_*` outcomes, since a card is posted for those
   /// too — only the names are missing from it. Null only for `failed`.
   deliveredAt  DateTime?
+  /// Commits in the reported day's window that could not be attributed to
+  /// any developer (see `DigestDetection.unattributedCommits`). Disclosed on
+  /// the card as counter-evidence to a name on the list, never used to gate
+  /// or withhold — a person named above may be the author of one of these.
+  /// Zero for the gates that return before the commit read runs.
+  unattributedCommits Int @default(0)
   createdAt    DateTime  @default(now())
 
   @@unique([tenantId, reportedDay])

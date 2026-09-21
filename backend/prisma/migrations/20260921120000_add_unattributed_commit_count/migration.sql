@@ -1,0 +1,21 @@
+-- Counter-evidence for a name on the daily commit digest.
+--
+-- `attributeCommit` (metrics/developer-activity.service.ts) returns
+-- `undefined` when a commit carries no `authorLogin` AND its `authorEmail` is
+-- not in the attribution index. GitHub only sets `author.login` for a
+-- verified email on an account, so this is the ordinary case, not an exotic
+-- one — see api/README.md gap #52's ten split-identity pairs on the reference
+-- tenant. Left undetected, a developer can genuinely commit on the reported
+-- day and still be named on the list, because their commit was invisible to
+-- the active set the digest computes the list from.
+--
+-- The decided fix is disclosure, not withholding: the digest must not gate or
+-- suppress on this number, only surface it, so a person named on the list —
+-- and whoever reads the card — can see there is counter-evidence. This column
+-- carries that count through to the persisted run row, alongside the other
+-- lineage fields on this table.
+--
+-- Backfills 0 for every existing row: this migration adds a new fact to
+-- report, it does not restate or invalidate any run already recorded.
+-- AlterTable
+ALTER TABLE "notification_no_commit_run" ADD COLUMN "unattributedCommits" INTEGER NOT NULL DEFAULT 0;

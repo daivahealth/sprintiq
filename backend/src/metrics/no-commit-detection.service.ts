@@ -8,7 +8,10 @@ import { istDayEnd, istDayStart } from '../common/time';
 import { CodeService } from '../modules/code/code.service';
 import { ConnectionsService } from '../modules/connections/connections.service';
 import { PrismaService } from '../database/prisma.service';
-import { activeDeveloperSet } from './developer-activity.service';
+import {
+  activeDeveloperSet,
+  attributeCommit,
+} from './developer-activity.service';
 
 /**
  * The share of the roster above which a named list is withheld.
@@ -145,6 +148,22 @@ export interface DigestDetection {
   /** Non-null when the names must not be sent, with the reason to record. */
   withhold: { outcome: DigestOutcome; detail: string } | null;
   collectedThroughAt: Date | null;
+  /**
+   * Commits in the reported day's window that `attributeCommit` could not
+   * place against anyone — no known login, no known email.
+   *
+   * This is the counter-evidence to a name on the list. GitHub omits
+   * `author.login` unless the commit's email is a verified email on an
+   * account, so an unattributed commit is ordinary, not exotic (the split-
+   * identity pairs in api/README.md gap #52 are the same underlying gap). A
+   * developer can genuinely commit on the reported day and still be named,
+   * because their commit was invisible to the active set that decided who to
+   * name. Disclosing this count — not gating or withholding on it, a decision
+   * already taken — lets a person named on the list, and whoever reads the
+   * card, see that there is unattributed activity the list did not account
+   * for. Zero at gates 1 and 2, which return before the commit read runs.
+   */
+  unattributedCommits: number;
 }
 
 /**
@@ -214,6 +233,8 @@ export class NoCommitDetectionService {
           }, which does not cover ${reportedDay}. Names withheld.`,
         },
         collectedThroughAt: freshness.collectedThroughAt,
+        // No commit read has run yet — nothing to count.
+        unattributedCommits: 0,
       };
     }
 
@@ -239,6 +260,9 @@ export class NoCommitDetectionService {
           detail: `The commit read for ${reportedDay} hit its row ceiling, so the active set is incomplete. Names withheld.`,
         },
         collectedThroughAt: freshness.collectedThroughAt,
+        // The read that would answer this hit its ceiling — a count off a
+        // truncated read would itself be an unreliable figure to disclose.
+        unattributedCommits: 0,
       };
     }
 
@@ -249,6 +273,18 @@ export class NoCommitDetectionService {
       from,
       to,
     );
+
+    // Counted from the same commit rows the active set was just built from —
+    // no re-query. A commit lands here whenever `attributeCommit` cannot
+    // place it against anyone, which is the ordinary GitHub case (no
+    // verified-email login) rather than an exotic one. See the docblock on
+    // `DigestDetection.unattributedCommits` for why this is disclosed.
+    let unattributedCommits = 0;
+    for (const commit of commits) {
+      if (attributeCommit(commit, index) === undefined) {
+        unattributedCommits += 1;
+      }
+    }
 
     const excludedByAdmin = new Set<string>([
       ...exclusionRows.map((row) => row.canonicalDeveloperId),
@@ -294,6 +330,7 @@ export class NoCommitDetectionService {
           detail: `None of the ${roster.length} tracked developers could be evaluated for ${reportedDay} — every roster entry is unresolved or suppressed. The roster likely needs re-seeding or identity resolution to catch up. Names withheld.`,
         },
         collectedThroughAt: freshness.collectedThroughAt,
+        unattributedCommits,
       };
     }
 
@@ -319,6 +356,7 @@ export class NoCommitDetectionService {
           detail,
         },
         collectedThroughAt: freshness.collectedThroughAt,
+        unattributedCommits,
       };
     }
 
@@ -328,6 +366,7 @@ export class NoCommitDetectionService {
       evaluation,
       withhold: null,
       collectedThroughAt: freshness.collectedThroughAt,
+      unattributedCommits,
     };
   }
 

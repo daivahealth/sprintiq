@@ -22,6 +22,15 @@ export interface DigestCardInput {
   collectedThroughAt: Date | null;
   /** When set, the reason names were withheld; names are not rendered. */
   withheldDetail?: string;
+  /**
+   * Commits on the reported day that could not be attributed to any tracked
+   * developer — the counter-evidence to a name on this list. Disclosed, never
+   * gated on: a person named above may be the author of one of these commits,
+   * missed only because GitHub omitted a verified-email login and the email
+   * was not in the attribution index. Rendered only when positive — see
+   * `buildDigestCard`.
+   */
+  unattributedCommits: number;
 }
 
 /**
@@ -118,6 +127,20 @@ export function buildDigestCard(
       { isSubtle: true, size: 'Small' },
     ),
   );
+  // Rendered only when positive — a zero here is noise on every ordinary
+  // morning, and would train readers to stop reading this line on the one
+  // morning it matters. Placed beside the freshness line rather than folded
+  // into RULE_TEXT: this is a fact about THIS day's read, not the standing
+  // rule the list is computed from.
+  if (input.unattributedCommits > 0) {
+    const plural = input.unattributedCommits === 1 ? '' : 's';
+    body.push(
+      block(
+        `${input.unattributedCommits} commit${plural} on ${input.reportedDay} could not be matched to any developer, so this list may be incomplete or wrong. Worth checking identity resolution.`,
+        { isSubtle: true, size: 'Small' },
+      ),
+    );
+  }
 
   return {
     type: 'message',
