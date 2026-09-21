@@ -27,6 +27,23 @@ import {
  */
 export const IMPLAUSIBLE_FLAGGED_SHARE = 0.8;
 
+/**
+ * How long a tenant's collectors may go without reaching a source before
+ * gate 1 treats the pipeline as stalled rather than merely lagging.
+ *
+ * The digest's schedule — not a completeness watermark — is what guarantees
+ * the reported day's commits are in: the cron runs at 10:30 IST, ~10.5 hours
+ * after the previous day closed, ample time for an overnight poll to have
+ * collected it. Measured on the hosted tenant via `GET
+ * /api/dashboards/freshness`, the oldest sync on a healthy deployment sits a
+ * few hours back (~3.9h at the time this was measured); a full 24 hours of
+ * silence is unambiguously a stalled collector, not normal lag. Revisit this
+ * value only with fresh evidence of what "healthy" looks like, not by
+ * feel — and see the docblock on gate 1 below for why `collectedThroughAt`
+ * and `incomplete` must never be reintroduced as inputs here.
+ */
+export const MAX_COLLECTOR_SILENCE_SECONDS = 24 * 60 * 60;
+
 export type DigestOutcome =
   | 'sent'
   | 'sent_all_clear'
@@ -213,24 +230,73 @@ export class NoCommitDetectionService {
       suppressed: [],
     };
 
-    // Gate 1: is the day's data actually in? `collectedThroughAt` is null
-    // whenever ANY active connection has no watermark, and is the oldest
-    // watermark otherwise — so this is genuinely "the whole tenant is
-    // collected through here", which is what the question needs.
+    // Gate 1: is the pipeline visibly broken? The digest's SCHEDULE is what
+    // guarantees the reported day's commits are in, not a completeness
+    // watermark: the cron runs at 10:30 IST, ~10.5 hours after the previous
+    // day closed — ample time for an overnight poll to have collected it.
+    // This gate therefore does not try to PROVE the day is complete; it only
+    // refuses when collection is visibly broken:
+    //   - an active connection is erroring right now (`failing`)
+    //   - an active connection has never synced at all (`neverSynced`)
+    //   - the tenant has gone silent longer than a full day (`staleSeconds`
+    //     null, or over `MAX_COLLECTOR_SILENCE_SECONDS`)
     //
-    // Ingest is poll-based. A stalled collector or an expired token makes the
-    // entire roster read as inactive, and without this gate the job would
-    // name every one of them in a channel.
-    if (!freshness.collectedThroughAt || freshness.collectedThroughAt < to) {
+    // Deliberately NOT `freshness.collectedThroughAt` or `.incomplete`. Both
+    // are null/non-zero on a demonstrably healthy deployment for reasons
+    // unrelated to whether yesterday's commits arrived:
+    // `collectedThroughAt` is null the moment ANY active connection lacks a
+    // watermark — including one that is merely mid-PR-backfill — and
+    // `incomplete` counts exactly those backfilling connections, which says
+    // nothing about commit collection. The earlier version of this gate used
+    // `collectedThroughAt`, which made it unsatisfiable on the real
+    // deployment: measured via `GET /api/dashboards/freshness`,
+    // `collectedThroughAt: null` with `incomplete: 13` while every
+    // connection had synced and nothing was failing — a healthy pipeline
+    // withheld on forever. Do not restore either field as a gate input; use
+    // `failing`/`neverSynced`/`staleSeconds` instead, which speak to
+    // liveness rather than completeness.
+    const silenceSeconds = freshness.staleSeconds;
+    const silent =
+      silenceSeconds === null || silenceSeconds > MAX_COLLECTOR_SILENCE_SECONDS;
+    if (freshness.failing.length > 0 || freshness.neverSynced > 0 || silent) {
+      const reasons: string[] = [];
+      if (freshness.failing.length > 0) {
+        const shown = freshness.failing.slice(0, 3);
+        const named = shown
+          .map(
+            (f) => `${f.sourceSystem} "${f.name}" (${f.error.slice(0, 120)})`,
+          )
+          .join('; ');
+        const rest = freshness.failing.length - shown.length;
+        reasons.push(
+          `${freshness.failing.length} connection(s) failing: ${named}${
+            rest > 0 ? ` and ${rest} more` : ''
+          }`,
+        );
+      }
+      if (freshness.neverSynced > 0) {
+        reasons.push(
+          `${freshness.neverSynced} active connection(s) have never synced`,
+        );
+      }
+      if (silent) {
+        reasons.push(
+          silenceSeconds === null
+            ? 'no active connection has ever reached its source'
+            : `no active connection has reached its source in over ${Math.floor(
+                silenceSeconds / 3600,
+              )}h`,
+        );
+      }
       return {
         reportedDay,
         rosterCount: roster.length,
         evaluation: empty,
         withhold: {
           outcome: 'withheld_stale_data',
-          detail: `Collection reaches ${
-            freshness.collectedThroughAt?.toISOString() ?? 'nothing'
-          }, which does not cover ${reportedDay}. Names withheld.`,
+          detail: `Collector pipeline looks broken ahead of ${reportedDay}: ${reasons.join(
+            '; ',
+          )}. Names withheld.`,
         },
         collectedThroughAt: freshness.collectedThroughAt,
         // No commit read has run yet — nothing to count.

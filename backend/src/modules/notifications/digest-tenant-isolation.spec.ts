@@ -1,5 +1,6 @@
 import {
   IMPLAUSIBLE_FLAGGED_SHARE,
+  MAX_COLLECTOR_SILENCE_SECONDS,
   NoCommitDetectionService,
 } from '../../metrics/no-commit-detection.service';
 import { istDayEnd, istDayStart } from '../../common/time';
@@ -49,6 +50,9 @@ describe('daily digest tenant isolation', () => {
     const connections = {
       getDataFreshness: jest.fn().mockResolvedValue({
         collectedThroughAt: new Date('2026-09-30T00:00:00.000Z'),
+        failing: [],
+        neverSynced: 0,
+        staleSeconds: 3600,
       }),
     };
 
@@ -87,8 +91,23 @@ interface HarnessOptions {
   displayNames?: Map<string, string>;
   exclusions?: { canonicalDeveloperId: string }[];
   excludedIdentities?: Set<string>;
-  /** `undefined` (the default) means "fresh": the reported day's last instant. */
+  /**
+   * No longer a gate input (see the "collector health gate" describe block)
+   * — kept only because `detect()` still threads it through to
+   * `DigestDetection.collectedThroughAt` for card/lineage display.
+   * `undefined` (the default) means "fresh": the reported day's last instant.
+   */
   collectedThroughAt?: Date | null;
+  /** Active connections currently erroring. Default: none. */
+  failing?: { sourceSystem: string; name: string; error: string }[];
+  /** Active connections with no successful sync yet. Default: 0. */
+  neverSynced?: number;
+  /**
+   * Seconds since the oldest active connection last reached its source.
+   * `undefined` (the default) means "recently synced" — well inside
+   * `MAX_COLLECTOR_SILENCE_SECONDS`. `null` means nothing has ever synced.
+   */
+  staleSeconds?: number | null;
   commits?: { authorLogin: string | null; authorEmail: string | null }[];
   truncated?: boolean;
   prs?: { authorLogin: string | null }[];
@@ -139,6 +158,10 @@ function harness(opts: HarnessOptions = {}) {
         opts.collectedThroughAt === undefined
           ? istDayEnd(REPORTED_DAY)
           : opts.collectedThroughAt,
+      failing: opts.failing ?? [],
+      neverSynced: opts.neverSynced ?? 0,
+      // Recent by default (~1h) — well inside MAX_COLLECTOR_SILENCE_SECONDS.
+      staleSeconds: opts.staleSeconds === undefined ? 3600 : opts.staleSeconds,
     }),
   };
 
@@ -152,8 +175,8 @@ function harness(opts: HarnessOptions = {}) {
   return { service, prisma, identities, code, connections };
 }
 
-describe('stale collection gate', () => {
-  // Fixture used by all three cases: one tracked, resolvable developer with
+describe('collector health gate', () => {
+  // Fixture used by every case below: one tracked, resolvable developer with
   // no commit/PR signal at all, so that WITHOUT the gate they would be
   // flagged. That is what makes the withheld cases discriminating — an empty
   // roster would pass "flagged is empty" trivially, gate or no gate.
@@ -162,25 +185,49 @@ describe('stale collection gate', () => {
     displayNames: names([['erin_athma', 'Erin E']]),
   };
 
-  it('withholds when collection has no watermark at all — a stalled collector or expired token would otherwise make the whole roster read as idle and get named at once', async () => {
+  it('withholds when an active connection is failing — an expired token or refused auth means nothing about the roster can be trusted, however recent its last contact', async () => {
     const { service, code } = harness({
       ...oneIdleDeveloper,
-      collectedThroughAt: null,
+      failing: [
+        {
+          sourceSystem: 'github',
+          name: 'athma/pe_platform_pkg',
+          error: '401 Bad credentials',
+        },
+      ],
     });
 
     const result = await service.detect('tenant_a', REPORTED_DAY);
 
     expect(result.withhold?.outcome).toBe('withheld_stale_data');
     expect(result.evaluation.flagged).toEqual([]);
+    // The detail must name what's actually broken — the previously-deferred
+    // finding this task closes — not a vague "collection is behind".
+    expect(result.withhold?.detail).toContain('github');
+    expect(result.withhold?.detail).toContain('athma/pe_platform_pkg');
     // The gate must short-circuit before any commit read, not merely discard
     // the result afterwards.
     expect(code.listCommitsPage).not.toHaveBeenCalled();
   });
 
-  it('withholds when the watermark is before the reported day ends — collection that has not finished reading the day must not report on it', async () => {
+  it('withholds when an active connection has never synced — its data is absent, not merely old, so the roster cannot be evaluated against it', async () => {
     const { service, code } = harness({
       ...oneIdleDeveloper,
-      collectedThroughAt: new Date(istDayEnd(REPORTED_DAY).getTime() - 1),
+      neverSynced: 1,
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('withheld_stale_data');
+    expect(result.evaluation.flagged).toEqual([]);
+    expect(result.withhold?.detail).toContain('never synced');
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+  });
+
+  it('withholds when nothing has ever synced — staleSeconds is null rather than merely large, so "how long" cannot even be stated', async () => {
+    const { service, code } = harness({
+      ...oneIdleDeveloper,
+      staleSeconds: null,
     });
 
     const result = await service.detect('tenant_a', REPORTED_DAY);
@@ -190,17 +237,30 @@ describe('stale collection gate', () => {
     expect(code.listCommitsPage).not.toHaveBeenCalled();
   });
 
-  it("does not withhold for staleness once the watermark reaches the reported day's last instant — the boundary that makes the two cases above meaningful rather than a gate that always withholds", async () => {
+  it('withholds when the collector has been silent longer than MAX_COLLECTOR_SILENCE_SECONDS — a full day of silence is a stalled collector, not normal overnight lag', async () => {
+    const { service, code } = harness({
+      ...oneIdleDeveloper,
+      staleSeconds: MAX_COLLECTOR_SILENCE_SECONDS + 1,
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('withheld_stale_data');
+    expect(result.evaluation.flagged).toEqual([]);
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+  });
+
+  it('does not withhold at exactly MAX_COLLECTOR_SILENCE_SECONDS — the comparison is strictly greater-than, not greater-or-equal', async () => {
     const { service, code } = harness({
       roster: roster(['erin_athma', 'frank_athma']),
       displayNames: names([
         ['erin_athma', 'Erin E'],
         ['frank_athma', 'Frank F'],
       ]),
-      collectedThroughAt: istDayEnd(REPORTED_DAY),
+      staleSeconds: MAX_COLLECTOR_SILENCE_SECONDS,
       // frank has a signal so the roster does not also trip the implausible
       // gate (2 evaluated, 1 flagged = 50%), keeping this test isolated to
-      // the freshness boundary.
+      // the silence boundary.
       commits: [{ authorLogin: 'frank_athma', authorEmail: null }],
     });
 
@@ -208,6 +268,41 @@ describe('stale collection gate', () => {
 
     expect(code.listCommitsPage).toHaveBeenCalled();
     expect(result.withhold?.outcome).not.toBe('withheld_stale_data');
+    expect(result.evaluation.flagged.map((f) => f.developer)).toEqual([
+      'erin_athma',
+    ]);
+  });
+
+  // The regression test for the whole bug this gate was rewritten to fix.
+  // This is the EXACT shape measured on the hosted tenant via
+  // GET /api/dashboards/freshness: collectedThroughAt null (13 active
+  // connections mid-PR-backfill), incomplete 13 (not read by the gate at
+  // all — DataFreshness doesn't even expose it to detect()), failing: [],
+  // neverSynced: 0, staleSeconds ~3.9h. The old rule ("collectedThroughAt
+  // must cover the reported day") withheld unconditionally and forever on
+  // this shape even though nothing was broken. Without this test, that
+  // defect — using collectedThroughAt/incomplete as gate inputs — could
+  // silently return.
+  it('does not withhold a healthy tenant whose tenant-wide watermark is null — collectedThroughAt is not a gate input', async () => {
+    const { service, code } = harness({
+      roster: roster(['erin_athma', 'frank_athma']),
+      displayNames: names([
+        ['erin_athma', 'Erin E'],
+        ['frank_athma', 'Frank F'],
+      ]),
+      collectedThroughAt: null,
+      failing: [],
+      neverSynced: 0,
+      staleSeconds: 3.9 * 60 * 60,
+      // frank has a signal so the roster does not also trip the implausible
+      // gate, keeping this test isolated to gate 1.
+      commits: [{ authorLogin: 'frank_athma', authorEmail: null }],
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(code.listCommitsPage).toHaveBeenCalled();
+    expect(result.withhold).toBeNull();
     expect(result.evaluation.flagged.map((f) => f.developer)).toEqual([
       'erin_athma',
     ]);
@@ -228,11 +323,11 @@ describe('truncated read gate', () => {
     expect(result.evaluation.flagged).toEqual([]);
   });
 
-  it('checks the freshness gate before the truncation gate — when both are true the stale diagnosis wins because it is the more informative one', async () => {
+  it('checks the collector health gate before the truncation gate — when both are true the broken-pipeline diagnosis wins because it is the more informative one', async () => {
     const { service, code } = harness({
       roster: roster(['erin_athma']),
       displayNames: names([['erin_athma', 'Erin E']]),
-      collectedThroughAt: null,
+      neverSynced: 1,
       truncated: true,
     });
 
@@ -461,11 +556,11 @@ describe('unattributedCommits count', () => {
     expect(result.unattributedCommits).toBe(0);
   });
 
-  it('is zero at the freshness gate, which returns before the commit read runs', async () => {
+  it('is zero at the collector health gate, which returns before the commit read runs', async () => {
     const { service, code } = harness({
       roster: roster(['erin_athma']),
       displayNames: names([['erin_athma', 'Erin E']]),
-      collectedThroughAt: null,
+      neverSynced: 1,
     });
 
     const result = await service.detect('tenant_a', REPORTED_DAY);
