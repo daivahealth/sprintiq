@@ -63,6 +63,15 @@ export interface RunDigestResult {
   incomplete: NamedDeveloper[];
   detail: string | null;
   dryRun: boolean;
+  /**
+   * Counter-evidence to a name on `flagged` — see
+   * `DigestDetection.unattributedCommits`. Populated on every path, including
+   * every withheld outcome and the dry run: `dryRun` is the rollout step
+   * where a human reconciles the list against the Activity Overview board
+   * before a single name reaches a channel, which is exactly the moment this
+   * count needs to be visible, not only on the card that posts afterwards.
+   */
+  unattributedCommits: number;
 }
 
 /** Fields written when a run is first claimed, before the Teams POST. */
@@ -174,6 +183,7 @@ export class NotificationsService {
       incomplete: evaluation.incomplete,
       detail,
       dryRun,
+      unattributedCommits: detected.unattributedCommits,
     };
 
     if (dryRun) {

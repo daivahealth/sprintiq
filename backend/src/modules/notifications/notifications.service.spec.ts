@@ -238,6 +238,23 @@ describe('NotificationsService.runNoCommitDigest', () => {
     expect(result.flagged).toHaveLength(1);
   });
 
+  it('returns unattributedCommits on a dry run, before any card is posted', async () => {
+    // The dry run is the rollout step a human uses to reconcile the list
+    // against the Activity Overview board BEFORE a name ever reaches a
+    // channel — exactly the moment the counter-evidence must be visible.
+    // Disclosing it only on the posted card, and not here, would put it
+    // everywhere except the one place it is actually acted on.
+    const { service } = build({
+      detect: { ...detection, unattributedCommits: 7 },
+    });
+
+    const result = await service.runNoCommitDigest('tenant_a', {
+      dryRun: true,
+    });
+
+    expect(result.unattributedCommits).toBe(7);
+  });
+
   it('refuses to re-send a day already sent', async () => {
     const { service, teams } = build({ existing: { outcome: 'sent' } });
 
