@@ -53,6 +53,7 @@ describe('daily digest tenant isolation', () => {
         failing: [],
         neverSynced: 0,
         staleSeconds: 3600,
+        lastSyncAt: new Date('2026-09-30T00:00:00.000Z'),
       }),
     };
 
@@ -92,10 +93,15 @@ interface HarnessOptions {
   exclusions?: { canonicalDeveloperId: string }[];
   excludedIdentities?: Set<string>;
   /**
-   * No longer a gate input (see the "collector health gate" describe block)
-   * — kept only because `detect()` still threads it through to
-   * `DigestDetection.collectedThroughAt` for card/lineage display.
-   * `undefined` (the default) means "fresh": the reported day's last instant.
+   * Not a gate input (see the "collector health gate" describe block) and,
+   * as of this fix, not threaded through to `DigestDetection` either — the
+   * card renders `lastSyncAt` instead (see that field below) precisely
+   * because `collectedThroughAt` is permanently null on the real deployment.
+   * Kept here only so the mock's shape matches the real
+   * `ConnectionsService.getDataFreshness()` return and the "healthy tenant
+   * whose tenant-wide watermark is null" regression test below can still set
+   * it to null without failing to type-check. `undefined` (the default)
+   * means "fresh": the reported day's last instant.
    */
   collectedThroughAt?: Date | null;
   /** Active connections currently erroring. Default: none. */
@@ -108,6 +114,13 @@ interface HarnessOptions {
    * `MAX_COLLECTOR_SILENCE_SECONDS`. `null` means nothing has ever synced.
    */
   staleSeconds?: number | null;
+  /**
+   * Oldest `lastSyncAt` across active connections — threaded straight
+   * through to `DigestDetection.lastSyncAt`, which is what the card renders
+   * on its freshness line (`digest-card.spec.ts`). `undefined` (the default)
+   * means "recently synced", matching the default `staleSeconds` above.
+   */
+  lastSyncAt?: Date | null;
   commits?: { authorLogin: string | null; authorEmail: string | null }[];
   truncated?: boolean;
   prs?: { authorLogin: string | null }[];
@@ -162,6 +175,10 @@ function harness(opts: HarnessOptions = {}) {
       neverSynced: opts.neverSynced ?? 0,
       // Recent by default (~1h) — well inside MAX_COLLECTOR_SILENCE_SECONDS.
       staleSeconds: opts.staleSeconds === undefined ? 3600 : opts.staleSeconds,
+      lastSyncAt:
+        opts.lastSyncAt === undefined
+          ? istDayEnd(REPORTED_DAY)
+          : opts.lastSyncAt,
     }),
   };
 
@@ -284,6 +301,7 @@ describe('collector health gate', () => {
   // defect — using collectedThroughAt/incomplete as gate inputs — could
   // silently return.
   it('does not withhold a healthy tenant whose tenant-wide watermark is null — collectedThroughAt is not a gate input', async () => {
+    const measuredLastSyncAt = new Date('2026-09-17T20:06:00.000Z');
     const { service, code } = harness({
       roster: roster(['erin_athma', 'frank_athma']),
       displayNames: names([
@@ -294,6 +312,7 @@ describe('collector health gate', () => {
       failing: [],
       neverSynced: 0,
       staleSeconds: 3.9 * 60 * 60,
+      lastSyncAt: measuredLastSyncAt,
       // frank has a signal so the roster does not also trip the implausible
       // gate, keeping this test isolated to gate 1.
       commits: [{ authorLogin: 'frank_athma', authorEmail: null }],
@@ -306,6 +325,10 @@ describe('collector health gate', () => {
     expect(result.evaluation.flagged.map((f) => f.developer)).toEqual([
       'erin_athma',
     ]);
+    // The whole point of this fix: even on the exact shape that used to
+    // withhold forever (collectedThroughAt null), `lastSyncAt` — what the
+    // card actually renders now — carries a real, non-null value through.
+    expect(result.lastSyncAt).toEqual(measuredLastSyncAt);
   });
 });
 

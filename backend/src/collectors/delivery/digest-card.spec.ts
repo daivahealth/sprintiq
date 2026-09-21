@@ -44,7 +44,7 @@ describe('buildDigestCard', () => {
       { developer: 'zara_athma', displayName: 'Zara Ahmed' },
     ],
     evaluatedCount: 66,
-    collectedThroughAt: new Date('2026-09-18T04:00:00.000Z'),
+    lastSyncAt: new Date('2026-09-18T04:00:00.000Z'),
     unattributedCommits: 0,
   };
 
@@ -71,8 +71,14 @@ describe('buildDigestCard', () => {
     expect(body.indexOf('Bob Bose')).toBeLessThan(body.indexOf('Zara Ahmed'));
   });
 
-  it('carries the collection freshness', () => {
-    expect(textOf(buildDigestCard(input))).toContain('2026-09-18');
+  it('carries the collection freshness as when sources were last reached', () => {
+    // Guards the fix this task ships: the card used to render
+    // `collectedThroughAt`, which is permanently null on the real
+    // deployment (13 connections mid-PR-backfill) — this asserts the card
+    // now renders a real timestamp derived from `lastSyncAt` instead.
+    const body = textOf(buildDigestCard(input));
+    expect(body).toContain('2026-09-18');
+    expect(body).toContain('Sources last reached');
   });
 
   it('renders an all-clear card when nobody is flagged', () => {
@@ -103,14 +109,19 @@ describe('buildDigestCard', () => {
     );
   });
 
-  it('renders collection freshness as unknown when collectedThroughAt is null', () => {
-    // When `collectedThroughAt` is null (e.g., collection is broken or not yet
-    // started), the card renders 'unknown' so the user knows the data is not
-    // current. This is the withheld path this feature leans on.
-    const body = textOf(
-      buildDigestCard({ ...input, collectedThroughAt: null }),
-    );
-    expect(body).toContain('unknown');
+  it('states plainly, never as "unknown", that sources have never been reached when lastSyncAt is null', () => {
+    // `lastSyncAt` is null only when NO active connection has ever synced —
+    // rare, because the collector-health gate (no-commit-detection.service.ts
+    // gate 1) withholds names whenever any active connection has never
+    // synced. The old behaviour rendered "Data collected through unknown."
+    // on EVERY card, forever, because it read `collectedThroughAt`, which is
+    // null the moment any single connection is mid-backfill — permanently
+    // true on the real deployment. The fix must not just move that same
+    // "unknown" wording onto the new field; it must say what actually
+    // happened.
+    const body = textOf(buildDigestCard({ ...input, lastSyncAt: null }));
+    expect(body).not.toContain('unknown');
+    expect(body).toMatch(/never been reached/);
   });
 
   it('discloses unattributed commits as counter-evidence when the count is positive', () => {

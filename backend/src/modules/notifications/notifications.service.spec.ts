@@ -29,7 +29,7 @@ const detection = {
     suppressed: [],
   },
   withhold: null,
-  collectedThroughAt: new Date('2026-09-18T04:00:00.000Z'),
+  lastSyncAt: new Date('2026-09-18T04:00:00.000Z'),
   unattributedCommits: 0,
 };
 

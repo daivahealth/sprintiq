@@ -19,7 +19,23 @@ export interface DigestCardInput {
   flagged: DigestRecipient[];
   /** Roster size after unresolved and suppressed entries are removed. */
   evaluatedCount: number;
-  collectedThroughAt: Date | null;
+  /**
+   * Oldest `lastSyncAt` across the tenant's active connections — when
+   * collection last REACHED a source, not the completeness watermark.
+   *
+   * Deliberately not `DataFreshness.collectedThroughAt`/`ConnectionsService`'s
+   * completeness watermark: `collectedThroughAt` is null the instant any
+   * active connection is mid-backfill and has no watermark yet — measured
+   * permanently true on the real deployment (13 active connections
+   * mid-PR-backfill), which made the card read "Data collected through
+   * unknown." on every single send, forever. `no-commit-detection.service.ts`
+   * gate 1 was rewritten off the same reasoning (see its docblock) — this is
+   * the card catching up to that same fix. Null only when NO active
+   * connection has ever reached its source, which gate 1's `neverSynced`
+   * check makes rare: a tenant with any never-synced active connection is
+   * withheld before a card naming anyone is even considered.
+   */
+  lastSyncAt: Date | null;
   /** When set, the reason names were withheld; names are not rendered. */
   withheldDetail?: string;
   /**
@@ -119,11 +135,20 @@ export function buildDigestCard(
   }
 
   body.push(block(RULE_TEXT, { isSubtle: true, size: 'Small' }));
+  // "Sources last reached", not "data collected through": this card cannot
+  // use the completeness watermark (`DataFreshness.collectedThroughAt`) — see
+  // the docblock on `DigestCardInput.lastSyncAt` for why it is permanently
+  // null on this deployment. `lastSyncAt` is liveness, not coverage, but it
+  // is the honest answer to what a person named above actually needs: was
+  // anything checked recently, or has this pipeline gone quiet. The null
+  // case is stated plainly rather than as "unknown" — it means no active
+  // connection has EVER reached its source, which gate 1's `neverSynced`
+  // check already makes rare on a card that names anyone.
   body.push(
     block(
-      `Data collected through ${
-        input.collectedThroughAt?.toISOString() ?? 'unknown'
-      }.`,
+      input.lastSyncAt
+        ? `Sources last reached ${input.lastSyncAt.toISOString()}.`
+        : 'Sources have never been reached — no connection has completed a sync yet.',
       { isSubtle: true, size: 'Small' },
     ),
   );

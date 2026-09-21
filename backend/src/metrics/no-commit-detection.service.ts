@@ -164,7 +164,17 @@ export interface DigestDetection {
   evaluation: RosterEvaluation;
   /** Non-null when the names must not be sent, with the reason to record. */
   withhold: { outcome: DigestOutcome; detail: string } | null;
-  collectedThroughAt: Date | null;
+  /**
+   * Oldest `lastSyncAt` across the tenant's active connections, carried
+   * straight through from `freshness.lastSyncAt` (`ConnectionsService.
+   * getDataFreshness`) for the card's freshness line — liveness, not
+   * completeness. NOT `freshness.collectedThroughAt`: that field is null the
+   * instant any active connection is mid-backfill and permanently null on
+   * this deployment (13 connections mid-PR-backfill), which is exactly why
+   * gate 1 below does not read it either — see that gate's docblock. Null
+   * only when no active connection has ever synced at all.
+   */
+  lastSyncAt: Date | null;
   /**
    * Commits in the reported day's window that `attributeCommit` could not
    * place against anyone — no known login, no known email.
@@ -298,7 +308,7 @@ export class NoCommitDetectionService {
             '; ',
           )}. Names withheld.`,
         },
-        collectedThroughAt: freshness.collectedThroughAt,
+        lastSyncAt: freshness.lastSyncAt,
         // No commit read has run yet — nothing to count.
         unattributedCommits: 0,
       };
@@ -325,7 +335,7 @@ export class NoCommitDetectionService {
           outcome: 'withheld_truncated_read',
           detail: `The commit read for ${reportedDay} hit its row ceiling, so the active set is incomplete. Names withheld.`,
         },
-        collectedThroughAt: freshness.collectedThroughAt,
+        lastSyncAt: freshness.lastSyncAt,
         // The read that would answer this hit its ceiling — a count off a
         // truncated read would itself be an unreliable figure to disclose.
         unattributedCommits: 0,
@@ -395,7 +405,7 @@ export class NoCommitDetectionService {
           outcome: 'withheld_unevaluable',
           detail: `None of the ${roster.length} tracked developers could be evaluated for ${reportedDay} — every roster entry is unresolved or suppressed. The roster likely needs re-seeding or identity resolution to catch up. Names withheld.`,
         },
-        collectedThroughAt: freshness.collectedThroughAt,
+        lastSyncAt: freshness.lastSyncAt,
         unattributedCommits,
       };
     }
@@ -421,7 +431,7 @@ export class NoCommitDetectionService {
           outcome: 'withheld_implausible',
           detail,
         },
-        collectedThroughAt: freshness.collectedThroughAt,
+        lastSyncAt: freshness.lastSyncAt,
         unattributedCommits,
       };
     }
@@ -431,7 +441,7 @@ export class NoCommitDetectionService {
       rosterCount: roster.length,
       evaluation,
       withhold: null,
-      collectedThroughAt: freshness.collectedThroughAt,
+      lastSyncAt: freshness.lastSyncAt,
       unattributedCommits,
     };
   }
