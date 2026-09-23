@@ -177,21 +177,46 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
     description: 'Outbound delivery configuration for approved notifications.',
     fields: [
       {
+        // Kept, but honestly labelled, matching the github/jira
+        // "(not yet active)" convention — verified nothing in the codebase
+        // reads this field. Presented as inactive rather than removed so an
+        // admin who already set one doesn't have it silently dropped.
         key: 'slackWebhookRef',
-        label: 'Slack webhook ref',
+        label: 'Slack webhook ref (not yet active)',
         kind: 'secret-ref',
+        helper: 'Stored for future use. Nothing delivers through Slack today.',
       },
       {
         key: 'teamsWebhookRef',
         label: 'Teams webhook ref',
         kind: 'secret-ref',
+        helper:
+          'Live: the daily activity digest posts through this. Outbound only — ' +
+          'unlike the GitHub/Jira webhook fields, nothing calls in to us here. ' +
+          'Env var name only, not the URL itself: the value is a Power Automate ' +
+          'Workflows URL, and it is a credential — paste it as the secret value ' +
+          'below, never in this field.',
       },
       {
         key: 'dailyDigestEnabled',
         label: 'Daily activity digest enabled',
         kind: 'boolean',
+        helper:
+          'Arms the unattended 10:30 IST weekday cron, which names tracked ' +
+          'developers with no delivery activity in a Teams channel. Seed the ' +
+          'roster before enabling. A manual digest run works regardless of ' +
+          'this flag. DIGEST_CRON_ENABLED can disarm the cron deployment-wide ' +
+          'even when this is on.',
       },
-      { key: 'emailFrom', label: 'Email from address', kind: 'text' },
+      {
+        // Kept, but honestly labelled, matching the github/jira
+        // "(not yet active)" convention — verified nothing in the codebase
+        // reads this field.
+        key: 'emailFrom',
+        label: 'Email from address (not yet active)',
+        kind: 'text',
+        helper: 'Stored for future use. Nothing delivers through email today.',
+      },
     ],
   },
   {
