@@ -5,6 +5,7 @@ import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
 import { newId } from '../../common/id';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
+import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
 import { PrismaService } from '../../database/prisma.service';
 
 class UpsertTrackedDeveloperDto {
@@ -31,16 +32,36 @@ class UpsertTrackedDeveloperDto {
  */
 @Controller('dashboards/tracked-developers')
 export class TrackedDevelopersController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly identities: DeveloperIdentityService,
+  ) {}
 
-  /** The live roster, alphabetical. Never ordered by any activity figure. */
+  /**
+   * The live roster, alphabetical. Never ordered by any activity figure.
+   *
+   * Enriches each stored row with `displayName`/`resolved` from
+   * `DeveloperIdentityService.attributionIndex`, so an admin can see what the
+   * digest already knows: an unresolved entry is indistinguishable from "did
+   * nothing" in the raw data, which is exactly the confusion this feature
+   * exists to prevent. The resolution check is deliberately the same one
+   * `evaluateRoster` (no-commit-detection.service.ts) uses — an entry is
+   * unresolved when its `canonicalDeveloperId` is not a key of the
+   * attribution index's `displayNames` map. This must not become a second,
+   * independently-drifting definition: if this page and the digest ever
+   * disagreed about who is unresolved, the page would be actively
+   * misleading rather than merely incomplete.
+   */
   @Roles(Role.ADMIN)
   @Get()
   async list(@CurrentUser() user: AuthUser) {
-    const rows = await this.prisma.trackedDeveloper.findMany({
-      where: { tenantId: user.tenantId, active: true },
-      orderBy: { canonicalDeveloperId: 'asc' },
-    });
+    const [rows, index] = await Promise.all([
+      this.prisma.trackedDeveloper.findMany({
+        where: { tenantId: user.tenantId, active: true },
+        orderBy: { canonicalDeveloperId: 'asc' },
+      }),
+      this.identities.attributionIndex(user.tenantId),
+    ]);
     return {
       items: rows.map((row) => ({
         developer: row.canonicalDeveloperId,
@@ -48,6 +69,10 @@ export class TrackedDevelopersController {
         note: row.note,
         createdByUserId: row.createdByUserId,
         createdAt: row.createdAt.toISOString(),
+        displayName:
+          index.displayNames.get(row.canonicalDeveloperId) ??
+          row.canonicalDeveloperId,
+        resolved: index.displayNames.has(row.canonicalDeveloperId),
       })),
       count: rows.length,
     };
