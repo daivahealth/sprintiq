@@ -44,6 +44,26 @@ export const IMPLAUSIBLE_FLAGGED_SHARE = 0.8;
  */
 export const MAX_COLLECTOR_SILENCE_SECONDS = 24 * 60 * 60;
 
+/**
+ * `skipped_no_roster` vs `withheld_unevaluable` — both mean "no names went
+ * out", but for opposite reasons and with opposite posting behavior:
+ *
+ * - `withheld_unevaluable` (gate 3): the roster is NON-empty — entries
+ *   exist — but every one of them is unresolved or suppressed, so nothing
+ *   about them can be said. A card IS posted, explaining that the roster
+ *   likely needs re-seeding or identity resolution to catch up. There is a
+ *   roster; it just can't be evaluated yet.
+ * - `skipped_no_roster` (gate 0): there is no roster at all —
+ *   `roster.length === 0`. Nothing is posted, because there is nobody to
+ *   report on and an all-clear about zero people is not an honest finding.
+ *   The run row is still written (`deliveredAt: null`, same treatment as
+ *   `failed`) so an operator can see the job ran and why it stayed quiet.
+ *
+ * Do not collapse these into one outcome: a fresh deployment with an
+ * unseeded roster and a tenant whose roster identity resolution has fallen
+ * behind need different operator responses (seed the roster vs. re-run
+ * identity resolution), and only one of them should ever post a card.
+ */
 export type DigestOutcome =
   | 'sent'
   | 'sent_all_clear'
@@ -51,6 +71,7 @@ export type DigestOutcome =
   | 'withheld_truncated_read'
   | 'withheld_unevaluable'
   | 'withheld_implausible'
+  | 'skipped_no_roster'
   | 'failed';
 
 export interface NamedDeveloper {
@@ -240,6 +261,36 @@ export class NoCommitDetectionService {
       suppressed: [],
     };
 
+    // Gate 0: no roster at all. Checked before every other gate, including
+    // collector health, because there is nobody to report on either way.
+    //
+    // This is the hole gates 3 and 4 leave at roster.length === 0, by
+    // individually-correct design: gate 3's condition is deliberately
+    // guarded with `roster.length > 0` (it exists for "entries exist but
+    // none can be evaluated", not "there are no entries"), and
+    // `implausible()` returns `false` at `evaluated === 0` to avoid treating
+    // a zero-over-zero share as over threshold. Neither gate is wrong on its
+    // own, but together they let an empty roster fall through both and reach
+    // `sent_all_clear` — "All 0 tracked developers had activity" — posted
+    // with the same confidence as a real result. That is exactly the
+    // fresh-deployment window: migrations applied, roster not yet seeded,
+    // cron armed. Unlike every other withhold below, this one posts no card
+    // at all — see the `skipped_no_roster` docblock on `DigestOutcome` for
+    // why it must stay distinct from `withheld_unevaluable`.
+    if (roster.length === 0) {
+      return {
+        reportedDay,
+        rosterCount: 0,
+        evaluation: empty,
+        withhold: {
+          outcome: 'skipped_no_roster',
+          detail: `No tracked developers are configured for this tenant. Nothing to report for ${reportedDay} — seed the roster before the digest can produce a finding.`,
+        },
+        lastSyncAt: freshness.lastSyncAt,
+        unattributedCommits: 0,
+      };
+    }
+
     // Gate 1: is the pipeline visibly broken? The digest's SCHEDULE is what
     // guarantees the reported day's commits are in, not a completeness
     // watermark: the cron runs at 10:30 IST, ~10.5 hours after the previous
@@ -392,6 +443,14 @@ export class NoCommitDetectionService {
     // reason, since a share over zero is undefined, not zero — and the card
     // would read "All 0 tracked developers had activity", a confident false
     // all-clear for a roster nothing could actually be said about.
+    //
+    // `roster.length > 0` here is deliberate, not incidental: this gate is
+    // for "entries exist but none can be evaluated", never for "there are no
+    // entries" — that case is gate 0's `skipped_no_roster`, above, which
+    // returns before this code runs and posts no card at all. Gate 0's own
+    // guard means this `roster.length > 0` check can never actually be
+    // false by the time control reaches here; it is kept as the gate's own
+    // documented precondition rather than relying on gate 0 never changing.
     if (roster.length > 0 && evaluated === 0) {
       return {
         reportedDay,

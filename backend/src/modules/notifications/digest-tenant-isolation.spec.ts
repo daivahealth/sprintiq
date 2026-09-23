@@ -29,7 +29,14 @@ describe('daily digest tenant isolation', () => {
       });
 
     const prisma = {
-      trackedDeveloper: { findMany: capture([]) },
+      // A non-empty roster: gate 0 (`skipped_no_roster`) now short-circuits
+      // `detect()` before the commit read on an empty roster, which would
+      // make the `code.listCommitsPage` assertion below vacuous.
+      trackedDeveloper: {
+        findMany: capture([
+          { canonicalDeveloperId: 'dev_a', addedAs: 'dev_a' },
+        ]),
+      },
       watchlistExclusion: { findMany: capture([]) },
       pullRequest: { findMany: capture([]) },
       commit: { groupBy: capture([]) },
@@ -363,6 +370,39 @@ describe('truncated read gate', () => {
   });
 });
 
+describe('empty roster gate (skipped_no_roster)', () => {
+  // Guards the fix: an empty roster must produce its own outcome, distinct
+  // from both `sent_all_clear` (the bug — a confident false all-clear about
+  // zero people) and `withheld_unevaluable` (gate 3, which requires
+  // roster.length > 0 and still posts a card).
+  it('returns skipped_no_roster before the commit read runs, with an empty evaluation and zero counts', async () => {
+    const { service, code } = harness({ roster: [] });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('skipped_no_roster');
+    expect(result.rosterCount).toBe(0);
+    expect(result.evaluation).toEqual({
+      flagged: [],
+      unresolved: [],
+      incomplete: [],
+      suppressed: [],
+    });
+    expect(result.unattributedCommits).toBe(0);
+    // Gate 0 short-circuits before any per-developer evaluation, same as
+    // gates 1 and 2 — there is no commit read to run against zero people.
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+  });
+
+  it('fires ahead of the collector-health gate — an empty roster reads as "no roster", not as a broken pipeline, even when collection is also broken', async () => {
+    const { service } = harness({ roster: [], neverSynced: 1 });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.withhold?.outcome).toBe('skipped_no_roster');
+  });
+});
+
 describe('unevaluable roster gate', () => {
   it('withholds instead of an all-clear when a non-empty roster resolves to nothing evaluable', async () => {
     // Every roster entry unresolved: evaluated === 0. Without this gate,
@@ -389,12 +429,18 @@ describe('unevaluable roster gate', () => {
     expect(result.withhold?.detail).toMatch(/re-seed|identity resolution/);
   });
 
-  it('does not withhold as unevaluable when the roster is empty — there is nothing to say the roster needs re-seeding about', async () => {
+  it('produces skipped_no_roster, not withheld_unevaluable, when the roster is empty — there is nothing to say the roster needs re-seeding about, and no card should post at all', async () => {
+    // Guards the fix for the empty-roster hole: `roster.length > 0` guards
+    // gate 3, so an empty roster must never reach it and must never read as
+    // `withhold: null` either (which would become a false `sent_all_clear`,
+    // "All 0 tracked developers had activity" — see the `skipped_no_roster`
+    // docblock on `DigestOutcome`). It must land on its own, distinct
+    // outcome that `NotificationsService` treats as "post nothing".
     const { service } = harness({ roster: [] });
 
     const result = await service.detect('tenant_a', REPORTED_DAY);
 
-    expect(result.withhold).toBeNull();
+    expect(result.withhold?.outcome).toBe('skipped_no_roster');
     expect(result.evaluation.flagged).toEqual([]);
   });
 

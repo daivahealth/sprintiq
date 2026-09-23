@@ -336,6 +336,120 @@ describe('NotificationsService.runNoCommitDigest', () => {
     expect(finalUpdateCall.data.deliveredAt).toBeNull();
   });
 
+  it('posts nothing and writes a run row with null deliveredAt for skipped_no_roster', async () => {
+    // The fix under test: an empty roster must not post an all-clear card,
+    // but the job's run must still be observable — otherwise a quiet
+    // channel on a fresh deployment is indistinguishable from a dead cron.
+    const { service, teams, prisma, audit } = build({
+      detect: {
+        reportedDay: '2026-09-17',
+        rosterCount: 0,
+        evaluation: {
+          flagged: [],
+          unresolved: [],
+          incomplete: [],
+          suppressed: [],
+        },
+        withhold: {
+          outcome: 'skipped_no_roster',
+          detail: 'No tracked developers are configured.',
+        },
+        lastSyncAt: new Date('2026-09-18T04:00:00.000Z'),
+        unattributedCommits: 0,
+      },
+    });
+
+    const result = await service.runNoCommitDigest('tenant_a');
+
+    expect(result.outcome).toBe('skipped_no_roster');
+    // No card built or sent — there is nobody to name.
+    expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
+    // The run row IS still written (the claim path), with deliveredAt left
+    // null — the same treatment `failed` gets, and never overwritten to a
+    // real Date since no post ever happens.
+    expect(prisma.noCommitDigestRun.create).toHaveBeenCalledTimes(1);
+    const claimCall = prisma.noCommitDigestRun.create.mock.calls[0][0];
+    expect(claimCall.data.outcome).toBe('skipped_no_roster');
+    expect(claimCall.data.deliveredAt).toBeNull();
+    // Exactly one write (the claim) — no follow-up update sets deliveredAt.
+    expect(prisma.noCommitDigestRun.update).not.toHaveBeenCalled();
+    // Still audited, so the quiet morning is traceable to a deliberate skip.
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'notification.no_commit_digest.skipped_no_roster',
+      }),
+    );
+  });
+
+  it('behaves consistently on a dry run for skipped_no_roster: returns the outcome, posts and writes nothing', async () => {
+    const { service, teams, prisma } = build({
+      detect: {
+        reportedDay: '2026-09-17',
+        rosterCount: 0,
+        evaluation: {
+          flagged: [],
+          unresolved: [],
+          incomplete: [],
+          suppressed: [],
+        },
+        withhold: {
+          outcome: 'skipped_no_roster',
+          detail: 'No tracked developers are configured.',
+        },
+        lastSyncAt: null,
+        unattributedCommits: 0,
+      },
+    });
+
+    const result = await service.runNoCommitDigest('tenant_a', {
+      dryRun: true,
+    });
+
+    expect(result.outcome).toBe('skipped_no_roster');
+    expect(result.dryRun).toBe(true);
+    expect(teams.postAdaptiveCard).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.create).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.update).not.toHaveBeenCalled();
+  });
+
+  it('still posts a card and names nobody for withheld_unevaluable — the neighbouring case skipped_no_roster must not regress', async () => {
+    // withheld_unevaluable (a non-empty roster that resolved/suppressed away
+    // to nothing evaluable) is a DIFFERENT outcome from skipped_no_roster
+    // (no roster at all) and must keep posting its explanatory card.
+    const { service, teams, prisma } = build({
+      detect: {
+        ...detection,
+        rosterCount: 2,
+        evaluation: {
+          flagged: [],
+          unresolved: [
+            { developer: 'ghost1', addedAs: 'ghost1' },
+            { developer: 'ghost2', addedAs: 'ghost2' },
+          ],
+          incomplete: [],
+          suppressed: [],
+        },
+        withhold: {
+          outcome: 'withheld_unevaluable',
+          detail:
+            'None of the 2 tracked developers could be evaluated for 2026-09-17.',
+        },
+      },
+    });
+
+    const result = await service.runNoCommitDigest('tenant_a');
+
+    expect(result.outcome).toBe('withheld_unevaluable');
+    expect(teams.postAdaptiveCard).toHaveBeenCalledTimes(1);
+    const claimCall = prisma.noCommitDigestRun.create.mock.calls[0][0];
+    expect(claimCall.data.deliveredAt).toBeNull();
+    const finalUpdateCall =
+      prisma.noCommitDigestRun.update.mock.calls[
+        prisma.noCommitDigestRun.update.mock.calls.length - 1
+      ][0];
+    expect(finalUpdateCall.data.deliveredAt).toBeInstanceOf(Date);
+  });
+
   it('records a failed run and throws when no webhook ref is configured', async () => {
     // A misconfigured tenant (no ref set on the notifications row) is a
     // failed delivery too, not a silent throw past the run record.

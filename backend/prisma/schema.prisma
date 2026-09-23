@@ -850,7 +850,14 @@ model NoCommitDigestRun {
   /// The IST calendar day reported on (YYYY-MM-DD).
   reportedDay  String
   /// sent | sent_all_clear | withheld_stale_data | withheld_truncated_read
-  /// | withheld_implausible | withheld_unevaluable | failed
+  /// | withheld_implausible | withheld_unevaluable | skipped_no_roster
+  /// | failed
+  ///
+  /// `skipped_no_roster` (roster.length === 0 — nobody to report on) is
+  /// deliberately distinct from `withheld_unevaluable` (a non-empty roster
+  /// that resolved/suppressed away to nothing evaluable): the latter still
+  /// posts a card explaining itself, the former posts nothing at all. See
+  /// the `DigestOutcome` docblock in `no-commit-detection.service.ts`.
   outcome      String
   /// How many developers were on the roster that day.
   rosterCount  Int
@@ -866,7 +873,10 @@ model NoCommitDigestRun {
   detail       String?
   /// When a card was posted to the channel. Set for `sent`, `sent_all_clear`
   /// and all four `withheld_*` outcomes, since a card is posted for those
-  /// too — only the names are missing from it. Null only for `failed`.
+  /// too — only the names are missing from it. Null for `failed` and for
+  /// `skipped_no_roster` — the latter is not a delivery failure, it is a
+  /// deliberate decision to post nothing because there is no roster to
+  /// report on; the row still exists so an operator can see the job ran.
   deliveredAt  DateTime?
   /// Commits in the reported day's window that could not be attributed to
   /// any developer (see `DigestDetection.unattributedCommits`). Disclosed on

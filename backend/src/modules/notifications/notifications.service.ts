@@ -240,40 +240,49 @@ export class NotificationsService {
       }
     }
 
-    const card = buildDigestCard({
-      reportedDay,
-      flagged: result.flagged,
-      evaluatedCount,
-      lastSyncAt: detected.lastSyncAt,
-      unattributedCommits: detected.unattributedCommits,
-      ...(detail ? { withheldDetail: detail } : {}),
-    });
+    // `skipped_no_roster` posts nothing: there is no roster to report on, so
+    // there is nobody a card could name, and an all-clear about zero people
+    // would be exactly the false confidence this outcome exists to avoid
+    // (see the `DigestOutcome` docblock). The claim above already wrote the
+    // run row with `deliveredAt: null`, which is the observability that
+    // stops this looking like a dead cron — skip straight to the audit
+    // entry rather than building or posting a card.
+    if (outcome !== 'skipped_no_roster') {
+      const card = buildDigestCard({
+        reportedDay,
+        flagged: result.flagged,
+        evaluatedCount,
+        lastSyncAt: detected.lastSyncAt,
+        unattributedCommits: detected.unattributedCommits,
+        ...(detail ? { withheldDetail: detail } : {}),
+      });
 
-    try {
-      // Ref resolution lives inside the try too: a misconfigured tenant
-      // (no ref set) is as much a failed delivery as a rejected POST, and
-      // must record the same `failed` row rather than throwing silently
-      // past it (requirement: a failed delivery always leaves a row).
-      const webhookRef = await this.resolveTeamsWebhookRef(tenantId);
-      await this.teams.postAdaptiveCard(tenantId, webhookRef, card);
-    } catch (error) {
+      try {
+        // Ref resolution lives inside the try too: a misconfigured tenant
+        // (no ref set) is as much a failed delivery as a rejected POST, and
+        // must record the same `failed` row rather than throwing silently
+        // past it (requirement: a failed delivery always leaves a row).
+        const webhookRef = await this.resolveTeamsWebhookRef(tenantId);
+        await this.teams.postAdaptiveCard(tenantId, webhookRef, card);
+      } catch (error) {
+        await this.prisma.noCommitDigestRun.update({
+          where: { tenantId_reportedDay: { tenantId, reportedDay } },
+          data: {
+            outcome: 'failed',
+            flaggedCount: 0,
+            flagged: [] as unknown as Prisma.InputJsonValue,
+            detail: errorDetail(error),
+            deliveredAt: null,
+          },
+        });
+        throw error;
+      }
+
       await this.prisma.noCommitDigestRun.update({
         where: { tenantId_reportedDay: { tenantId, reportedDay } },
-        data: {
-          outcome: 'failed',
-          flaggedCount: 0,
-          flagged: [] as unknown as Prisma.InputJsonValue,
-          detail: errorDetail(error),
-          deliveredAt: null,
-        },
+        data: { deliveredAt: new Date() },
       });
-      throw error;
     }
-
-    await this.prisma.noCommitDigestRun.update({
-      where: { tenantId_reportedDay: { tenantId, reportedDay } },
-      data: { deliveredAt: new Date() },
-    });
 
     await this.audit?.record({
       tenantId,
