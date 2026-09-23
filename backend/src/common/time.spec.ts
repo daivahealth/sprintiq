@@ -162,3 +162,45 @@ describe('IST calendar-month helpers', () => {
     expect(istMonthKey(istMonthEnd('2026-09'))).toBe('2026-09');
   });
 });
+
+import { IST_TIMEZONE, previousWorkingDayKey } from './time';
+
+describe('previousWorkingDayKey', () => {
+  // 2026-09-18 is a Friday; 19th Sat, 20th Sun, 21st Mon.
+  it('returns the prior calendar day midweek', () => {
+    // 10:30 IST on Friday 18 Sep = 05:00 UTC.
+    expect(previousWorkingDayKey(new Date('2026-09-18T05:00:00.000Z'))).toBe(
+      '2026-09-17',
+    );
+  });
+
+  it('skips the weekend, so Monday reports Friday', () => {
+    // The failure this exists to prevent: reporting Sunday on a Monday
+    // morning names nearly the whole roster for a day nobody worked.
+    expect(previousWorkingDayKey(new Date('2026-09-21T05:00:00.000Z'))).toBe(
+      '2026-09-18',
+    );
+  });
+
+  it('reports Friday from Saturday and from Sunday', () => {
+    expect(previousWorkingDayKey(new Date('2026-09-19T05:00:00.000Z'))).toBe(
+      '2026-09-18',
+    );
+    expect(previousWorkingDayKey(new Date('2026-09-20T05:00:00.000Z'))).toBe(
+      '2026-09-18',
+    );
+  });
+
+  it('is computed in IST, not server-local time', () => {
+    // 19:00 UTC on Thursday 17th is already Friday 18th in IST, so the
+    // previous working day is Thursday — not Wednesday. A server-local
+    // getDay() implementation gets this wrong.
+    expect(previousWorkingDayKey(new Date('2026-09-17T19:00:00.000Z'))).toBe(
+      '2026-09-17',
+    );
+  });
+
+  it('exposes the scheduler timezone', () => {
+    expect(IST_TIMEZONE).toBe('Asia/Kolkata');
+  });
+});

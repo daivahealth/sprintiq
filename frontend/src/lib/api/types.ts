@@ -44,6 +44,24 @@ export interface AdminUser {
   status: string;
 }
 
+/**
+ * GET /api/dashboards/tracked-developers — the daily no-activity digest's
+ * roster. `developer` is the canonical id (a GitHub login) and the key every
+ * mutation is addressed by; `addedAs` is what was typed/selected when the row
+ * was created, kept verbatim even if it never resolves. `resolved` mirrors
+ * the backend's own definition (a key of the attribution index) so this page
+ * and the digest never disagree about who is unresolved.
+ */
+export interface TrackedDeveloper {
+  developer: string;
+  addedAs: string;
+  displayName: string;
+  resolved: boolean;
+  note: string | null;
+  createdByUserId: string;
+  createdAt: string;
+}
+
 export type ConfigurationNamespace =
   | "github"
   | "jira"

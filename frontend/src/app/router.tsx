@@ -5,6 +5,7 @@ import { useAuthStore } from '../lib/stores/auth-store';
 import { AdminConfigurationsPage } from '../modules/admin/AdminConfigurationsPage';
 import { AdminUsersPage } from '../modules/admin/AdminUsersPage';
 import { SyncStatusPage } from '../modules/admin/SyncStatusPage';
+import { TrackedDevelopersPage } from '../modules/admin/TrackedDevelopersPage';
 import { LoginPage } from '../modules/auth/LoginPage';
 import { ProjectActivityBoard } from '../modules/dashboards/activity-boards';
 import { DeveloperActivitySection } from '../modules/dashboards/developer-activity/DeveloperActivitySection';
@@ -151,6 +152,16 @@ export function AppRouter() {
           <Page>
             <RequireRole role="admin">
               <SyncStatusPage />
+            </RequireRole>
+          </Page>
+        }
+      />
+      <Route
+        path="/admin/tracked-developers"
+        element={
+          <Page>
+            <RequireRole role="admin">
+              <TrackedDevelopersPage />
             </RequireRole>
           </Page>
         }

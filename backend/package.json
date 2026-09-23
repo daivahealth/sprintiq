@@ -23,7 +23,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "seed": "ts-node prisma/seed.ts",
-    "identity:overrides": "ts-node scripts/apply-identity-overrides.ts"
+    "identity:overrides": "ts-node scripts/apply-identity-overrides.ts",
+    "digest:roster": "ts-node scripts/seed-tracked-developers.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

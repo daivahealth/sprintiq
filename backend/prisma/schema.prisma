@@ -801,3 +801,92 @@ model MetricValue {
   @@index([tenantId, metricKey, scopeType, scopeId])
   @@map("metrics_value")
 }
+
+/// The editable roster of developers whose daily activity is tracked by the
+/// digest notification.
+///
+/// Data rather than a code constant, for the same reason `DeveloperRole` and
+/// `IdentityOverride` are: an admin adds a new joiner without a deploy, and
+/// the entry carries the name of whoever added it.
+model TrackedDeveloper {
+  id                   String   @id
+  tenantId             String
+  /// Who this tracks, as `DeveloperIdentity.canonicalDeveloperId`.
+  canonicalDeveloperId String
+  /// The string the entry was ADDED as, kept verbatim. An entry whose
+  /// identity never resolved stays displayable and diagnosable instead of
+  /// reading as a developer who did nothing — the two are indistinguishable
+  /// without this column, and one of them is a false accusation.
+  addedAs              String
+  /// Soft, so removing someone from the roster is a recorded act, not a gap.
+  active               Boolean  @default(true)
+  /// Free-text context. Displayed to admins only.
+  note                 String?
+  /// Who added this roster entry. This is a human judgement and it carries a name.
+  createdByUserId      String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([tenantId, canonicalDeveloperId])
+  @@index([tenantId, active])
+  @@map("notification_tracked_developer")
+}
+
+/// One row per reported day: what was evaluated, who was named, what was
+/// delivered.
+///
+/// Lineage for a message that names people. "Why was I on Tuesday's list?"
+/// must be answerable after the fact, and `@@unique([tenantId, reportedDay])`
+/// is also the idempotency primitive: `NotificationsService.runNoCommitDigest`
+/// claims this row with a `create` BEFORE posting to Teams, and a losing
+/// concurrent `create` (unique-violation `P2002`) means another runner
+/// already owns this day and returns without posting — closing the window a
+/// bare upsert-after-send leaves open, where two runners racing the same day
+/// (a role-ungated cron firing on multiple pods, or a manual re-run racing
+/// the cron) would both read "no row yet" and both post.
+model NoCommitDigestRun {
+  id           String    @id
+  tenantId     String
+  /// The IST calendar day reported on (YYYY-MM-DD).
+  reportedDay  String
+  /// sent | sent_all_clear | withheld_stale_data | withheld_truncated_read
+  /// | withheld_implausible | withheld_unevaluable | skipped_no_roster
+  /// | failed
+  ///
+  /// `skipped_no_roster` (roster.length === 0 — nobody to report on) is
+  /// deliberately distinct from `withheld_unevaluable` (a non-empty roster
+  /// that resolved/suppressed away to nothing evaluable): the latter still
+  /// posts a card explaining itself, the former posts nothing at all. See
+  /// the `DigestOutcome` docblock in `no-commit-detection.service.ts`.
+  outcome      String
+  /// How many developers were on the roster that day.
+  rosterCount  Int
+  /// How many developers were flagged (named in the notification).
+  flaggedCount Int
+  /// The exact list sent; roster entries whose identity did not resolve; and
+  /// those withheld because their commit data for the day was incomplete.
+  /// The latter two are reported, never counted as inactive.
+  flagged      Json
+  unresolved   Json
+  incomplete   Json
+  /// Human-readable reason or explanation if the run did not send or was withheld.
+  detail       String?
+  /// When a card was posted to the channel. Set for `sent`, `sent_all_clear`
+  /// and all four `withheld_*` outcomes, since a card is posted for those
+  /// too — only the names are missing from it. Null for `failed` and for
+  /// `skipped_no_roster` — the latter is not a delivery failure, it is a
+  /// deliberate decision to post nothing because there is no roster to
+  /// report on; the row still exists so an operator can see the job ran.
+  deliveredAt  DateTime?
+  /// Commits in the reported day's window that could not be attributed to
+  /// any developer (see `DigestDetection.unattributedCommits`). Disclosed on
+  /// the card as counter-evidence to a name on the list, never used to gate
+  /// or withhold — a person named above may be the author of one of these.
+  /// Zero for the gates that return before the commit read runs.
+  unattributedCommits Int @default(0)
+  createdAt    DateTime  @default(now())
+
+  @@unique([tenantId, reportedDay])
+  @@index([tenantId, createdAt])
+  @@map("notification_no_commit_run")
+}
