@@ -455,22 +455,24 @@ export function AdminConfigurationsPage() {
                 const error = fieldErrors[selected.namespace]?.[field.key];
                 if (field.kind === 'boolean') {
                   return (
-                    <label
-                      key={field.key}
-                      className="flex min-h-[42px] items-center gap-3 rounded-md border border-border px-3 py-2"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={Boolean(value)}
-                        onChange={(event) =>
-                          updateDraft(selected, field, event.target.checked)
-                        }
-                        className="h-4 w-4 rounded border-border-strong"
-                      />
-                      <span className="text-sm font-medium text-fg-secondary">
-                        {field.label}
-                      </span>
-                    </label>
+                    <Fragment key={field.key}>
+                      <label className="flex min-h-[42px] items-center gap-3 rounded-md border border-border px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(value)}
+                          onChange={(event) =>
+                            updateDraft(selected, field, event.target.checked)
+                          }
+                          className="h-4 w-4 rounded border-border-strong"
+                        />
+                        <span className="text-sm font-medium text-fg-secondary">
+                          {field.label}
+                        </span>
+                      </label>
+                      {field.helper ? (
+                        <p className="mt-2 text-xs text-fg-faint">{field.helper}</p>
+                      ) : null}
+                    </Fragment>
                   );
                 }
                 const isSecretRef = field.kind === 'secret-ref';
