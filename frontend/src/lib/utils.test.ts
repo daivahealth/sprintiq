@@ -7,6 +7,7 @@ import {
   istDayStart,
   istTodayKey,
   istWindowFloor,
+  previousWorkingDayKey,
 } from './utils';
 
 /**
@@ -41,6 +42,24 @@ describe('IST calendar-date helpers', () => {
 
     expect(istDaySpan(startKey, today)).toBe(7);
     expect(istDayStart(startKey).getTime()).toBe(istWindowFloor(7).getTime());
+  });
+});
+
+describe('previousWorkingDayKey', () => {
+  // Mirrors backend/src/common/time.ts's previousWorkingDayKey — tested with
+  // pinned dates (not "today") since a drift here would silently mislead an
+  // admin about which day a manual digest run is about to report on.
+  it('steps back to Friday from a Monday, skipping the weekend', () => {
+    expect(previousWorkingDayKey('2026-09-28')).toBe('2026-09-25');
+  });
+
+  it('steps back one day from a midweek day', () => {
+    expect(previousWorkingDayKey('2026-09-29')).toBe('2026-09-28');
+    expect(previousWorkingDayKey('2026-10-01')).toBe('2026-09-30');
+  });
+
+  it('treats a Sunday the same as the Monday after it', () => {
+    expect(previousWorkingDayKey('2026-09-27')).toBe('2026-09-25');
   });
 });
 

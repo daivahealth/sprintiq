@@ -5,6 +5,7 @@ import type { TrackedDeveloper } from '../../lib/api/types';
 import { SearchSelect } from '../../components/search-select';
 import { Badge, Button, Card, Spinner } from '../../components/ui';
 import { useDeveloperCatalog } from '../dashboards/useInsights';
+import { NotificationTestPanel } from './NotificationTestPanel';
 import { resolutionBadge, sortByDisplayName } from './tracked-developers-logic';
 
 function useTrackedDevelopers() {
@@ -210,6 +211,8 @@ export function TrackedDevelopersPage() {
             : 'Could not remove this developer.'}
         </p>
       ) : null}
+
+      <NotificationTestPanel />
     </section>
   );
 }
