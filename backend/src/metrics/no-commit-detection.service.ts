@@ -188,12 +188,18 @@ export interface DigestDetection {
   /**
    * Oldest `lastSyncAt` across the tenant's active connections, carried
    * straight through from `freshness.lastSyncAt` (`ConnectionsService.
-   * getDataFreshness`) for the card's freshness line — liveness, not
-   * completeness. NOT `freshness.collectedThroughAt`: that field is null the
-   * instant any active connection is mid-backfill and permanently null on
-   * this deployment (13 connections mid-PR-backfill), which is exactly why
-   * gate 1 below does not read it either — see that gate's docblock. Null
-   * only when no active connection has ever synced at all.
+   * getDataFreshness`) — liveness, not completeness. NOT
+   * `freshness.collectedThroughAt`: that field is null the instant any
+   * active connection is mid-backfill and permanently null on this
+   * deployment (13 connections mid-PR-backfill), which is exactly why gate 1
+   * below does not read it either — see that gate's docblock. Null only when
+   * no active connection has ever synced at all.
+   *
+   * No longer rendered on the card (removed 2026-09-28, footer-length trim —
+   * `DigestCardInput` dropped `lastSyncAt` entirely). Kept on
+   * `DigestDetection` as run lineage/observability and because
+   * `digest-tenant-isolation.spec.ts`'s gate-1 regression test asserts on it
+   * directly, independent of the card.
    */
   lastSyncAt: Date | null;
   /**

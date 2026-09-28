@@ -19,23 +19,6 @@ export interface DigestCardInput {
   flagged: DigestRecipient[];
   /** Roster size after unresolved and suppressed entries are removed. */
   evaluatedCount: number;
-  /**
-   * Oldest `lastSyncAt` across the tenant's active connections — when
-   * collection last REACHED a source, not the completeness watermark.
-   *
-   * Deliberately not `DataFreshness.collectedThroughAt`/`ConnectionsService`'s
-   * completeness watermark: `collectedThroughAt` is null the instant any
-   * active connection is mid-backfill and has no watermark yet — measured
-   * permanently true on the real deployment (13 active connections
-   * mid-PR-backfill), which made the card read "Data collected through
-   * unknown." on every single send, forever. `no-commit-detection.service.ts`
-   * gate 1 was rewritten off the same reasoning (see its docblock) — this is
-   * the card catching up to that same fix. Null only when NO active
-   * connection has ever reached its source, which gate 1's `neverSynced`
-   * check makes rare: a tenant with any never-synced active connection is
-   * withheld before a card naming anyone is even considered.
-   */
-  lastSyncAt: Date | null;
   /** When set, the reason names were withheld; names are not rendered. */
   withheldDetail?: string;
   /**
@@ -53,15 +36,13 @@ export interface DigestCardInput {
  * The rule the list was computed from, displayed in every card.
  *
  * Required by the ethics-first exception this feature ships under (CLAUDE.md;
- * spec §3): where an attributed ranking or list ships, the rule it is computed
- * from ships with it and is displayed. It names what was counted AND states
- * that reviewing was not, because the narrow definition is the honest
- * explanation for most objections to being on this list.
+ * ADR-0009 condition 1): where an attributed ranking or list ships, the rule
+ * it is computed from ships with it and is displayed on every card. Trimmed
+ * to one line (2026-09-28 product decision) from the earlier multi-sentence
+ * paragraph — the condition is unchanged, only how briefly it is met.
  */
 const RULE_TEXT =
-  'Flagged = no commit and no pull request opened on this day (IST) — the same reads as the Activity Overview board. ' +
-  'Code review, merging work opened earlier, and Jira activity are **not** counted, so a day spent reviewing shows here as inactive. ' +
-  'Excludes bots, admin-excluded accounts, and developers on recorded leave.';
+  "Counts commits and PRs opened only — reviews and Jira aren't counted.";
 
 /**
  * Neutralise the markdown subset an Adaptive Card `TextBlock` renders.
@@ -126,37 +107,13 @@ export function buildDigestCard(
           .join('\n'),
       ),
     );
-    body.push(
-      block(
-        'This is a prompt to check in, not a conclusion about anyone — ask before assuming.',
-        { isSubtle: true },
-      ),
-    );
   }
 
   body.push(block(RULE_TEXT, { isSubtle: true, size: 'Small' }));
-  // "Sources last reached", not "data collected through": this card cannot
-  // use the completeness watermark (`DataFreshness.collectedThroughAt`) — see
-  // the docblock on `DigestCardInput.lastSyncAt` for why it is permanently
-  // null on this deployment. `lastSyncAt` is liveness, not coverage, but it
-  // is the honest answer to what a person named above actually needs: was
-  // anything checked recently, or has this pipeline gone quiet. The null
-  // case is stated plainly rather than as "unknown" — it means no active
-  // connection has EVER reached its source, which gate 1's `neverSynced`
-  // check already makes rare on a card that names anyone.
-  body.push(
-    block(
-      input.lastSyncAt
-        ? `Sources last reached ${input.lastSyncAt.toISOString()}.`
-        : 'Sources have never been reached — no connection has completed a sync yet.',
-      { isSubtle: true, size: 'Small' },
-    ),
-  );
   // Rendered only when positive — a zero here is noise on every ordinary
   // morning, and would train readers to stop reading this line on the one
-  // morning it matters. Placed beside the freshness line rather than folded
-  // into RULE_TEXT: this is a fact about THIS day's read, not the standing
-  // rule the list is computed from.
+  // morning it matters. Kept separate from RULE_TEXT: this is a fact about
+  // THIS day's read, not the standing rule the list is computed from.
   if (input.unattributedCommits > 0) {
     const plural = input.unattributedCommits === 1 ? '' : 's';
     body.push(

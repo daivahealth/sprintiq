@@ -252,7 +252,6 @@ export class NotificationsService {
         reportedDay,
         flagged: result.flagged,
         evaluatedCount,
-        lastSyncAt: detected.lastSyncAt,
         unattributedCommits: detected.unattributedCommits,
         ...(detail ? { withheldDetail: detail } : {}),
       });

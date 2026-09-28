@@ -44,22 +44,79 @@ describe('buildDigestCard', () => {
       { developer: 'zara_athma', displayName: 'Zara Ahmed' },
     ],
     evaluatedCount: 66,
-    lastSyncAt: new Date('2026-09-18T04:00:00.000Z'),
     unattributedCommits: 0,
   };
 
-  it('states the rule it was computed from', () => {
-    // Governance requirement (spec §3): the rule ships with the list and is
-    // displayed. Without it the message asserts these people did no work,
-    // which the data cannot support.
+  it('states the one-line rule it was computed from, on the named-list card', () => {
+    // Governance requirement (CLAUDE.md; ADR-0009 condition 1): the rule
+    // ships with the list and is displayed on every card. Trimmed to one
+    // line (2026-09-28 footer-length decision) — this pins the new text.
     const body = textOf(buildDigestCard(input));
-    expect(body).toContain('no commit and no pull request opened');
+    expect(body).toContain(
+      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+    );
   });
 
-  it('says outright that reviewing is not counted', () => {
-    // The largest source of a justified objection to being named: prReview is
-    // not in the Overview's set, so a day spent reviewing appears here.
-    expect(textOf(buildDigestCard(input))).toContain('review');
+  it('states the same one-line rule on the all-clear card', () => {
+    // The ADR-0009 condition applies to every card, not only the named-list
+    // one — this guards the all-clear variant specifically.
+    const body = textOf(buildDigestCard({ ...input, flagged: [] }));
+    expect(body).toContain(
+      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+    );
+  });
+
+  it('states the same one-line rule on a withheld card', () => {
+    // The ADR-0009 condition applies even when names are withheld — this
+    // guards the withheld variant specifically.
+    const body = textOf(
+      buildDigestCard({
+        ...input,
+        flagged: [],
+        withheldDetail: 'Names withheld: collection is behind.',
+      }),
+    );
+    expect(body).toContain(
+      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+    );
+  });
+
+  it('does not render the removed check-in framing line', () => {
+    // Removed 2026-09-28 (footer-length trim): "This is a prompt to check
+    // in, not a conclusion about anyone — ask before assuming." must no
+    // longer appear on any card variant.
+    const named = textOf(buildDigestCard(input));
+    const allClear = textOf(buildDigestCard({ ...input, flagged: [] }));
+    const withheld = textOf(
+      buildDigestCard({
+        ...input,
+        flagged: [],
+        withheldDetail: 'Names withheld: collection is behind.',
+      }),
+    );
+    for (const body of [named, allClear, withheld]) {
+      expect(body).not.toContain('ask before assuming');
+      expect(body).not.toContain('not a conclusion about anyone');
+    }
+  });
+
+  it('does not render the removed freshness line', () => {
+    // Removed 2026-09-28 (footer-length trim): the "Sources last reached
+    // <timestamp>." line (and its null fallback) must no longer appear, and
+    // `DigestCardInput` no longer accepts `lastSyncAt` at all.
+    const named = textOf(buildDigestCard(input));
+    const allClear = textOf(buildDigestCard({ ...input, flagged: [] }));
+    const withheld = textOf(
+      buildDigestCard({
+        ...input,
+        flagged: [],
+        withheldDetail: 'Names withheld: collection is behind.',
+      }),
+    );
+    for (const body of [named, allClear, withheld]) {
+      expect(body).not.toContain('Sources last reached');
+      expect(body).not.toContain('never been reached');
+    }
   });
 
   it('reports the count against the number evaluated', () => {
@@ -69,16 +126,6 @@ describe('buildDigestCard', () => {
   it('lists names alphabetically and never by volume', () => {
     const body = textOf(buildDigestCard(input));
     expect(body.indexOf('Bob Bose')).toBeLessThan(body.indexOf('Zara Ahmed'));
-  });
-
-  it('carries the collection freshness as when sources were last reached', () => {
-    // Guards the fix this task ships: the card used to render
-    // `collectedThroughAt`, which is permanently null on the real
-    // deployment (13 connections mid-PR-backfill) — this asserts the card
-    // now renders a real timestamp derived from `lastSyncAt` instead.
-    const body = textOf(buildDigestCard(input));
-    expect(body).toContain('2026-09-18');
-    expect(body).toContain('Sources last reached');
   });
 
   it('renders an all-clear card when nobody is flagged', () => {
@@ -107,21 +154,6 @@ describe('buildDigestCard', () => {
     expect(card.attachments[0].contentType).toBe(
       'application/vnd.microsoft.card.adaptive',
     );
-  });
-
-  it('states plainly, never as "unknown", that sources have never been reached when lastSyncAt is null', () => {
-    // `lastSyncAt` is null only when NO active connection has ever synced —
-    // rare, because the collector-health gate (no-commit-detection.service.ts
-    // gate 1) withholds names whenever any active connection has never
-    // synced. The old behaviour rendered "Data collected through unknown."
-    // on EVERY card, forever, because it read `collectedThroughAt`, which is
-    // null the moment any single connection is mid-backfill — permanently
-    // true on the real deployment. The fix must not just move that same
-    // "unknown" wording onto the new field; it must say what actually
-    // happened.
-    const body = textOf(buildDigestCard({ ...input, lastSyncAt: null }));
-    expect(body).not.toContain('unknown');
-    expect(body).toMatch(/never been reached/);
   });
 
   it('discloses unattributed commits as counter-evidence when the count is positive', () => {

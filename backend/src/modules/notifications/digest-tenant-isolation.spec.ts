@@ -101,10 +101,10 @@ interface HarnessOptions {
   excludedIdentities?: Set<string>;
   /**
    * Not a gate input (see the "collector health gate" describe block) and,
-   * as of this fix, not threaded through to `DigestDetection` either — the
-   * card renders `lastSyncAt` instead (see that field below) precisely
-   * because `collectedThroughAt` is permanently null on the real deployment.
-   * Kept here only so the mock's shape matches the real
+   * as of this fix, not threaded through to `DigestDetection` either —
+   * `DigestDetection.lastSyncAt` is threaded through instead (see that field
+   * below) precisely because `collectedThroughAt` is permanently null on the
+   * real deployment. Kept here only so the mock's shape matches the real
    * `ConnectionsService.getDataFreshness()` return and the "healthy tenant
    * whose tenant-wide watermark is null" regression test below can still set
    * it to null without failing to type-check. `undefined` (the default)
@@ -123,9 +123,11 @@ interface HarnessOptions {
   staleSeconds?: number | null;
   /**
    * Oldest `lastSyncAt` across active connections — threaded straight
-   * through to `DigestDetection.lastSyncAt`, which is what the card renders
-   * on its freshness line (`digest-card.spec.ts`). `undefined` (the default)
-   * means "recently synced", matching the default `staleSeconds` above.
+   * through to `DigestDetection.lastSyncAt`. No longer rendered on the card
+   * (removed 2026-09-28, footer-length trim); kept as run lineage and
+   * asserted on directly by the gate-1 regression test below. `undefined`
+   * (the default) means "recently synced", matching the default
+   * `staleSeconds` above.
    */
   lastSyncAt?: Date | null;
   commits?: { authorLogin: string | null; authorEmail: string | null }[];
@@ -333,8 +335,9 @@ describe('collector health gate', () => {
       'erin_athma',
     ]);
     // The whole point of this fix: even on the exact shape that used to
-    // withhold forever (collectedThroughAt null), `lastSyncAt` — what the
-    // card actually renders now — carries a real, non-null value through.
+    // withhold forever (collectedThroughAt null), `DigestDetection.lastSyncAt`
+    // carries a real, non-null value through (run lineage; no longer
+    // rendered on the card as of the 2026-09-28 footer-length trim).
     expect(result.lastSyncAt).toEqual(measuredLastSyncAt);
   });
 });
