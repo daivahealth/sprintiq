@@ -180,3 +180,128 @@ describe('buildDigestCard', () => {
     expect(body).not.toMatch(/could not be matched/);
   });
 });
+
+describe('buildDigestCard — top-level `text` field for the "Post message" flow', () => {
+  const input = {
+    reportedDay: '2026-09-17',
+    flagged: [
+      { developer: 'bob_athma', displayName: 'Bob Bose' },
+      { developer: 'zara_athma', displayName: 'Zara Ahmed' },
+    ],
+    evaluatedCount: 66,
+    unattributedCommits: 0,
+  };
+
+  it('adds a top-level `text` field without disturbing the existing card attachment', () => {
+    // The new Power Automate flow ("Post message in a chat or channel") reads
+    // `triggerBody()?['text']`, which does not exist on today's payload — the
+    // flow would post an empty message while the webhook still returns 202.
+    // A card-based flow must keep working unchanged, so `attachments` and
+    // `type` must survive exactly as before.
+    const card = buildDigestCard(input) as {
+      type: string;
+      text: string;
+      attachments: { contentType: string }[];
+    };
+    expect(card.type).toBe('message');
+    expect(typeof card.text).toBe('string');
+    expect(card.attachments[0].contentType).toBe(
+      'application/vnd.microsoft.card.adaptive',
+    );
+  });
+
+  it('separates lines with <br>, not bare newlines, and preserves alphabetical order', () => {
+    // The "Post message in a chat or channel" Message field is HTML — a bare
+    // `\n` collapses in HTML rendering and would run every name together on
+    // one line. This also guards that the caller's alphabetical order (never
+    // volume order) survives into the text variant.
+    const card = buildDigestCard(input) as { text: string };
+    expect(card.text).not.toMatch(/[^<]\n/); // no bare newline outside markup
+    expect(card.text).toContain('<br>');
+    expect(card.text.indexOf('Bob Bose')).toBeLessThan(
+      card.text.indexOf('Zara Ahmed'),
+    );
+  });
+
+  it('carries the one-line rule in `text` on the named-list variant', () => {
+    // ADR-0009 condition 1 ("the rule ships with the list, on every card")
+    // applies to the text variant too — dropping it here would silently
+    // violate the same governance condition the card already satisfies.
+    const card = buildDigestCard(input) as { text: string };
+    expect(card.text).toContain(
+      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+    );
+  });
+
+  it('carries the one-line rule in `text` on the all-clear variant', () => {
+    const card = buildDigestCard({ ...input, flagged: [] }) as {
+      text: string;
+    };
+    expect(card.text).toContain(
+      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+    );
+  });
+
+  it('carries the one-line rule in `text` on a withheld variant', () => {
+    const card = buildDigestCard({
+      ...input,
+      flagged: [],
+      withheldDetail: 'Names withheld: collection is behind.',
+    }) as { text: string };
+    expect(card.text).toContain(
+      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+    );
+    expect(card.text).toContain('Names withheld');
+    expect(card.text).not.toContain('Bob Bose');
+  });
+
+  it('renders the all-clear sentence in `text` when nobody is flagged', () => {
+    const card = buildDigestCard({ ...input, flagged: [] }) as {
+      text: string;
+    };
+    expect(card.text).toContain('All 66');
+  });
+
+  it('includes the unattributed-commits line in `text` only when the count is positive', () => {
+    // Same disclosure decision as the card: a zero line every ordinary
+    // morning trains readers to stop reading it on the day it matters.
+    const withCommits = buildDigestCard({
+      ...input,
+      unattributedCommits: 3,
+    }) as { text: string };
+    expect(withCommits.text).toContain('3 commits');
+    expect(withCommits.text).toMatch(/could not be matched/);
+
+    const withoutCommits = buildDigestCard({
+      ...input,
+      unattributedCommits: 0,
+    }) as { text: string };
+    expect(withoutCommits.text).not.toMatch(/could not be matched/);
+  });
+
+  it('HTML-escapes a hostile display name in `text`, and does not markdown-escape it there', () => {
+    // Display names are ingested, untrusted data (CLAUDE.md). Unescaped HTML
+    // in a "Post message" flow's Message field renders as live markup in the
+    // channel, not visible text. The card's markdown escaping (backslashes
+    // before `<`/`>`) must NOT leak into the HTML variant — that would show
+    // stray backslashes instead of the intended characters.
+    const hostile = buildDigestCard({
+      ...input,
+      flagged: [
+        { developer: 'x', displayName: '<img src=x onerror=alert(1)>' },
+        { developer: 'y', displayName: 'Tom & "Jerry"' },
+      ],
+    }) as { text: string };
+
+    expect(containsNoRawTag(hostile.text)).toBe(true);
+    expect(hostile.text).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(hostile.text).toContain('Tom &amp; &quot;Jerry&quot;');
+    expect(hostile.text).not.toContain('\\<img');
+    expect(hostile.text).not.toContain('\\>');
+  });
+});
+
+/** True when no unescaped `<img`/`<script`-style tag survives in the text. */
+function containsNoRawTag(text: string): boolean {
+  return !/<img[\s>]/i.test(text) && !/<script[\s>]/i.test(text);
+}
