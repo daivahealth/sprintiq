@@ -62,6 +62,48 @@ export interface TrackedDeveloper {
   createdAt: string;
 }
 
+/**
+ * `RunDigestResult.outcome` — mirrors backend `DigestOutcome`
+ * (`backend/src/metrics/no-commit-detection.service.ts`). Keep this union in
+ * sync with the backend type; it is not imported directly because the
+ * frontend does not depend on backend source.
+ */
+export type DigestOutcome =
+  | "sent"
+  | "sent_all_clear"
+  | "withheld_stale_data"
+  | "withheld_truncated_read"
+  | "withheld_unevaluable"
+  | "withheld_implausible"
+  | "skipped_no_roster"
+  | "failed";
+
+/** POST /api/admin/notifications/no-commit-digest/run body. */
+export interface RunDigestPayload {
+  /** IST day key. Defaults to the previous working day. */
+  day?: string;
+  /** Compute and return without posting or recording anything. */
+  dryRun?: boolean;
+  /** Re-run a day whose run already succeeded. */
+  force?: boolean;
+}
+
+/**
+ * POST /api/admin/notifications/no-commit-digest/run response — mirrors
+ * backend `RunDigestResult` (`backend/src/modules/notifications/
+ * notifications.service.ts`).
+ */
+export interface RunDigestResult {
+  reportedDay: string;
+  outcome: DigestOutcome;
+  flagged: { developer: string; displayName: string }[];
+  unresolved: { developer: string; addedAs: string }[];
+  incomplete: { developer: string; displayName: string }[];
+  detail: string | null;
+  dryRun: boolean;
+  unattributedCommits: number;
+}
+
 export type ConfigurationNamespace =
   | "github"
   | "jira"
