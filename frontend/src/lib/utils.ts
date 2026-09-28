@@ -82,6 +82,26 @@ export function istDayKeyOffset(key: string, deltaDays: number): string {
 }
 
 /**
+ * The most recent Mon–Fri IST calendar day strictly before `fromKey` (today
+ * by default) — mirrors the backend's `previousWorkingDayKey`
+ * (`backend/src/common/time.ts`), which is what the daily no-commit digest
+ * reports on when a manual run doesn't override `day`. Used only so the
+ * "Test the notification" panel can state which day it's about to act on
+ * before the admin clicks anything — the server response's own `reportedDay`
+ * remains the actual source of truth once a call has actually been made.
+ */
+export function previousWorkingDayKey(fromKey: string = istTodayKey()): string {
+  let key = fromKey;
+  for (;;) {
+    key = istDayKeyOffset(key, -1);
+    const weekday = new Date(`${key}T00:00:00.000Z`).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) {
+      return key;
+    }
+  }
+}
+
+/**
  * `windowDays` contiguous IST date keys ending on `endKey` (today by default),
  * oldest first — the axis a chart zero-fills a sparse series against. Must stay
  * in sync with the backend's `istDateKey` bucketing, or the axis and the data
