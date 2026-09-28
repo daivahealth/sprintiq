@@ -19,23 +19,6 @@ export interface DigestCardInput {
   flagged: DigestRecipient[];
   /** Roster size after unresolved and suppressed entries are removed. */
   evaluatedCount: number;
-  /**
-   * Oldest `lastSyncAt` across the tenant's active connections — when
-   * collection last REACHED a source, not the completeness watermark.
-   *
-   * Deliberately not `DataFreshness.collectedThroughAt`/`ConnectionsService`'s
-   * completeness watermark: `collectedThroughAt` is null the instant any
-   * active connection is mid-backfill and has no watermark yet — measured
-   * permanently true on the real deployment (13 active connections
-   * mid-PR-backfill), which made the card read "Data collected through
-   * unknown." on every single send, forever. `no-commit-detection.service.ts`
-   * gate 1 was rewritten off the same reasoning (see its docblock) — this is
-   * the card catching up to that same fix. Null only when NO active
-   * connection has ever reached its source, which gate 1's `neverSynced`
-   * check makes rare: a tenant with any never-synced active connection is
-   * withheld before a card naming anyone is even considered.
-   */
-  lastSyncAt: Date | null;
   /** When set, the reason names were withheld; names are not rendered. */
   withheldDetail?: string;
   /**
@@ -53,15 +36,13 @@ export interface DigestCardInput {
  * The rule the list was computed from, displayed in every card.
  *
  * Required by the ethics-first exception this feature ships under (CLAUDE.md;
- * spec §3): where an attributed ranking or list ships, the rule it is computed
- * from ships with it and is displayed. It names what was counted AND states
- * that reviewing was not, because the narrow definition is the honest
- * explanation for most objections to being on this list.
+ * ADR-0009 condition 1): where an attributed ranking or list ships, the rule
+ * it is computed from ships with it and is displayed on every card. Trimmed
+ * to one line (2026-09-28 product decision) from the earlier multi-sentence
+ * paragraph — the condition is unchanged, only how briefly it is met.
  */
 const RULE_TEXT =
-  'Flagged = no commit and no pull request opened on this day (IST) — the same reads as the Activity Overview board. ' +
-  'Code review, merging work opened earlier, and Jira activity are **not** counted, so a day spent reviewing shows here as inactive. ' +
-  'Excludes bots, admin-excluded accounts, and developers on recorded leave.';
+  "Counts commits and PRs opened only — reviews and Jira aren't counted.";
 
 /**
  * Neutralise the markdown subset an Adaptive Card `TextBlock` renders.
@@ -83,8 +64,116 @@ export function escapeCardText(value: string): string {
   return value.replace(/[\\`*_[\]()<>]/g, (ch) => `\\${ch}`);
 }
 
+/**
+ * HTML-escape for the top-level `text` field (see `buildDigestText` below).
+ *
+ * A sibling to `escapeCardText`, not a replacement for it: the Adaptive Card
+ * `TextBlock` renderer understands a markdown subset, but the "Post message
+ * in a chat or channel" action's Message field is HTML, where `escapeCardText`'s
+ * backslash-escaping would show up as literal stray backslashes instead of
+ * the intended characters. The two escaping schemes must never cross —
+ * `escapeCardText` output must never flow through this function or vice versa.
+ * Order matters: `&` must be replaced first, or the entities this function
+ * inserts (`&amp;`, `&lt;`, ...) would themselves be re-escaped.
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function block(text: string, extra: Record<string, unknown> = {}) {
   return { type: 'TextBlock', wrap: true, text, ...extra };
+}
+
+/**
+ * The heading, all-clear sentence, and count-line templates shared by
+ * `buildDigestCard`'s Adaptive Card body and `buildDigestText`'s HTML string.
+ *
+ * None of these three interpolate untrusted data (only `reportedDay`, an IST
+ * date key, and integers) — factored out purely so the card and the text
+ * variant cannot drift apart by one of them being edited and not the other.
+ * Anything that DOES interpolate untrusted data (display names,
+ * `withheldDetail`) stays inline in each renderer, escaped with that
+ * renderer's own scheme.
+ */
+function headingText(reportedDay: string): string {
+  return `Daily activity check — ${reportedDay}`;
+}
+
+function allClearText(input: DigestCardInput): string {
+  return `All ${input.evaluatedCount} tracked developers had activity on ${input.reportedDay}.`;
+}
+
+function countLineText(input: DigestCardInput): string {
+  return `${input.flagged.length} of ${input.evaluatedCount} tracked developers had no activity:`;
+}
+
+/**
+ * The unattributed-commits disclosure sentence, or `null` when there is
+ * nothing to disclose (count is zero — see the docblock on
+ * `DigestCardInput.unattributedCommits`). Shared by both renderers for the
+ * same anti-drift reason as the templates above.
+ */
+function unattributedDisclosureText(input: DigestCardInput): string | null {
+  if (input.unattributedCommits <= 0) {
+    return null;
+  }
+  const plural = input.unattributedCommits === 1 ? '' : 's';
+  return `${input.unattributedCommits} commit${plural} on ${input.reportedDay} could not be matched to any developer, so this list may be incomplete or wrong. Worth checking identity resolution.`;
+}
+
+/**
+ * The daily digest as HTML for a top-level `text` field.
+ *
+ * Added because the team's Power Automate flow changed to a "Post message in
+ * a chat or channel" action whose Message field reads
+ * `@{triggerBody()?['text']}` — a field the Adaptive-Card-only payload never
+ * had. Without it, that flow posts an empty message while the webhook still
+ * returns 202, so the run is recorded `sent` with nothing visible in the
+ * channel.
+ *
+ * HTML, not plain text: the Message field renders HTML, and a bare `\n`
+ * collapses there, which would run every name together on one line — `<br>`
+ * is used between every line instead. Carries the same content as the card
+ * in every variant (named list, all-clear, withheld, unattributed-commits
+ * disclosure, and the ADR-0009 rule line on every variant) — see
+ * `headingText`/`allClearText`/`countLineText`/`unattributedDisclosureText`
+ * and `RULE_TEXT` above, shared with `buildDigestCard` so the two cannot
+ * silently diverge.
+ *
+ * Every interpolated value that can carry untrusted content (display names,
+ * `withheldDetail`) is passed through `escapeHtml`, never `escapeCardText` —
+ * the card's markdown escaping would show stray backslashes in HTML.
+ */
+function buildDigestText(input: DigestCardInput): string {
+  const lines: string[] = [
+    `<b>${escapeHtml(headingText(input.reportedDay))}</b>`,
+  ];
+
+  if (input.withheldDetail) {
+    lines.push(`<b>${escapeHtml(input.withheldDetail)}</b>`);
+  } else if (input.flagged.length === 0) {
+    lines.push(escapeHtml(allClearText(input)));
+  } else {
+    lines.push(escapeHtml(countLineText(input)));
+    // Alphabetical order is the caller's guarantee; rendering must not sort.
+    for (const person of input.flagged) {
+      lines.push(`• ${escapeHtml(person.displayName)}`);
+    }
+  }
+
+  lines.push(`<i>${RULE_TEXT}</i>`);
+
+  const unattributed = unattributedDisclosureText(input);
+  if (unattributed) {
+    lines.push(`<i>${unattributed}</i>`);
+  }
+
+  return lines.join('<br>');
 }
 
 /**
@@ -98,7 +187,7 @@ export function buildDigestCard(
   input: DigestCardInput,
 ): Record<string, unknown> {
   const body: Record<string, unknown>[] = [
-    block(`Daily activity check — ${input.reportedDay}`, {
+    block(headingText(input.reportedDay), {
       size: 'Medium',
       weight: 'Bolder',
     }),
@@ -107,17 +196,9 @@ export function buildDigestCard(
   if (input.withheldDetail) {
     body.push(block(input.withheldDetail, { weight: 'Bolder' }));
   } else if (input.flagged.length === 0) {
-    body.push(
-      block(
-        `All ${input.evaluatedCount} tracked developers had activity on ${input.reportedDay}.`,
-      ),
-    );
+    body.push(block(allClearText(input)));
   } else {
-    body.push(
-      block(
-        `${input.flagged.length} of ${input.evaluatedCount} tracked developers had no activity:`,
-      ),
-    );
+    body.push(block(countLineText(input)));
     // Alphabetical order is the caller's guarantee; rendering must not sort.
     body.push(
       block(
@@ -126,49 +207,26 @@ export function buildDigestCard(
           .join('\n'),
       ),
     );
-    body.push(
-      block(
-        'This is a prompt to check in, not a conclusion about anyone — ask before assuming.',
-        { isSubtle: true },
-      ),
-    );
   }
 
   body.push(block(RULE_TEXT, { isSubtle: true, size: 'Small' }));
-  // "Sources last reached", not "data collected through": this card cannot
-  // use the completeness watermark (`DataFreshness.collectedThroughAt`) — see
-  // the docblock on `DigestCardInput.lastSyncAt` for why it is permanently
-  // null on this deployment. `lastSyncAt` is liveness, not coverage, but it
-  // is the honest answer to what a person named above actually needs: was
-  // anything checked recently, or has this pipeline gone quiet. The null
-  // case is stated plainly rather than as "unknown" — it means no active
-  // connection has EVER reached its source, which gate 1's `neverSynced`
-  // check already makes rare on a card that names anyone.
-  body.push(
-    block(
-      input.lastSyncAt
-        ? `Sources last reached ${input.lastSyncAt.toISOString()}.`
-        : 'Sources have never been reached — no connection has completed a sync yet.',
-      { isSubtle: true, size: 'Small' },
-    ),
-  );
   // Rendered only when positive — a zero here is noise on every ordinary
   // morning, and would train readers to stop reading this line on the one
-  // morning it matters. Placed beside the freshness line rather than folded
-  // into RULE_TEXT: this is a fact about THIS day's read, not the standing
-  // rule the list is computed from.
-  if (input.unattributedCommits > 0) {
-    const plural = input.unattributedCommits === 1 ? '' : 's';
-    body.push(
-      block(
-        `${input.unattributedCommits} commit${plural} on ${input.reportedDay} could not be matched to any developer, so this list may be incomplete or wrong. Worth checking identity resolution.`,
-        { isSubtle: true, size: 'Small' },
-      ),
-    );
+  // morning it matters. Kept separate from RULE_TEXT: this is a fact about
+  // THIS day's read, not the standing rule the list is computed from.
+  const unattributed = unattributedDisclosureText(input);
+  if (unattributed) {
+    body.push(block(unattributed, { isSubtle: true, size: 'Small' }));
   }
 
   return {
     type: 'message',
+    // HTML for the "Post message in a chat or channel" flow, which reads
+    // `@{triggerBody()?['text']}` and has no notion of `attachments` — see
+    // `buildDigestText`. `attachments` below is unchanged, so a card-based
+    // flow ("Post card in a chat or channel") keeps working exactly as
+    // before; the two fields are independent renderings of the same content.
+    text: buildDigestText(input),
     attachments: [
       {
         contentType: 'application/vnd.microsoft.card.adaptive',
