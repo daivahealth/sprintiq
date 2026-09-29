@@ -85,7 +85,8 @@ const COMMIT_ENRICH_BUDGET_PER_TICK = envBudget(
  * Same rationale as COMMIT_ENRICH_BUDGET_PER_TICK, for pull requests. NOTE one
  * unit here is **4 API calls** — detail (stats + merged_by), commits (Jira
  * keys), reviews, and review comments — none of which are available on the
- * list endpoint. Budget accordingly.
+ * list endpoint. Budget accordingly. A PR whose commit list spans more than
+ * one page is charged one further unit per extra request (`enrichCost`).
  */
 const PR_ENRICH_BUDGET_PER_TICK = envBudget(
   'GITHUB_PR_ENRICH_BUDGET_PER_TICK',
@@ -486,7 +487,7 @@ export class GithubCollector extends BaseSourceCollector {
           updatedAt,
         );
         const enriched = await this.enrichPull(repoFullName, token, pr.number);
-        enrichBudget--;
+        enrichBudget -= enrichCost(enriched);
         envelopes.push(
           this.fromPolledPull(
             connection,
@@ -687,12 +688,13 @@ export class GithubCollector extends BaseSourceCollector {
     // the watermark may honestly advance.
     let lastEnrichedAt: string | undefined;
     let rateLimitedUntil: Date | undefined;
-    // PRs enriched, NOT envelopes emitted. These were the same number until a
-    // PR started also yielding a commit envelope per commit; counting
+    // Budget units spent, NOT envelopes emitted. These were the same number
+    // until a PR started also yielding a commit envelope per commit; counting
     // envelopes would then silently divide the budget by the average commits
     // per PR (~2 on the reference tenant, more on a big PR) and enrich a
-    // fraction of the PRs the budget actually allows. The budget's unit is
-    // the API cost of one PR, which is unchanged by how many commits it has.
+    // fraction of the PRs the budget actually allows. The unit is the API
+    // cost of one PR — plus one per extra request a PR larger than one commit
+    // page needed (`enrichCost`), and nothing for how many commits it has.
     let enrichedCount = 0;
 
     for (const pr of ordered) {
@@ -700,7 +702,7 @@ export class GithubCollector extends BaseSourceCollector {
         break;
       }
       const enriched = await this.enrichPull(repoFullName, token, pr.number);
-      enrichedCount++;
+      enrichedCount += enrichCost(enriched);
       envelopes.push(
         this.fromPolledPull(
           connection,
@@ -988,8 +990,12 @@ export class GithubCollector extends BaseSourceCollector {
    * than master/main/develop, 71 developers were understated, and 3 had no
    * commit activity on the board at all despite merged work.
    *
-   * Costs nothing extra. The commit list is already fetched per enriched PR
-   * (for Jira keys, §6) — only the fields kept were too narrow.
+   * Costs nothing extra for the ~99% of PRs whose commits fit one page. The
+   * commit list is already fetched per enriched PR (for Jira keys, §6). A
+   * larger PR is paged to completion by the client — newest page first —
+   * and each extra request is charged to the enrich budget (`enrichCost`,
+   * §12 #51). Re-emitting commits already collected is harmless: the key
+   * below is per-sha, so ingestion drops the repeat.
    *
    * Emitted as separate envelopes, never as a field on the PR envelope, and
    * that is load-bearing: the PR's key (`…:pr:{n}:{eventType}`) is dropped as
@@ -1116,6 +1122,23 @@ export class GithubCollector extends BaseSourceCollector {
       data: payload as unknown as Record<string, unknown>,
     };
   }
+}
+
+/**
+ * Enrich-budget units one enriched PR cost: one, plus one per extra request
+ * its commit list needed to page past a single page (§12 #51).
+ *
+ * Without this, the follow-up for a long-lived PR was invisible to the
+ * budget, and a repo whose unsynced PRs are all large could spend several
+ * times its share of the sweep. One unit per request is deliberately
+ * conservative — a REST unit is 4 calls, so REST is over-charged up to 4x —
+ * because the ~1% of PRs that need it make the over-charge cheap, and
+ * rounding the other way would let the follow-up starve the connections
+ * later in the sweep. The charge lands after the PR is enriched, so a tick
+ * can overshoot its budget by at most one PR's capped follow-up.
+ */
+function enrichCost(enriched: EnrichedPull): number {
+  return 1 + Math.max(0, enriched.commits.followUpRequests ?? 0);
 }
 
 /** This connection's share of the sweep, for PR and commit enrichment. */

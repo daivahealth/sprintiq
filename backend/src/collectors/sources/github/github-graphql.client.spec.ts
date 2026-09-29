@@ -167,8 +167,11 @@ describe('GithubGraphqlClient', () => {
     // Outer page halved — the dimension that carries the cost.
     expect(attempt1.variables.first).toBe(100);
     expect(attempt2.variables.first).toBe(50);
-    // Nested halved too.
-    expect(attempt2.query).toContain('commits(first: 10)');
+    // Nested halved too — and still taken from the NEWEST end. `first:` here
+    // was the #51 loss: GitHub lists PR commits oldest-first, so a halved
+    // `first:` page dropped every commit pushed after the tenth.
+    expect(attempt2.query).toContain('commits(last: 10)');
+    expect(attempt2.query).not.toContain('commits(first:');
   });
 
   it('retries a 504 as too-expensive, not as a plain failure', async () => {
@@ -749,6 +752,218 @@ describe('GithubGraphqlClient', () => {
 
     expect(page.failed).toBe(true);
     expect(page.items).toEqual([]);
+  });
+
+  // --------------------------------------------- PR commit harvest (#51)
+
+  /** A PR node whose nested commits are the NEWEST `returned` of `total`. */
+  function truncatedPull(total: number, returned: number, number = 1) {
+    const start = total - returned;
+    return pullNode({
+      number,
+      commits: {
+        totalCount: total,
+        pageInfo: { hasPreviousPage: start > 0, startCursor: `i${start}` },
+        nodes: Array.from({ length: returned }, (_, i) => ({
+          commit: { oid: `c${start + i + 1}`, message: `m${start + i + 1}` },
+        })),
+      },
+    });
+  }
+
+  /** Answers the per-PR follow-up (`last`/`before`) over `total` commits. */
+  function followUpBody(total: number, variables: Record<string, unknown>) {
+    const before =
+      typeof variables.before === 'string'
+        ? Number(variables.before.slice(1))
+        : total;
+    const start = Math.max(0, before - Number(variables.last));
+    return {
+      data: {
+        rateLimit: RATE_LIMIT,
+        repository: {
+          pullRequest: {
+            commits: {
+              totalCount: total,
+              pageInfo: {
+                hasPreviousPage: start > 0,
+                startCursor: `i${start}`,
+              },
+              nodes: Array.from({ length: before - start }, (_, i) => ({
+                commit: {
+                  oid: `c${start + i + 1}`,
+                  message: `m${start + i + 1}`,
+                },
+              })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function harvestFetch(total: number, pageBody: unknown) {
+    return jest.fn((_url: string, init: { body: string }) => {
+      const { query, variables } = JSON.parse(init.body) as {
+        query: string;
+        variables: Record<string, unknown>;
+      };
+      if (query.includes('query PullCommits')) {
+        return Promise.resolve(
+          fakeResponse({ body: followUpBody(total, variables) }),
+        );
+      }
+      return Promise.resolve(fakeResponse({ body: pageBody }));
+    });
+  }
+
+  function sentBody(fetchMock: jest.Mock, call: number) {
+    return JSON.parse(
+      (fetchMock.mock.calls[call] as [string, { body: string }])[1].body,
+    ) as { query: string; variables: Record<string, unknown> };
+  }
+
+  it('pages the older remainder of a truncated PR and counts the extra requests', async () => {
+    // Guards: a PR whose totalCount exceeds the nested page being harvested
+    // only partially, and the follow-up's cost going uncounted against the
+    // enrich budget.
+    const fetchMock = harvestFetch(14, pullsBody([truncatedPull(14, 10)]));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.listPullRequestsPage('athmahealth/namah-app', 'tok', {
+      page: 1,
+    });
+    const commits = await client.listPullRequestCommits(
+      'athmahealth/namah-app',
+      'tok',
+      1,
+    );
+
+    expect(commits.commits?.map((c) => c.sha)).toEqual(
+      Array.from({ length: 14 }, (_, i) => `c${i + 1}`),
+    );
+    // Oldest-first overall, so the last entry is still the PR head (the
+    // backfill service derives head_sha from it).
+    expect(commits.messages).toHaveLength(14);
+    expect(commits.followUpRequests).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentBody(fetchMock, 1).variables).toMatchObject({
+      number: 1,
+      before: 'i4',
+    });
+  });
+
+  it('answers a repeat call from the completed list, without paging again', async () => {
+    // Guards: a second caller (or a retry) re-spending the follow-up.
+    const fetchMock = harvestFetch(14, pullsBody([truncatedPull(14, 10)]));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.listPullRequestsPage('acme/payments', 'tok', { page: 1 });
+    await client.listPullRequestCommits('acme/payments', 'tok', 1);
+    const again = await client.listPullRequestCommits(
+      'acme/payments',
+      'tok',
+      1,
+    );
+
+    expect(again.commits).toHaveLength(14);
+    expect(again.followUpRequests ?? 0).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not page, or charge, a PR that fits the nested page', async () => {
+    // Guards: the follow-up firing for every PR and multiplying API cost.
+    const fetchMock = harvestFetch(3, pullsBody([truncatedPull(3, 3)]));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.listPullRequestsPage('acme/payments', 'tok', { page: 1 });
+    const commits = await client.listPullRequestCommits(
+      'acme/payments',
+      'tok',
+      1,
+    );
+
+    expect(commits.commits).toHaveLength(3);
+    expect(commits.followUpRequests ?? 0).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still takes the NEWEST commits when the complexity fallback shrinks nested to 5', async () => {
+    // Guards: the fallback's halving amplifying the oldest-first loss — 80
+    // page queries hit it in ~21h of logs, 109 PRs truncated at 10, 1 at 5.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(fakeResponse({ ok: false, status: 502 }))
+      .mockResolvedValueOnce(fakeResponse({ ok: false, status: 502 }))
+      .mockResolvedValueOnce(fakeResponse({ body: pullsBody([]) }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.listPullRequestsPage('acme/payments', 'tok', { page: 1 });
+
+    expect(sentBody(fetchMock, 2).query).toContain('commits(last: 5)');
+  });
+
+  it('caps the follow-up pages and logs the cap with the repo name', async () => {
+    // Guards: an unbounded follow-up on a huge PR (pe_platform_pkg #1020 has
+    // 422 commits) starving the sweep, and an ambiguous log line that names
+    // only a PR number across ~200 repos.
+    const warn = jest
+      .spyOn(
+        (client as unknown as { logger: { warn: (m: string) => void } }).logger,
+        'warn',
+      )
+      .mockImplementation(() => undefined);
+    const total = 2000;
+    const fetchMock = harvestFetch(
+      total,
+      pullsBody([truncatedPull(total, 20, 1020)]),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.listPullRequestsPage('athmahealth/pe_platform_pkg', 'tok', {
+      page: 1,
+    });
+    const commits = await client.listPullRequestCommits(
+      'athmahealth/pe_platform_pkg',
+      'tok',
+      1020,
+    );
+
+    // 1 page query + the capped follow-up pages, never more.
+    expect(commits.followUpRequests).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls.length - 1).toBe(commits.followUpRequests);
+    expect(commits.followUpRequests).toBeLessThanOrEqual(5);
+    // Newest-first means the cap costs the OLDEST commits, never the newest.
+    const got = commits.commits?.map((c) => c.sha) ?? [];
+    expect(got).toContain(`c${total}`);
+    expect(new Set(got).size).toBe(got.length);
+    expect(
+      warn.mock.calls.some((args) =>
+        String(args[0]).includes('athmahealth/pe_platform_pkg PR #1020'),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps the harvested commits but flags failed when the follow-up is refused', async () => {
+    // Guards: a refused follow-up either discarding the newest commits
+    // already in hand, or letting a reconciler stamp the PR as fully asked.
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(
+        fakeResponse({ body: pullsBody([truncatedPull(14, 10)]) }),
+      )
+      .mockResolvedValue(fakeResponse({ ok: false, status: 500 }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.listPullRequestsPage('acme/payments', 'tok', { page: 1 });
+    const commits = await client.listPullRequestCommits(
+      'acme/payments',
+      'tok',
+      1,
+    );
+
+    expect(commits.commits).toHaveLength(10);
+    expect(commits.failed).toBe(true);
   });
 
   // ------------------------------------------------------------ blank token
