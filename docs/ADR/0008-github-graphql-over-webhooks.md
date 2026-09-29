@@ -58,6 +58,8 @@ Jira is untouched: one `/search/jql` returns 100 whole issues with `expand=chang
 
 **Nested pagination truncates silently.** `commits(first: N)` on a larger PR returns N with `hasNextPage`. This needs the explicit `truncated` flag `GithubReviewComments` already carries.
 
+> **Update 2026-09-29 (api/README.md §12 #51).** For PR *commits* a flag was not enough, and `first:` was the wrong end: GitHub lists a PR's commits oldest-first, so `first: N` returned the same oldest N on every re-poll and never a commit pushed after the Nth — made worse by the 502 fallback halving N to 10 or 5. The page query now takes `commits(last: N)` with `totalCount`/`startCursor`, and a PR larger than the nested page has its older remainder paged by a per-PR `last/before` follow-up, charged to the enrich budget. Reviews still use `first:` plus `truncated`.
+
 **Field semantics must be verified, not assumed.** Specifically `author { user { login } }` versus REST's verified-email linkage, on which the identity resolution of §12 #22 depends — it recovered 15 of 19 identities on real data, and a silent semantic difference would regress that. Bot classification also moves from `user.type == "Bot"` to `__typename`. A parity harness diffing GraphQL against REST-collected data is required before cutover; the reference tenant's existing REST data is what makes that check possible.
 
 **Near-realtime, not realtime.** ~5 minutes, not seconds.
