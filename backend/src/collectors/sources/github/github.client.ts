@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 // Type-only, and the reverse direction is type-only too, so the cycle is
 // erased at compile time and never exists at runtime.
 import type { GithubPageRef, GithubSourceClient } from './github-source-client';
+import { classifyForbidden } from './github-audit-log.client';
+import { isGithubApiUrl, nextLinkUrl, redactUrl } from './github-link';
 
 /**
  * `GET /pulls/{n}/commits` limits — GitHub serves at most 250 commits for a
@@ -69,6 +71,48 @@ export interface GithubCommitDetail {
 export interface GithubRateLimit {
   remaining: number;
   resetAt: Date;
+}
+
+export type GithubCallFailure =
+  | 'not_found'
+  | 'failed'
+  | 'rate_limited'
+  | 'forbidden';
+
+export interface GithubHeadRefs {
+  tips?: Map<string, string>;
+  failure?: GithubCallFailure;
+  rateLimit?: GithubRateLimit;
+  resumeAt?: Date;
+}
+
+export interface GithubDefaultBranch {
+  name?: string;
+  failure?: GithubCallFailure;
+  rateLimit?: GithubRateLimit;
+  resumeAt?: Date;
+}
+
+export interface GithubCompareCommit {
+  sha: string;
+  message: string;
+  authorLogin?: string;
+  authorName?: string;
+  authorEmail?: string;
+  authoredAt?: string;
+  committedAt?: string;
+  parentCount: number;
+}
+
+export interface GithubCompareResult {
+  commits: GithubCompareCommit[];
+  status?: string;
+  totalCommits?: number;
+  pages: number;
+  truncated: boolean;
+  failure?: GithubCallFailure;
+  rateLimit?: GithubRateLimit;
+  resumeAt?: Date;
 }
 
 export interface GithubPullDetail {
@@ -683,6 +727,169 @@ export class GithubClient implements GithubSourceClient {
       );
     }
     return result;
+  }
+
+  /**
+   * Every branch tip of a repo in ONE call (spec F7: `ehr`'s 1,474 refs in a
+   * single unpaginated response). The audit sync diffs these against the tips
+   * it stored last run — the only way to learn which ref a push moved, since
+   * `git.push` audit events carry no ref (spec F2).
+   */
+  async listHeadRefs(
+    repoFullName: string,
+    token: string,
+  ): Promise<GithubHeadRefs> {
+    const res = await this.restGet(
+      `${this.baseUrl}/repos/${repoFullName}/git/matching-refs/heads/`,
+      token,
+    );
+    if ('failure' in res) return res;
+    const body = (await res.response.json()) as {
+      ref?: string;
+      object?: { sha?: string };
+    }[];
+    const tips = new Map<string, string>();
+    for (const r of Array.isArray(body) ? body : []) {
+      if (r.ref?.startsWith('refs/heads/') && r.object?.sha) {
+        tips.set(r.ref.slice('refs/heads/'.length), r.object.sha);
+      }
+    }
+    return { tips, rateLimit: this.readRateLimit(res.response) };
+  }
+
+  async getDefaultBranch(
+    repoFullName: string,
+    token: string,
+  ): Promise<GithubDefaultBranch> {
+    const res = await this.restGet(
+      `${this.baseUrl}/repos/${repoFullName}`,
+      token,
+    );
+    if ('failure' in res) return res;
+    const body = (await res.response.json()) as { default_branch?: string };
+    return {
+      name: body.default_branch,
+      rateLimit: this.readRateLimit(res.response),
+    };
+  }
+
+  /**
+   * `GET /repos/{repo}/compare/{base}...{head}`, consumed to the LAST page
+   * (`Link rel="next"`, followed verbatim). Returns the commits reachable from
+   * `head` and not from `base` — on a force-push (`status: diverged`) those are
+   * exactly the new commits. GitHub caps a comparison at 250 commits; when it
+   * returns fewer than `total_commits`, `truncated` says so rather than letting
+   * a partial range pass for a complete one.
+   *
+   * All-or-nothing: any failed page yields `failure` with no commits, so the
+   * caller retries the range instead of half-ingesting it.
+   */
+  async compareAll(
+    repoFullName: string,
+    token: string,
+    base: string,
+    head: string,
+    maxPages = 10,
+  ): Promise<GithubCompareResult> {
+    const commits: GithubCompareCommit[] = [];
+    let url: string | undefined =
+      `${this.baseUrl}/repos/${repoFullName}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=100`;
+    let pages = 0;
+    let status: string | undefined;
+    let totalCommits: number | undefined;
+    let rateLimit: GithubRateLimit | undefined;
+
+    while (url && pages < maxPages) {
+      if (!isGithubApiUrl(url)) {
+        return { commits: [], pages, truncated: false, failure: 'failed' };
+      }
+      const res = await this.restGet(url, token);
+      if ('failure' in res) {
+        return { commits: [], pages, truncated: false, ...res };
+      }
+      const body = (await res.response.json()) as {
+        status?: string;
+        total_commits?: number;
+        commits?: {
+          sha?: string;
+          commit?: {
+            message?: string;
+            author?: { name?: string; email?: string; date?: string } | null;
+            committer?: { date?: string } | null;
+          };
+          author?: { login?: string } | null;
+          parents?: unknown[];
+        }[];
+      };
+      pages++;
+      status = body.status ?? status;
+      totalCommits = body.total_commits ?? totalCommits;
+      rateLimit = this.readRateLimit(res.response) ?? rateLimit;
+      for (const c of body.commits ?? []) {
+        if (!c.sha) continue;
+        commits.push({
+          sha: c.sha,
+          message: c.commit?.message ?? '',
+          authorLogin: c.author?.login,
+          authorName: c.commit?.author?.name,
+          authorEmail: c.commit?.author?.email,
+          authoredAt: c.commit?.author?.date,
+          committedAt: c.commit?.committer?.date,
+          parentCount: Array.isArray(c.parents) ? c.parents.length : 0,
+        });
+      }
+      url = nextLinkUrl(res.response.headers.get('link'));
+    }
+
+    const truncated =
+      Boolean(url) ||
+      (totalCommits !== undefined && commits.length < totalCommits);
+    return { commits, status, totalCommits, pages, truncated, rateLimit };
+  }
+
+  /** One authenticated GET, with 403 split into rate-limit vs permission (spec F8). */
+  private async restGet(
+    url: string,
+    token: string,
+  ): Promise<
+    | { response: Response }
+    | {
+        failure: GithubCallFailure;
+        resumeAt?: Date;
+        rateLimit?: GithubRateLimit;
+      }
+  > {
+    if (!token) {
+      return { failure: 'forbidden' };
+    }
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (response.status === 403 || response.status === 429) {
+      if (classifyForbidden(response) === 'rate_limited') {
+        const resumeAt = this.parseResetHeader(
+          response.headers.get('x-ratelimit-reset'),
+        );
+        this.logger.warn(`GitHub rate-limited until ${resumeAt.toISOString()}`);
+        return { failure: 'rate_limited', resumeAt };
+      }
+      this.logger.warn(`GitHub refused (403): ${redactUrl(url)}`);
+      return { failure: 'forbidden' };
+    }
+    if (response.status === 404) {
+      return { failure: 'not_found' };
+    }
+    if (!response.ok) {
+      this.logger.warn(
+        `GitHub request failed (${response.status}): ${redactUrl(url)}`,
+      );
+      return { failure: 'failed' };
+    }
+    return { response };
   }
 
   private async getPage<T>(url: string, token: string): Promise<GithubPage<T>> {
