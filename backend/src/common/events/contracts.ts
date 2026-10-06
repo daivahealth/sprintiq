@@ -97,6 +97,12 @@ export interface CodeCommitPayload {
   additions?: number;
   deletions?: number;
   filesChanged?: number;
+  /**
+   * Number of parents (2+ = merge commit). Recorded, not yet acted on: whether
+   * merges count as activity is an open product decision (spec §12 Q5), and
+   * this keeps the data needed to answer it without re-fetching.
+   */
+  parentCount?: number;
 }
 
 /** Sprint attribution embedded in a work-item event (upserted as a Sprint row). */
