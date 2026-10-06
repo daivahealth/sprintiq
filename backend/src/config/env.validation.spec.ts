@@ -45,3 +45,26 @@ describe('validateEnv — DIGEST_CRON_ENABLED', () => {
     );
   });
 });
+
+describe('GitHub audit sync env', () => {
+  const base = { DATABASE_URL: 'postgres://x', JWT_SECRET: 's' };
+  it('fails boot on an invalid audit interval', () => {
+    expect(() =>
+      validateEnv({ ...base, GITHUB_AUDIT_SYNC_INTERVAL_MINUTES: '7' }),
+    ).toThrow(/GITHUB_AUDIT_SYNC_INTERVAL_MINUTES/);
+  });
+  it('fails boot on an invalid audit mode', () => {
+    expect(() =>
+      validateEnv({ ...base, GITHUB_AUDIT_SYNC_MODE: 'yes' }),
+    ).toThrow(/GITHUB_AUDIT_SYNC_MODE/);
+  });
+  it('accepts valid audit settings', () => {
+    expect(() =>
+      validateEnv({
+        ...base,
+        GITHUB_AUDIT_SYNC_MODE: 'shadow',
+        GITHUB_AUDIT_SYNC_INTERVAL_MINUTES: '15',
+      }),
+    ).not.toThrow();
+  });
+});
