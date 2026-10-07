@@ -200,6 +200,9 @@ describe('executePending', () => {
       ),
     ).toBe(false);
     expect(prisma.githubPushRange.rows[0].status).toBe('shadowed');
+    expect(prisma.githubPushRange.rows[0].commitOutcomes).toEqual([
+      { sha: 'bbb', outcome: 'wouldIngest' },
+    ]);
 
     const i = await svc.runTenant(
       't1',
@@ -208,6 +211,52 @@ describe('executePending', () => {
     );
     expect(i.counters.ingested).toBe(1);
     expect(prisma.githubPushRange.rows[0].status).toBe('done');
+    expect(prisma.githubPushRange.rows[0].commitOutcomes).toEqual([
+      { sha: 'bbb', outcome: 'ingested' },
+    ]);
+  });
+
+  it('records per-commit outcomes (ingested / alreadyPresent) on a finished ingest range', async () => {
+    const { prisma, client, svc } = setup();
+    prisma.rawKeys.add('t1|github:athmahealth/ehr:commit:old');
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('old', 'x'), commit('new', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'done',
+      commitsFound: 2,
+      alreadyPresent: 1,
+      ingested: 1,
+      commitOutcomes: [
+        { sha: 'old', outcome: 'alreadyPresent' },
+        { sha: 'new', outcome: 'ingested' },
+      ],
+    });
+  });
+
+  it('records the commits processed so far when a range fails on a missing detail', async () => {
+    const { prisma, client, svc } = setup();
+    prisma.rawKeys.add('t1|github:athmahealth/ehr:commit:seen');
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('seen', 'x'), commit('nodetail', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    client.getCommitDetail.mockResolvedValue({});
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+      commitsFound: 2,
+      alreadyPresent: 1,
+      ingested: 0,
+      commitOutcomes: [{ sha: 'seen', outcome: 'alreadyPresent' }],
+    });
   });
 
   it('keeps an email-only author unattributed: no login is invented', async () => {
@@ -398,7 +447,13 @@ describe('executePending', () => {
       // budget = (1002 - 1000) - 1 page = 1; the first detail call spends it
       // to 0, so the second and third commits never reach getCommitDetail.
       expect(client.getCommitDetail).toHaveBeenCalledTimes(1);
-      expect(prisma.githubPushRange.rows[0].status).toBe('pending');
+      expect(prisma.githubPushRange.rows[0]).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        commitsFound: 3,
+        ingested: 1,
+        commitOutcomes: [{ sha: 'd1', outcome: 'ingested' }],
+      });
       expect(r.counters.ingested).toBe(1);
     } finally {
       if (originalReserve === undefined) {
@@ -453,6 +508,9 @@ describe('executePending', () => {
     expect(prisma.githubPushRange.rows[0]).toMatchObject({
       status: 'pending',
       attempts: 1,
+      commitsFound: 2,
+      ingested: 1,
+      commitOutcomes: [{ sha: 'ok1', outcome: 'ingested' }],
     });
     expect(prisma.githubPushRange.rows[0].lastError).toMatch(/kaboom/);
   });

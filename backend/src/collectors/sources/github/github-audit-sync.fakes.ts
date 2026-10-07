@@ -18,7 +18,10 @@ function matches(row: Row, where: Row = {}): boolean {
       if ('in' in v) return (v.in as unknown[]).includes(row[k]);
       if ('gte' in v) return row[k] >= v.gte;
       if ('lte' in v) return row[k] <= v.lte;
+      if ('lt' in v) return row[k] != null && row[k] < v.lt;
     }
+    // Prisma's `{ col: null }` also matches a column the fake never set.
+    if (v === null) return row[k] == null;
     return row[k] === v;
   });
 }

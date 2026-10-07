@@ -227,6 +227,9 @@ model GithubAuditCheckpoint {
   lastRunAt    DateTime?
   lastStatus   String?
   lastError    String?
+  /// Per-tenant run claim: set while a sync run holds this tenant, cleared in
+  /// a `finally`; a claim older than 60 minutes is treated as stale.
+  runningSince DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -271,6 +274,9 @@ model GithubPushRange {
   alreadyPresent   Int      @default(0)
   ingested         Int      @default(0)
   truncated        Boolean  @default(false)
+  /// Per-commit evidence for the commits processed so far:
+  /// [{ sha, outcome: ingested | alreadyPresent | wouldIngest }].
+  commitOutcomes   Json?
   lastError        String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

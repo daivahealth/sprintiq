@@ -105,3 +105,75 @@ describe('GithubAuditReportService.dayReport', () => {
     );
   });
 });
+
+describe('GithubAuditReportService.dayReport rangeDetails', () => {
+  it("lists each of the day's ranges with its per-SHA outcomes", async () => {
+    const prisma = {
+      githubAuditRun: { findMany: jest.fn().mockResolvedValue([]) },
+      githubPushRange: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'r1',
+            tenantId: 't1',
+            repoFullName: 'a/ehr',
+            ref: 'ACT-92441-aot-induction',
+            kind: 'new_ref',
+            baseSha: null,
+            baseRef: 'master',
+            headSha: '50b124b05b',
+            status: 'shadowed',
+            truncated: false,
+            commitOutcomes: [
+              { sha: '0defa5a6e4', outcome: 'wouldIngest' },
+              { sha: '50b124b05b', outcome: 'alreadyPresent' },
+            ],
+          },
+          {
+            id: 'r2',
+            tenantId: 't1',
+            repoFullName: 'a/amma',
+            ref: 'old',
+            kind: 'deleted',
+            baseSha: 'x1',
+            baseRef: null,
+            headSha: null,
+            status: 'done',
+            truncated: false,
+            commitOutcomes: null,
+          },
+        ]),
+      },
+      rawEvent: { findMany: jest.fn().mockResolvedValue([]) },
+      githubAuditCheckpoint: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const svc = new GithubAuditReportService(prisma as never);
+    const r = await svc.dayReport('t1', '2026-10-05');
+    expect(r.rangeDetails).toEqual([
+      {
+        repoFullName: 'a/ehr',
+        ref: 'ACT-92441-aot-induction',
+        kind: 'new_ref',
+        baseSha: null,
+        baseRef: 'master',
+        headSha: '50b124b05b',
+        status: 'shadowed',
+        truncated: false,
+        commitOutcomes: [
+          { sha: '0defa5a6e4', outcome: 'wouldIngest' },
+          { sha: '50b124b05b', outcome: 'alreadyPresent' },
+        ],
+      },
+      {
+        repoFullName: 'a/amma',
+        ref: 'old',
+        kind: 'deleted',
+        baseSha: 'x1',
+        baseRef: null,
+        headSha: null,
+        status: 'done',
+        truncated: false,
+        commitOutcomes: [],
+      },
+    ]);
+  });
+});

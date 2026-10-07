@@ -28,10 +28,17 @@ import {
   commitIdempotencyKey,
 } from './github-commit-envelope';
 import { evaluateBudget, rateReserve } from './github-rate-budget';
-import { GithubClient, GithubCompareResult } from './github.client';
+import {
+  GithubCallFailure,
+  GithubClient,
+  GithubCompareResult,
+  GithubRateLimit,
+} from './github.client';
 
 export interface AuditRunCounters {
   reposSeeded: number;
+  /** Repos skipped because GitHub answered 404/403 for them (deleted, renamed, or no access) — never block seeding or the checkpoint. */
+  reposUnseedable: number;
   auditPages: number;
   auditNextTraversals: number;
   auditEvents: number;
@@ -84,6 +91,43 @@ export interface RunContext {
   coreBudget?: number;
   /** Idempotency keys already resolved this run, so a commit reachable from two ranges is counted once, not once per range (review round 1, issue 5). */
   seenKeys: Set<string>;
+  /** Repos skipped as unseedable (404/403) this run, named in `run.error`. */
+  unseedable: string[];
+  /** Repos whose seeding was skipped because the core budget reached the reserve. */
+  budgetSkipped: string[];
+}
+
+/** One commit's outcome inside a push range — the per-SHA evidence shadow-mode acceptance compares with ground truth (spec §9 step 3). */
+export type CommitOutcome = {
+  sha: string;
+  outcome: 'ingested' | 'alreadyPresent' | 'wouldIngest';
+};
+
+type SeedOutcome = 'seeded' | 'unseedable' | 'budget' | 'failed';
+
+/**
+ * A run claim older than this is treated as abandoned (crashed process) and
+ * taken over. Sized well above any realistic run — including the first
+ * ingest-mode run, which replays up to a week of shadowed ranges — so a slow
+ * but live run is never run over by a second one.
+ */
+export const RUN_CLAIM_STALE_MS = 60 * 60_000;
+
+/** At most this many repos are named in `run.error` for one note. */
+const MAX_NAMED_REPOS = 10;
+
+const BUDGET_NOT_PLANNED =
+  'not planned: the core rate budget reached the reserve (GITHUB_BACKFILL_RATE_RESERVE)';
+
+function isUnseedable(failure?: GithubCallFailure): boolean {
+  return failure === 'not_found' || failure === 'forbidden';
+}
+
+function nameRepos(repos: string[]): string {
+  const shown = repos.slice(0, MAX_NAMED_REPOS).join(', ');
+  return repos.length > MAX_NAMED_REPOS
+    ? `${shown} (+${repos.length - MAX_NAMED_REPOS} more)`
+    : shown;
 }
 
 /** Git events live 7 days (spec F6); warn a day before the window is lost. */
@@ -98,6 +142,7 @@ export const SHADOW_REPLAY_MS = 7 * 86_400_000;
 export function emptyCounters(): AuditRunCounters {
   return {
     reposSeeded: 0,
+    reposUnseedable: 0,
     auditPages: 0,
     auditNextTraversals: 0,
     auditEvents: 0,
@@ -198,6 +243,65 @@ export class GithubAuditSyncService {
       };
     }
 
+    // Per-tenant claim, shared by the cron and the manual admin endpoint, so
+    // two runs for one tenant never plan/execute the same window at once. The
+    // row must exist before it can be claimed; the upsert leaves
+    // seededAt/checkpointAt untouched on an existing row.
+    await this.prisma.githubAuditCheckpoint.upsert({
+      where: { tenantId },
+      create: { id: newId(), tenantId, organization: settings.organization },
+      update: { organization: settings.organization },
+    });
+    const claim = await this.prisma.githubAuditCheckpoint.updateMany({
+      where: {
+        tenantId,
+        OR: [
+          { runningSince: null },
+          {
+            runningSince: { lt: new Date(now.getTime() - RUN_CLAIM_STALE_MS) },
+          },
+        ],
+      },
+      data: { runningSince: now },
+    });
+    if (claim.count === 0) {
+      return skipped('Another audit sync run for this tenant is in progress.');
+    }
+    try {
+      return await this.runClaimed(
+        tenantId,
+        cfg,
+        now,
+        settings,
+        repos,
+        counters,
+        startedMs,
+      );
+    } finally {
+      try {
+        // Release only OUR claim: if a stale claim of ours was taken over,
+        // the newer run's claim must stay in place.
+        await this.prisma.githubAuditCheckpoint.updateMany({
+          where: { tenantId, runningSince: now },
+          data: { runningSince: null },
+        });
+      } catch (err) {
+        this.logger.error(
+          `[tenant ${tenantId}] could not release the audit sync run claim (it expires after ${RUN_CLAIM_STALE_MS / 60_000} min): ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  private async runClaimed(
+    tenantId: string,
+    cfg: GithubAuditConfig,
+    now: Date,
+    settings: { organization: string; auditToken: string },
+    repos: Map<string, Connection>,
+    counters: AuditRunCounters,
+    startedMs: number,
+  ): Promise<AuditRunSummary> {
     const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
       where: { tenantId },
     });
@@ -223,6 +327,8 @@ export class GithubAuditSyncService {
       tokens: new Map(),
       stopForBudget: false,
       seenKeys: new Set(),
+      unseedable: [],
+      budgetSkipped: [],
     };
 
     let status: AuditRunSummary['status'] = 'success';
@@ -260,6 +366,9 @@ export class GithubAuditSyncService {
           status = 'partial';
           error =
             'Some repositories could not be seeded; they are retried next run before discovery starts.';
+          if (ctx.budgetSkipped.length > 0) {
+            error += ` ${ctx.budgetSkipped.length} repo(s) were left unseeded because the core rate budget reached the reserve (GITHUB_BACKFILL_RATE_RESERVE).`;
+          }
         }
       } else {
         const from = checkpoint.checkpointAt ?? checkpoint.seededAt;
@@ -285,6 +394,11 @@ export class GithubAuditSyncService {
     } catch (err) {
       status = 'failed';
       error = (err as Error).message.slice(0, 500);
+    }
+
+    if (ctx.unseedable.length > 0) {
+      const note = `${ctx.unseedable.length} repo(s) skipped as unseedable (GitHub answered 404/403 — deleted, renamed or no access): ${nameRepos(ctx.unseedable)}.`;
+      error = error ? `${error} ${note}` : note;
     }
 
     if (
@@ -414,36 +528,81 @@ export class GithubAuditSyncService {
       where: { tenantId: ctx.tenantId, ref: DEFAULT_BRANCH_MARKER },
     });
     const done = new Set(markers.map((m) => m.repoFullName));
-    let allOk = true;
+    // Unseedable (404/403) repos do not block completion — they would hold
+    // seeding, and so the whole route, forever. Transient failures and
+    // budget skips do: they are retried next run.
+    let complete = true;
     const todo = [...ctx.repos.entries()].filter(([repo]) => !done.has(repo));
     await forEachBounded(
       todo,
       ctx.cfg.compareConcurrency,
       async ([repo, connection]) => {
-        const ok = await this.seedRepo(ctx, repo, connection);
-        if (ok) ctx.counters.reposSeeded++;
-        else allOk = false;
+        const outcome = await this.seedRepo(ctx, repo, connection);
+        if (outcome === 'seeded') ctx.counters.reposSeeded++;
+        else if (outcome === 'budget') {
+          ctx.budgetSkipped.push(repo);
+          complete = false;
+        } else if (outcome === 'failed') complete = false;
       },
     );
-    return allOk;
+    return complete;
+  }
+
+  /**
+   * Refreshes the run-level `core` budget from a response's rate-limit
+   * reading (remaining − reserve) and charges `calls` against it; at or below
+   * zero the run stops spending `core` (seeding, listing, Compare, detail).
+   */
+  private chargeCore(
+    ctx: RunContext,
+    rateLimit: GithubRateLimit | undefined,
+    calls = 1,
+  ): void {
+    if (rateLimit) {
+      ctx.coreBudget = rateLimit.remaining - rateReserve();
+      ctx.counters.coreRateRemaining = rateLimit.remaining;
+    }
+    if (ctx.coreBudget !== undefined) {
+      ctx.coreBudget -= calls;
+      if (ctx.coreBudget <= 0) ctx.stopForBudget = true;
+    }
+  }
+
+  private seedFailure(
+    ctx: RunContext,
+    repo: string,
+    failure: GithubCallFailure | undefined,
+  ): SeedOutcome {
+    this.logger.warn(
+      `[tenant ${ctx.tenantId}] could not seed ${repo}: ${failure ?? 'unknown'}`,
+    );
+    if (isUnseedable(failure)) {
+      this.noteUnseedable(ctx, repo);
+      return 'unseedable';
+    }
+    if (failure === 'rate_limited') ctx.stopForBudget = true;
+    return 'failed';
+  }
+
+  private noteUnseedable(ctx: RunContext, repo: string): void {
+    ctx.counters.reposUnseedable++;
+    ctx.unseedable.push(repo);
   }
 
   private async seedRepo(
     ctx: RunContext,
     repo: string,
     connection: Connection,
-  ): Promise<boolean> {
+  ): Promise<SeedOutcome> {
+    if (ctx.stopForBudget) return 'budget';
     const token = await this.collectorToken(ctx, connection);
-    const [branch, refs] = [
-      await this.client.getDefaultBranch(repo, token),
-      await this.client.listHeadRefs(repo, token),
-    ];
-    if (!branch.name || !refs.tips) {
-      this.logger.warn(
-        `[tenant ${ctx.tenantId}] could not seed ${repo}: ${branch.failure ?? refs.failure ?? 'unknown'}`,
-      );
-      return false;
-    }
+    const branch = await this.client.getDefaultBranch(repo, token);
+    this.chargeCore(ctx, branch.rateLimit);
+    if (!branch.name) return this.seedFailure(ctx, repo, branch.failure);
+    if (ctx.stopForBudget) return 'budget';
+    const refs = await this.client.listHeadRefs(repo, token);
+    this.chargeCore(ctx, refs.rateLimit);
+    if (!refs.tips) return this.seedFailure(ctx, repo, refs.failure);
     const rows = [
       { ref: DEFAULT_BRANCH_MARKER, sha: branch.name },
       ...[...refs.tips].map(([ref, sha]) => ({ ref, sha })),
@@ -460,7 +619,7 @@ export class GithubAuditSyncService {
       });
       await tx.githubRefTip.createMany({ data: rows });
     });
-    return true;
+    return 'seeded';
   }
 
   private async discover(
@@ -488,7 +647,10 @@ export class GithubAuditSyncService {
 
     const pushes = dedupePushes(audit.events);
     counters.uniquePushes = pushes.length;
-    counters.compareCandidatesNaive = pushes.length;
+    // `compareCandidatesNaive` ("one Compare per push") is accumulated in
+    // planRepo, only for repos that were registered AND already seeded at
+    // plan time — unregistered and seed-only repos could never be Compared,
+    // so counting them would overstate `compareRequestsSaved`.
 
     const touched = [...pushesByRepo(pushes).entries()].filter(([repo]) => {
       if (ctx.repos.has(repo)) return true;
@@ -543,17 +705,31 @@ export class GithubAuditSyncService {
     const marker = stored.find((t) => t.ref === DEFAULT_BRANCH_MARKER);
     if (!marker) {
       // Never seen: seed only. Its first push stays with the existing routes (spec §10).
-      const ok = await this.seedRepo(ctx, repo, connection);
-      if (ok) ctx.counters.reposSeeded++;
-      return ok ? { ok: true } : { ok: false, error: 'seed failed' };
+      const outcome = await this.seedRepo(ctx, repo, connection);
+      if (outcome === 'seeded') ctx.counters.reposSeeded++;
+      if (outcome === 'seeded' || outcome === 'unseedable') return { ok: true };
+      return {
+        ok: false,
+        error: outcome === 'budget' ? BUDGET_NOT_PLANNED : 'seed failed',
+      };
     }
+    // Not listed → not planned: the window must be re-read, so this holds
+    // the checkpoint (the reason lands in run.error via discover()).
+    if (ctx.stopForBudget) return { ok: false, error: BUDGET_NOT_PLANNED };
     const token = await this.collectorToken(ctx, connection);
     const refs = await this.client.listHeadRefs(repo, token);
+    this.chargeCore(ctx, refs.rateLimit);
     if (!refs.tips) {
+      if (isUnseedable(refs.failure)) {
+        // Deleted / renamed / access revoked: nothing to plan, ever — skip it
+        // rather than hold the checkpoint for every other repo.
+        this.noteUnseedable(ctx, repo);
+        return { ok: true };
+      }
+      if (refs.failure === 'rate_limited') ctx.stopForBudget = true;
       return { ok: false, error: refs.failure ?? 'failed' };
     }
-    ctx.counters.coreRateRemaining =
-      refs.rateLimit?.remaining ?? ctx.counters.coreRateRemaining;
+    ctx.counters.compareCandidatesNaive += documentIds.length;
 
     const diff = diffTips(
       repo,
@@ -666,6 +842,25 @@ export class GithubAuditSyncService {
     const connection = [...ctx.repos.values()].find(
       (c) => c.id === range.connectionId,
     );
+    // Declared before `fail` and outside the try so a `finally` can flush
+    // them to ctx.counters on EVERY exit path (success, budget stop,
+    // detail-missing failure, or a thrown exception) — a mid-range throw must
+    // never drop the commits already ingested before it (review round 1,
+    // issue 3) — and so every partial exit also writes the per-SHA evidence
+    // processed so far onto the range (final review I-2).
+    let alreadyPresent = 0;
+    let ingested = 0;
+    let commitsFound: number | undefined;
+    const outcomes: CommitOutcome[] = [];
+    const progress = () =>
+      commitsFound === undefined
+        ? {}
+        : {
+            commitsFound,
+            alreadyPresent,
+            ingested,
+            commitOutcomes: outcomes,
+          };
     const fail = async (message: string) => {
       const attempts = range.attempts + 1;
       const failed = attempts >= ctx.cfg.maxRangeAttempts;
@@ -676,6 +871,7 @@ export class GithubAuditSyncService {
           attempts,
           status: failed ? 'failed' : 'pending',
           lastError: message.slice(0, 500),
+          ...progress(),
         },
       });
     };
@@ -687,12 +883,6 @@ export class GithubAuditSyncService {
       );
       return;
     }
-    // Declared outside the try so a `finally` can flush them to ctx.counters
-    // on EVERY exit path (success, budget stop, detail-missing failure, or a
-    // thrown exception) — a mid-range throw must never drop the commits
-    // already ingested before it (review round 1, issue 3).
-    let alreadyPresent = 0;
-    let ingested = 0;
     try {
       const token = await this.collectorToken(ctx, connection);
       const compared = await this.compareRange(ctx, range, token);
@@ -708,8 +898,7 @@ export class GithubAuditSyncService {
       ctx.counters.comparePages += compared.pages;
       ctx.counters.commitsDiscovered += compared.commits.length;
       if (compared.truncated) ctx.counters.truncatedRanges++;
-      ctx.counters.coreRateRemaining =
-        compared.rateLimit?.remaining ?? ctx.counters.coreRateRemaining;
+      commitsFound = compared.commits.length;
 
       // Run-level `core` budget estimate (review round 1, issue 1): refresh
       // from the latest reading, then charge this Compare's own pages so a
@@ -717,13 +906,7 @@ export class GithubAuditSyncService {
       // the per-commit detail calls below. Concurrent ranges share `ctx`, so
       // one range crossing zero stops every other range's next detail call
       // too, not just its own.
-      if (compared.rateLimit) {
-        ctx.coreBudget = compared.rateLimit.remaining - rateReserve();
-      }
-      if (ctx.coreBudget !== undefined) {
-        ctx.coreBudget -= compared.pages;
-        if (ctx.coreBudget <= 0) ctx.stopForBudget = true;
-      }
+      this.chargeCore(ctx, compared.rateLimit, compared.pages);
 
       let detailFailure: string | undefined;
       let stoppedForBudget = false;
@@ -732,6 +915,7 @@ export class GithubAuditSyncService {
         const key = commitIdempotencyKey(range.repoFullName, c.sha);
         if (ctx.seenKeys.has(key)) {
           alreadyPresent++;
+          outcomes.push({ sha: c.sha, outcome: 'alreadyPresent' });
           continue;
         }
         if (ctx.cfg.mode === 'shadow') {
@@ -754,8 +938,10 @@ export class GithubAuditSyncService {
           });
           if (existing) {
             alreadyPresent++;
+            outcomes.push({ sha: c.sha, outcome: 'alreadyPresent' });
           } else {
             ctx.counters.wouldIngest++;
+            outcomes.push({ sha: c.sha, outcome: 'wouldIngest' });
           }
           continue;
         }
@@ -780,6 +966,7 @@ export class GithubAuditSyncService {
         if (existing) {
           ctx.seenKeys.add(key);
           alreadyPresent++;
+          outcomes.push({ sha: c.sha, outcome: 'alreadyPresent' });
           continue;
         }
         if (ctx.stopForBudget) {
@@ -851,8 +1038,13 @@ export class GithubAuditSyncService {
         // getCommitDetail for the same commit — accepted cost; ingestion's
         // idempotency key keeps the data correct either way.
         ctx.seenKeys.add(key);
-        if (result.status === 'accepted') ingested++;
-        else alreadyPresent++;
+        if (result.status === 'accepted') {
+          ingested++;
+          outcomes.push({ sha: c.sha, outcome: 'ingested' });
+        } else {
+          alreadyPresent++;
+          outcomes.push({ sha: c.sha, outcome: 'alreadyPresent' });
+        }
         if (detail.rateLimitedUntil) ctx.stopForBudget = true;
       }
 
@@ -861,8 +1053,13 @@ export class GithubAuditSyncService {
         return;
       }
       if (stoppedForBudget) {
-        // Leave the range pending for the next run; partial counts are
-        // still flushed below via `finally`.
+        // Leave the range pending for the next run (no attempt burned), but
+        // record what was processed so far; the run counters are flushed
+        // below via `finally`.
+        await this.prisma.githubPushRange.update({
+          where: { id: range.id },
+          data: progress(),
+        });
         return;
       }
 
@@ -870,9 +1067,7 @@ export class GithubAuditSyncService {
         where: { id: range.id },
         data: {
           status: ctx.cfg.mode === 'shadow' ? 'shadowed' : 'done',
-          commitsFound: compared.commits.length,
-          alreadyPresent,
-          ingested,
+          ...progress(),
           truncated: compared.truncated,
           lastError: null,
         },

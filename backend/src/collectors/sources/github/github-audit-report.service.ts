@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { istDayEnd, istDayStart } from '../../../common/time';
 import { PrismaService } from '../../../database/prisma.service';
-import { AuditRunCounters, emptyCounters } from './github-audit-sync.service';
+import {
+  AuditRunCounters,
+  CommitOutcome,
+  emptyCounters,
+} from './github-audit-sync.service';
 
 export interface AuditDayReport {
   day: string;
@@ -17,6 +21,22 @@ export interface AuditDayReport {
   };
   repositoriesAffected: number;
   branchesAffected: number;
+  /**
+   * Every range created that IST day with the SHAs it processed and each
+   * one's outcome — in shadow mode this is the list to compare against
+   * ground truth (spec §9 step 3), since nothing is ingested.
+   */
+  rangeDetails: Array<{
+    repoFullName: string;
+    ref: string;
+    kind: string;
+    baseSha: string | null;
+    baseRef: string | null;
+    headSha: string | null;
+    status: string;
+    truncated: boolean;
+    commitOutcomes: CommitOutcome[];
+  }>;
   auditCommits: Array<{
     repoFullName: string;
     sha: string;
@@ -93,6 +113,19 @@ export class GithubAuditReportService {
       repositoriesAffected: new Set(ranges.map((r) => r.repoFullName)).size,
       branchesAffected: new Set(ranges.map((r) => `${r.repoFullName}:${r.ref}`))
         .size,
+      rangeDetails: ranges.map((r) => ({
+        repoFullName: r.repoFullName,
+        ref: r.ref,
+        kind: r.kind,
+        baseSha: r.baseSha,
+        baseRef: r.baseRef,
+        headSha: r.headSha,
+        status: r.status,
+        truncated: r.truncated,
+        commitOutcomes: Array.isArray(r.commitOutcomes)
+          ? (r.commitOutcomes as unknown as CommitOutcome[])
+          : [],
+      })),
       auditCommits: raw.map((r) => {
         const env = r.envelope as {
           externalRefs?: Record<string, string>;

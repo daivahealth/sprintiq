@@ -12,6 +12,7 @@ CREATE TABLE "collectors_github_audit_checkpoint" (
     "lastRunAt" TIMESTAMP(3),
     "lastStatus" TEXT,
     "lastError" TEXT,
+    "runningSince" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     CONSTRAINT "collectors_github_audit_checkpoint_pkey" PRIMARY KEY ("id")
@@ -51,6 +52,7 @@ CREATE TABLE "collectors_github_push_range" (
     "alreadyPresent" INTEGER NOT NULL DEFAULT 0,
     "ingested" INTEGER NOT NULL DEFAULT 0,
     "truncated" BOOLEAN NOT NULL DEFAULT false,
+    "commitOutcomes" JSONB,
     "lastError" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
