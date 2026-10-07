@@ -469,4 +469,45 @@ describe('executePending', () => {
     const r = await svc.runTenant('t1', SHADOW, NOW);
     expect(r.counters).toMatchObject({ wouldIngest: 1, alreadyPresent: 1 });
   });
+
+  it('does not strand a commit a sibling range can still ingest: claiming happens only after ingest succeeds', async () => {
+    const { prisma, ingestion, client, svc } = setup();
+    const r1 = addRange(prisma, { ref: 'range-one', headSha: 'h1' });
+    const r2 = addRange(prisma, { ref: 'range-two', headSha: 'h2' });
+    client.compareAll.mockResolvedValue({
+      commits: [commit('stranded', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    // Range 1's detail call for 'stranded' comes back with no stats (not a
+    // rate limit), failing range 1's attempt before it ever reaches
+    // ingestion.ingest; range 2's call for the same commit gets stats and
+    // succeeds.
+    client.getCommitDetail.mockResolvedValueOnce({}).mockResolvedValue({
+      additions: 10,
+      deletions: 2,
+      filesChanged: 3,
+      committedAt: '2026-09-25T09:01:00Z',
+    });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      GITHUB_AUDIT_COMPARE_CONCURRENCY: '1',
+    });
+    const r = await svc.runTenant('t1', cfg, NOW);
+
+    const commitCalls = ingestion.ingest.mock.calls.filter(
+      (c) => c[1].eventType === 'code.commit.pushed',
+    );
+    expect(commitCalls).toHaveLength(1);
+    expect(commitCalls[0][1].externalRefs).toMatchObject({
+      pushRangeId: r2.id,
+    });
+    expect(
+      prisma.githubPushRange.rows.find((x) => x.id === r1.id),
+    ).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(
+      prisma.githubPushRange.rows.find((x) => x.id === r2.id),
+    ).toMatchObject({ status: 'done', ingested: 1 });
+    expect(r.counters.ingested).toBe(1);
+  });
 });

@@ -734,11 +734,40 @@ export class GithubAuditSyncService {
           alreadyPresent++;
           continue;
         }
-        // Claimed synchronously, before any `await` below, so a concurrent
-        // range resolving the same commit sees it immediately instead of
-        // racing to double-count it as `wouldIngest` or issue a second
-        // detail call for it (review round 1, issue 5).
-        ctx.seenKeys.add(key);
+        if (ctx.cfg.mode === 'shadow') {
+          // Shadow mode can never fail after this point, so — exactly as in
+          // review round 1 — the key is claimed synchronously, before the
+          // `rawEvent` lookup's `await` below, so a concurrent shadow range
+          // resolving the same commit always sees the claim rather than
+          // racing it (claiming AFTER that `await`, like ingest mode now
+          // does, would reopen the round-1 race here, since both ranges
+          // could then pass the lookup before either claims).
+          ctx.seenKeys.add(key);
+          const existing = await this.prisma.rawEvent.findUnique({
+            where: {
+              tenantId_idempotencyKey: {
+                tenantId: ctx.tenantId,
+                idempotencyKey: key,
+              },
+            },
+            select: { id: true },
+          });
+          if (existing) {
+            alreadyPresent++;
+          } else {
+            ctx.counters.wouldIngest++;
+          }
+          continue;
+        }
+
+        // Ingest mode: the key is deliberately NOT claimed yet. It is
+        // claimed below only once the outcome is known to be final — either
+        // "already present" (a completed fact) or "ingestion.ingest actually
+        // returned" — never while the commit might still fail to be
+        // ingested by this range (review round 2: claiming any earlier, as
+        // round 1's ruling had it, stranded a commit forever if this range
+        // then hit a budget stop, a stats-less detail call, or a thrown
+        // exception before ingesting it, and had no attempts left).
         const existing = await this.prisma.rawEvent.findUnique({
           where: {
             tenantId_idempotencyKey: {
@@ -749,14 +778,13 @@ export class GithubAuditSyncService {
           select: { id: true },
         });
         if (existing) {
+          ctx.seenKeys.add(key);
           alreadyPresent++;
           continue;
         }
-        if (ctx.cfg.mode === 'shadow') {
-          ctx.counters.wouldIngest++;
-          continue;
-        }
         if (ctx.stopForBudget) {
+          // NOT claimed: this commit was never ingested, so a sibling range
+          // or the next run must still be free to pick it up.
           stoppedForBudget = true;
           break;
         }
@@ -812,6 +840,17 @@ export class GithubAuditSyncService {
             },
           }),
         );
+        // Claimed only now, after ingestion.ingest has actually returned
+        // (accepted or duplicate) — never before. A commit that failed
+        // above (budget stop, detail failure, or a thrown exception) is
+        // thus never marked seen, so a sibling range or the next run can
+        // still ingest it (review round 2; claiming it synchronously at
+        // the top of the loop, per round 1's ruling, could strand it
+        // forever if this range then failed or ran out of attempts).
+        // Two concurrent ranges may now occasionally both call
+        // getCommitDetail for the same commit — accepted cost; ingestion's
+        // idempotency key keeps the data correct either way.
+        ctx.seenKeys.add(key);
         if (result.status === 'accepted') ingested++;
         else alreadyPresent++;
         if (detail.rateLimitedUntil) ctx.stopForBudget = true;
