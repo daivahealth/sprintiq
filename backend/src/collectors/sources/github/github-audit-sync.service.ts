@@ -1,0 +1,610 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Connection } from '@prisma/client';
+import { forEachBounded } from '../../../common/concurrency';
+import { EventTypes } from '../../../common/events/event-types';
+import { newId } from '../../../common/id';
+import { SecretsService } from '../../../common/secrets/secrets.service';
+import { PrismaService } from '../../../database/prisma.service';
+import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
+import { IngestionService } from '../../ingestion/ingestion.service';
+import {
+  GithubAuditConfig,
+  readGithubAuditConfig,
+} from './github-audit.config';
+import {
+  GitPushAuditEvent,
+  GithubAuditLogClient,
+} from './github-audit-log.client';
+import {
+  countRanges,
+  DEFAULT_BRANCH_MARKER,
+  dedupePushes,
+  diffTips,
+  pushesByRepo,
+} from './github-audit-push-planner';
+import { GithubClient } from './github.client';
+
+export interface AuditRunCounters {
+  reposSeeded: number;
+  auditPages: number;
+  auditNextTraversals: number;
+  auditEvents: number;
+  uniquePushes: number;
+  reposTouched: number;
+  reposUnregistered: number;
+  refsMoved: number;
+  refsNew: number;
+  refsDeleted: number;
+  compareCandidatesNaive: number;
+  compareRequestsPlanned: number;
+  compareRequestsSaved: number;
+  compareRequestsExecuted: number;
+  comparePages: number;
+  commitsDiscovered: number;
+  alreadyPresent: number;
+  ingested: number;
+  wouldIngest: number;
+  commitsWithoutLogin: number;
+  truncatedRanges: number;
+  failedRanges: number;
+  pendingRanges: number;
+  auditRateRemaining?: number;
+  coreRateRemaining?: number;
+}
+
+export interface AuditRunSummary {
+  tenantId: string;
+  runId?: string;
+  status: 'skipped' | 'seeded' | 'success' | 'partial' | 'failed';
+  reason?: string;
+  counters: AuditRunCounters;
+  windowFrom?: Date;
+  checkpointAt?: Date;
+  durationMs: number;
+}
+
+export interface RunContext {
+  tenantId: string;
+  runId: string;
+  cfg: GithubAuditConfig;
+  counters: AuditRunCounters;
+  now: Date;
+  organization: string;
+  auditToken: string;
+  repos: Map<string, Connection>;
+  tokens: Map<string, string>;
+  stopForBudget: boolean;
+}
+
+/** Git events live 7 days (spec F6); warn a day before the window is lost. */
+export const RETENTION_RISK_MS = 6 * 86_400_000;
+
+export function emptyCounters(): AuditRunCounters {
+  return {
+    reposSeeded: 0,
+    auditPages: 0,
+    auditNextTraversals: 0,
+    auditEvents: 0,
+    uniquePushes: 0,
+    reposTouched: 0,
+    reposUnregistered: 0,
+    refsMoved: 0,
+    refsNew: 0,
+    refsDeleted: 0,
+    compareCandidatesNaive: 0,
+    compareRequestsPlanned: 0,
+    compareRequestsSaved: 0,
+    compareRequestsExecuted: 0,
+    comparePages: 0,
+    commitsDiscovered: 0,
+    alreadyPresent: 0,
+    ingested: 0,
+    wouldIngest: 0,
+    commitsWithoutLogin: 0,
+    truncatedRanges: 0,
+    failedRanges: 0,
+    pendingRanges: 0,
+  };
+}
+
+/**
+ * Third commit-discovery route (BC-1, ADR-0010): org audit log → touched repos
+ * → branch-tip diff → Compare → the ordinary ingestion pipeline.
+ *
+ * The audit log is the change DETECTOR (which repos were pushed to, by whom,
+ * when); it cannot say which ref or SHAs (spec F2), so the ranges come from
+ * diffing branch tips. The checkpoint moves only once a window's complete
+ * audit set is fetched AND its work is durably queued, so a failure anywhere
+ * before that re-reads the window, and a failure after it is a retry of a
+ * persisted range — never lost data (spec §4.5).
+ */
+@Injectable()
+export class GithubAuditSyncService {
+  private readonly logger = new Logger(GithubAuditSyncService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly secrets: SecretsService,
+    private readonly ingestion: IngestionService,
+    private readonly auditClient: GithubAuditLogClient,
+    private readonly client: GithubClient,
+  ) {}
+
+  /** Tenants with an active GitHub configuration that names an audit-log token ref. */
+  async listEnabledTenants(): Promise<string[]> {
+    const rows = await this.prisma.tenantConfiguration.findMany({
+      where: { namespace: 'github', key: 'default', status: 'active' },
+      select: { tenantId: true, secretRefs: true },
+    });
+    return rows
+      .filter(
+        (r) =>
+          typeof (r.secretRefs as Record<string, unknown> | null)
+            ?.auditLogTokenRef === 'string',
+      )
+      .map((r) => r.tenantId);
+  }
+
+  async runTenant(
+    tenantId: string,
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+    now: Date = new Date(),
+  ): Promise<AuditRunSummary> {
+    const startedMs = Date.now();
+    const counters = emptyCounters();
+    const skipped = (reason: string): AuditRunSummary => ({
+      tenantId,
+      status: 'skipped',
+      reason,
+      counters,
+      durationMs: Date.now() - startedMs,
+    });
+    if (cfg.mode === 'off') {
+      return skipped('GITHUB_AUDIT_SYNC_MODE is off.');
+    }
+    const settings = await this.loadSettings(tenantId);
+    if ('reason' in settings) {
+      return skipped(settings.reason);
+    }
+
+    const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+      where: { tenantId },
+    });
+    const run = await this.prisma.githubAuditRun.create({
+      data: {
+        id: newId(),
+        tenantId,
+        mode: cfg.mode,
+        startedAt: now,
+        status: 'running',
+        counters: {},
+      },
+    });
+    const ctx: RunContext = {
+      tenantId,
+      runId: run.id,
+      cfg,
+      counters,
+      now,
+      organization: settings.organization,
+      auditToken: settings.auditToken,
+      repos: await this.registeredRepos(tenantId),
+      tokens: new Map(),
+      stopForBudget: false,
+    };
+
+    let status: AuditRunSummary['status'] = 'success';
+    let error: string | undefined;
+    let windowFrom: Date | undefined;
+    let checkpointAt = checkpoint?.checkpointAt ?? undefined;
+
+    try {
+      if (!checkpoint?.seededAt) {
+        const allSeeded = await this.seedAll(ctx);
+        if (allSeeded) {
+          await this.prisma.githubAuditCheckpoint.upsert({
+            where: { tenantId },
+            create: {
+              id: newId(),
+              tenantId,
+              organization: ctx.organization,
+              seededAt: now,
+              checkpointAt: now,
+            },
+            update: {
+              organization: ctx.organization,
+              seededAt: now,
+              checkpointAt: now,
+            },
+          });
+          checkpointAt = now;
+          status = 'seeded';
+        } else {
+          status = 'partial';
+          error =
+            'Some repositories could not be seeded; they are retried next run before discovery starts.';
+        }
+      } else {
+        const from = checkpoint.checkpointAt ?? checkpoint.seededAt;
+        windowFrom = new Date(from.getTime() - cfg.overlapMinutes * 60_000);
+        const discovered = await this.discover(ctx, windowFrom);
+        if (discovered.ok) {
+          await this.prisma.githubAuditCheckpoint.update({
+            where: { tenantId },
+            data: { checkpointAt: now },
+          });
+          checkpointAt = now;
+        } else {
+          status = 'failed';
+          error = discovered.error;
+        }
+      }
+    } catch (err) {
+      status = 'failed';
+      error = (err as Error).message.slice(0, 500);
+    }
+
+    if (
+      checkpointAt &&
+      now.getTime() - checkpointAt.getTime() > RETENTION_RISK_MS
+    ) {
+      const warning = `Retention risk: the audit checkpoint is ${Math.round((now.getTime() - checkpointAt.getTime()) / 3_600_000)}h old and GitHub keeps git events for 7 days.`;
+      this.logger.error(`[tenant ${tenantId}] ${warning}`);
+      error = error ? `${warning} ${error}` : warning;
+    }
+
+    await this.prisma.githubAuditRun.update({
+      where: { id: run.id },
+      data: {
+        finishedAt: new Date(),
+        status,
+        error: error ?? null,
+        windowFrom: windowFrom ?? null,
+        windowTo: windowFrom ? now : null,
+        counters: counters as unknown as object,
+      },
+    });
+    await this.prisma.githubAuditCheckpoint.updateMany({
+      where: { tenantId },
+      data: { lastRunAt: now, lastStatus: status, lastError: error ?? null },
+    });
+
+    const durationMs = Date.now() - startedMs;
+    this.logger.log(
+      `github audit sync tenant=${tenantId} mode=${cfg.mode} status=${status} ` +
+        Object.entries(counters)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ') +
+        ` durationMs=${durationMs}`,
+    );
+    return {
+      tenantId,
+      runId: run.id,
+      status,
+      reason: error,
+      counters,
+      windowFrom,
+      checkpointAt,
+      durationMs,
+    };
+  }
+
+  private async loadSettings(
+    tenantId: string,
+  ): Promise<
+    { organization: string; auditToken: string } | { reason: string }
+  > {
+    const config = await this.prisma.tenantConfiguration.findUnique({
+      where: {
+        tenantId_namespace_key: {
+          tenantId,
+          namespace: 'github',
+          key: 'default',
+        },
+      },
+    });
+    const values = (config?.values ?? {}) as Record<string, unknown>;
+    const refs = (config?.secretRefs ?? {}) as Record<string, unknown>;
+    if (
+      !config ||
+      config.status !== 'active' ||
+      typeof values.organization !== 'string'
+    ) {
+      return {
+        reason: 'GitHub is not configured (organization, saved as active).',
+      };
+    }
+    if (typeof refs.auditLogTokenRef !== 'string') {
+      return {
+        reason: 'No audit-log token secret ref is configured for GitHub.',
+      };
+    }
+    const auditToken = await this.secrets.resolve(
+      tenantId,
+      refs.auditLogTokenRef,
+    );
+    if (!auditToken) {
+      return {
+        reason: `No value is stored for audit-log token ref "${refs.auditLogTokenRef}".`,
+      };
+    }
+    return { organization: values.organization, auditToken };
+  }
+
+  private async registeredRepos(
+    tenantId: string,
+  ): Promise<Map<string, Connection>> {
+    const connections = await this.prisma.connection.findMany({
+      where: { tenantId, sourceSystem: 'github', status: 'active' },
+    });
+    const byRepo = new Map<string, Connection>();
+    for (const c of connections) {
+      const repo = (c.config as { repoFullName?: string } | null)?.repoFullName;
+      if (repo) byRepo.set(repo, c);
+    }
+    return byRepo;
+  }
+
+  /** The collector's own token for a repo (never the audit token), cached per secret ref for this run. */
+  protected async collectorToken(
+    ctx: RunContext,
+    connection: Connection,
+  ): Promise<string> {
+    const ref = connection.secretRef ?? '';
+    if (!ctx.tokens.has(ref)) {
+      ctx.tokens.set(
+        ref,
+        await this.secrets.resolve(ctx.tenantId, connection.secretRef),
+      );
+    }
+    return ctx.tokens.get(ref) ?? '';
+  }
+
+  /** One-off pass storing every repo's tips; repos already seeded are skipped. */
+  private async seedAll(ctx: RunContext): Promise<boolean> {
+    const markers = await this.prisma.githubRefTip.findMany({
+      where: { tenantId: ctx.tenantId, ref: DEFAULT_BRANCH_MARKER },
+    });
+    const done = new Set(markers.map((m) => m.repoFullName));
+    let allOk = true;
+    const todo = [...ctx.repos.entries()].filter(([repo]) => !done.has(repo));
+    await forEachBounded(
+      todo,
+      ctx.cfg.compareConcurrency,
+      async ([repo, connection]) => {
+        const ok = await this.seedRepo(ctx, repo, connection);
+        if (ok) ctx.counters.reposSeeded++;
+        else allOk = false;
+      },
+    );
+    return allOk;
+  }
+
+  private async seedRepo(
+    ctx: RunContext,
+    repo: string,
+    connection: Connection,
+  ): Promise<boolean> {
+    const token = await this.collectorToken(ctx, connection);
+    const [branch, refs] = [
+      await this.client.getDefaultBranch(repo, token),
+      await this.client.listHeadRefs(repo, token),
+    ];
+    if (!branch.name || !refs.tips) {
+      this.logger.warn(
+        `[tenant ${ctx.tenantId}] could not seed ${repo}: ${branch.failure ?? refs.failure ?? 'unknown'}`,
+      );
+      return false;
+    }
+    const rows = [
+      { ref: DEFAULT_BRANCH_MARKER, sha: branch.name },
+      ...[...refs.tips].map(([ref, sha]) => ({ ref, sha })),
+    ].map((t) => ({
+      id: newId(),
+      tenantId: ctx.tenantId,
+      repoFullName: repo,
+      seenAt: ctx.now,
+      ...t,
+    }));
+    await this.prisma.$transaction(async (tx) => {
+      await tx.githubRefTip.deleteMany({
+        where: { tenantId: ctx.tenantId, repoFullName: repo },
+      });
+      await tx.githubRefTip.createMany({ data: rows });
+    });
+    return true;
+  }
+
+  private async discover(
+    ctx: RunContext,
+    windowFrom: Date,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const { counters } = ctx;
+    const audit = await this.auditClient.listGitPushes(
+      ctx.organization,
+      ctx.auditToken,
+      windowFrom,
+      ctx.cfg.pageSize,
+      ctx.cfg.maxPages,
+    );
+    counters.auditPages = audit.pages;
+    if (audit.status !== 'complete') {
+      return {
+        ok: false,
+        error: `Audit log ${audit.status}: ${audit.message}`,
+      };
+    }
+    counters.auditNextTraversals = audit.nextTraversals;
+    counters.auditEvents = audit.events.length;
+    counters.auditRateRemaining = audit.rateLimitRemaining;
+
+    const pushes = dedupePushes(audit.events);
+    counters.uniquePushes = pushes.length;
+    counters.compareCandidatesNaive = pushes.length;
+
+    const touched = [...pushesByRepo(pushes).entries()].filter(([repo]) => {
+      if (ctx.repos.has(repo)) return true;
+      counters.reposUnregistered++;
+      return false;
+    });
+    counters.reposTouched = touched.length;
+
+    const failures: string[] = [];
+    await forEachBounded(
+      touched,
+      ctx.cfg.compareConcurrency,
+      async ([repo, events]) => {
+        const connection = ctx.repos.get(repo) as Connection;
+        for (const e of events) {
+          await this.ingestion.ingest(
+            ctx.tenantId,
+            pushEnvelope(connection.id, e, ctx.now),
+          );
+        }
+        const planned = await this.planRepo(
+          ctx,
+          repo,
+          connection,
+          events.map((e) => e.documentId),
+        );
+        if (!planned.ok) failures.push(`${repo}: ${planned.error}`);
+      },
+    );
+    counters.compareRequestsSaved = Math.max(
+      0,
+      counters.compareCandidatesNaive - counters.compareRequestsPlanned,
+    );
+
+    return failures.length === 0
+      ? { ok: true }
+      : {
+          ok: false,
+          error: `Could not list branches for ${failures.length} repo(s): ${failures.slice(0, 5).join('; ')}`,
+        };
+  }
+
+  private async planRepo(
+    ctx: RunContext,
+    repo: string,
+    connection: Connection,
+    documentIds: string[],
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const stored = await this.prisma.githubRefTip.findMany({
+      where: { tenantId: ctx.tenantId, repoFullName: repo },
+    });
+    const marker = stored.find((t) => t.ref === DEFAULT_BRANCH_MARKER);
+    if (!marker) {
+      // Never seen: seed only. Its first push stays with the existing routes (spec §10).
+      const ok = await this.seedRepo(ctx, repo, connection);
+      if (ok) ctx.counters.reposSeeded++;
+      return ok ? { ok: true } : { ok: false, error: 'seed failed' };
+    }
+    const token = await this.collectorToken(ctx, connection);
+    const refs = await this.client.listHeadRefs(repo, token);
+    if (!refs.tips) {
+      return { ok: false, error: refs.failure ?? 'failed' };
+    }
+    ctx.counters.coreRateRemaining =
+      refs.rateLimit?.remaining ?? ctx.counters.coreRateRemaining;
+
+    const diff = diffTips(
+      repo,
+      new Map(
+        stored
+          .filter((t) => t.ref !== DEFAULT_BRANCH_MARKER)
+          .map((t) => [t.ref, t.sha]),
+      ),
+      refs.tips,
+      marker.sha,
+    );
+    const c = countRanges(diff.ranges);
+    ctx.counters.compareRequestsPlanned += c.compareRequestsPlanned;
+    ctx.counters.refsMoved += c.refsMoved;
+    ctx.counters.refsNew += c.refsNew;
+    ctx.counters.refsDeleted += c.refsDeleted;
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const r of diff.ranges) {
+        await tx.githubPushRange.create({
+          data: {
+            id: newId(),
+            tenantId: ctx.tenantId,
+            runId: ctx.runId,
+            connectionId: connection.id,
+            repoFullName: repo,
+            ref: r.ref,
+            baseSha: r.baseSha ?? null,
+            baseRef: r.baseRef ?? null,
+            headSha: r.headSha ?? null,
+            kind: r.kind,
+            auditDocumentIds: documentIds,
+            status: r.kind === 'deleted' ? 'done' : 'pending',
+          },
+        });
+      }
+      for (const u of diff.upserts) {
+        await tx.githubRefTip.upsert({
+          where: {
+            tenantId_repoFullName_ref: {
+              tenantId: ctx.tenantId,
+              repoFullName: repo,
+              ref: u.ref,
+            },
+          },
+          create: {
+            id: newId(),
+            tenantId: ctx.tenantId,
+            repoFullName: repo,
+            ref: u.ref,
+            sha: u.sha,
+            seenAt: ctx.now,
+          },
+          update: { sha: u.sha, seenAt: ctx.now },
+        });
+      }
+      if (diff.deletes.length > 0) {
+        await tx.githubRefTip.deleteMany({
+          where: {
+            tenantId: ctx.tenantId,
+            repoFullName: repo,
+            ref: { in: diff.deletes },
+          },
+        });
+      }
+    });
+    return { ok: true };
+  }
+}
+
+/**
+ * One observed push, kept in the raw-event store (not a second store) so the
+ * audit evidence outlives GitHub's 7-day retention. No subscriber projects it;
+ * it is lineage. Network/token fields were already dropped by the client.
+ */
+export function pushEnvelope(
+  connectionId: string,
+  e: GitPushAuditEvent,
+  now: Date,
+): CanonicalEnvelope {
+  return {
+    schemaVersion: '1.0',
+    eventId: newId(),
+    idempotencyKey: `github:audit:${e.documentId}`,
+    sourceSystem: 'github',
+    connectionId,
+    collectionMode: 'poll',
+    eventType: EventTypes.CODE_PUSH_OBSERVED,
+    occurredAt: e.timestamp.toISOString(),
+    collectedAt: now.toISOString(),
+    externalRefs: { repo: e.repoFullName, auditDocumentId: e.documentId },
+    actor: { sourceLogin: e.actor },
+    data: {
+      repoFullName: e.repoFullName,
+      pushedAt: e.timestamp.toISOString(),
+      actor: e.actor,
+      externalIdentityUsername: e.externalIdentityUsername,
+      programmaticAccessType: e.programmaticAccessType,
+      transportProtocolName: e.transportProtocolName,
+    },
+  };
+}
