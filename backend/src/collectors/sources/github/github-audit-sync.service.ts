@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Connection } from '@prisma/client';
+import { Connection, GithubPushRange } from '@prisma/client';
 import { forEachBounded } from '../../../common/concurrency';
+import { CodeCommitPayload } from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
 import { SecretsService } from '../../../common/secrets/secrets.service';
@@ -22,7 +23,12 @@ import {
   diffTips,
   pushesByRepo,
 } from './github-audit-push-planner';
-import { GithubClient } from './github.client';
+import {
+  buildCommitEnvelope,
+  commitIdempotencyKey,
+} from './github-commit-envelope';
+import { evaluateBudget } from './github-rate-budget';
+import { GithubClient, GithubCompareResult } from './github.client';
 
 export interface AuditRunCounters {
   reposSeeded: number;
@@ -81,6 +87,9 @@ export const RETENTION_RISK_MS = 6 * 86_400_000;
 
 /** GitHub's actual git-event retention (spec F6) — past this, the audit log can no longer answer for the window. */
 const RETENTION_LOSS_MS = 7 * 86_400_000;
+
+/** Shadow-mode ranges younger than this are replayed when the mode becomes `ingest`. */
+export const SHADOW_REPLAY_MS = 7 * 86_400_000;
 
 export function emptyCounters(): AuditRunCounters {
   return {
@@ -261,6 +270,12 @@ export class GithubAuditSyncService {
           status = 'failed';
           error = discovered.error;
         }
+      }
+
+      // Independent of whether THIS window's discovery succeeded: ranges
+      // queued by earlier runs are retried regardless.
+      if (checkpoint?.seededAt) {
+        await this.executePending(ctx);
       }
     } catch (err) {
       status = 'failed';
@@ -601,6 +616,196 @@ export class GithubAuditSyncService {
       }
     });
     return { ok: true };
+  }
+
+  private async executePending(ctx: RunContext): Promise<void> {
+    const statuses =
+      ctx.cfg.mode === 'ingest' ? ['pending', 'shadowed'] : ['pending'];
+    const ranges = await this.prisma.githubPushRange.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        status: { in: statuses },
+        createdAt: { gte: new Date(ctx.now.getTime() - SHADOW_REPLAY_MS) },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    await forEachBounded(ranges, ctx.cfg.compareConcurrency, async (range) => {
+      if (ctx.stopForBudget) return;
+      await this.executeRange(ctx, range);
+    });
+    ctx.counters.pendingRanges = (
+      await this.prisma.githubPushRange.findMany({
+        where: { tenantId: ctx.tenantId, status: { in: ['pending'] } },
+      })
+    ).length;
+  }
+
+  private async executeRange(
+    ctx: RunContext,
+    range: GithubPushRange,
+  ): Promise<void> {
+    const connection = [...ctx.repos.values()].find(
+      (c) => c.id === range.connectionId,
+    );
+    const fail = async (message: string) => {
+      const attempts = range.attempts + 1;
+      const failed = attempts >= ctx.cfg.maxRangeAttempts;
+      if (failed) ctx.counters.failedRanges++;
+      await this.prisma.githubPushRange.update({
+        where: { id: range.id },
+        data: {
+          attempts,
+          status: failed ? 'failed' : 'pending',
+          lastError: message.slice(0, 500),
+        },
+      });
+    };
+    if (!connection || !range.headSha) {
+      await fail(
+        connection
+          ? 'Range has no head SHA.'
+          : 'Connection is no longer active.',
+      );
+      return;
+    }
+    try {
+      const token = await this.collectorToken(ctx, connection);
+      const compared = await this.compareRange(ctx, range, token);
+      if (compared.failure === 'rate_limited') {
+        ctx.stopForBudget = true;
+        return;
+      }
+      if (compared.failure) {
+        await fail(`Compare ${compared.failure}`);
+        return;
+      }
+      ctx.counters.compareRequestsExecuted++;
+      ctx.counters.comparePages += compared.pages;
+      ctx.counters.commitsDiscovered += compared.commits.length;
+      if (compared.truncated) ctx.counters.truncatedRanges++;
+      ctx.counters.coreRateRemaining =
+        compared.rateLimit?.remaining ?? ctx.counters.coreRateRemaining;
+
+      let alreadyPresent = 0;
+      let ingested = 0;
+      for (const c of compared.commits) {
+        if (!c.authorLogin) ctx.counters.commitsWithoutLogin++;
+        const key = commitIdempotencyKey(range.repoFullName, c.sha);
+        const existing = await this.prisma.rawEvent.findUnique({
+          where: {
+            tenantId_idempotencyKey: {
+              tenantId: ctx.tenantId,
+              idempotencyKey: key,
+            },
+          },
+          select: { id: true },
+        });
+        if (existing) {
+          alreadyPresent++;
+          continue;
+        }
+        if (ctx.cfg.mode === 'shadow') {
+          ctx.counters.wouldIngest++;
+          continue;
+        }
+        const detail = await this.client.getCommitDetail(
+          range.repoFullName,
+          token,
+          c.sha,
+        );
+        if (detail.rateLimitedUntil && detail.additions === undefined) {
+          // No stats to write and quota gone: leave the range pending. Commits
+          // already ingested above are dropped as duplicates on the retry.
+          ctx.stopForBudget = true;
+          ctx.counters.alreadyPresent += alreadyPresent;
+          ctx.counters.ingested += ingested;
+          return;
+        }
+        const payload: CodeCommitPayload = {
+          repoFullName: range.repoFullName,
+          sha: c.sha,
+          message: c.message,
+          authorLogin: c.authorLogin,
+          authorName: c.authorName,
+          authorEmail: c.authorEmail,
+          authoredAt: c.authoredAt ?? ctx.now.toISOString(),
+          committedAt: detail.committedAt ?? c.committedAt,
+          additions: detail.additions,
+          deletions: detail.deletions,
+          filesChanged: detail.filesChanged,
+          parentCount: c.parentCount,
+        };
+        const result = await this.ingestion.ingest(
+          ctx.tenantId,
+          buildCommitEnvelope({
+            connectionId: connection.id,
+            mode: 'poll',
+            repoFullName: range.repoFullName,
+            payload,
+            extraRefs: {
+              ref: range.ref,
+              discoveredBy: 'github-audit-compare',
+              pushRangeId: range.id,
+            },
+          }),
+        );
+        if (result.status === 'accepted') ingested++;
+        else alreadyPresent++;
+        if (detail.rateLimitedUntil) ctx.stopForBudget = true;
+      }
+      ctx.counters.alreadyPresent += alreadyPresent;
+      ctx.counters.ingested += ingested;
+      await this.prisma.githubPushRange.update({
+        where: { id: range.id },
+        data: {
+          status: ctx.cfg.mode === 'shadow' ? 'shadowed' : 'done',
+          commitsFound: compared.commits.length,
+          alreadyPresent,
+          ingested,
+          truncated: compared.truncated,
+          lastError: null,
+        },
+      });
+      if (evaluateBudget({ rateLimit: compared.rateLimit }).exhausted) {
+        ctx.stopForBudget = true;
+      }
+    } catch (err) {
+      await fail((err as Error).message);
+    }
+  }
+
+  /** Compare base...head; a `moved` range whose base is gone falls back to the default branch. */
+  private async compareRange(
+    ctx: RunContext,
+    range: GithubPushRange,
+    token: string,
+  ): Promise<GithubCompareResult> {
+    const base = range.baseSha ?? range.baseRef;
+    const head = range.headSha as string;
+    if (!base) {
+      return { commits: [], pages: 0, truncated: false, failure: 'failed' };
+    }
+    const first = await this.client.compareAll(
+      range.repoFullName,
+      token,
+      base,
+      head,
+    );
+    if (first.failure !== 'not_found' || range.kind !== 'moved') {
+      return first;
+    }
+    const marker = await this.prisma.githubRefTip.findUnique({
+      where: {
+        tenantId_repoFullName_ref: {
+          tenantId: ctx.tenantId,
+          repoFullName: range.repoFullName,
+          ref: DEFAULT_BRANCH_MARKER,
+        },
+      },
+    });
+    return marker
+      ? this.client.compareAll(range.repoFullName, token, marker.sha, head)
+      : first;
   }
 }
 
