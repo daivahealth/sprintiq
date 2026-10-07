@@ -333,6 +333,35 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
     expect(r.status).toBe('failed');
   });
 
+  it('flags retention risk on a SUCCESSFUL run too, measured against the checkpoint from before this run advanced it', async () => {
+    const { svc, prisma, audit } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 6.5 * 86_400_000,
+    );
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      events: [],
+      pages: 1,
+      nextTraversals: 0,
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('success');
+    expect(prisma.githubAuditRun.rows[0].error).toMatch(/retention/i);
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+  });
+
+  it('does not reject when loading registered repos throws, and does not leave a run row stuck', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.connection.findMany.mockRejectedValueOnce(new Error('db down'));
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(prisma.githubAuditRun.rows).toHaveLength(0);
+  });
+
   it('touches only the running tenant (tenant isolation)', async () => {
     const { svc, prisma, audit, client } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);

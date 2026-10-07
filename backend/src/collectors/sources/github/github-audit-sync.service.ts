@@ -79,6 +79,9 @@ export interface RunContext {
 /** Git events live 7 days (spec F6); warn a day before the window is lost. */
 export const RETENTION_RISK_MS = 6 * 86_400_000;
 
+/** GitHub's actual git-event retention (spec F6) — past this, the audit log can no longer answer for the window. */
+const RETENTION_LOSS_MS = 7 * 86_400_000;
+
 export function emptyCounters(): AuditRunCounters {
   return {
     reposSeeded: 0,
@@ -167,6 +170,21 @@ export class GithubAuditSyncService {
       return skipped(settings.reason);
     }
 
+    // Loaded — and allowed to fail gracefully — before any run row exists, so a
+    // thrown error here never leaves a `githubAuditRun` row stuck at 'running'.
+    let repos: Map<string, Connection>;
+    try {
+      repos = await this.registeredRepos(tenantId);
+    } catch (err) {
+      return {
+        tenantId,
+        status: 'failed',
+        reason: (err as Error).message.slice(0, 500),
+        counters,
+        durationMs: Date.now() - startedMs,
+      };
+    }
+
     const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
       where: { tenantId },
     });
@@ -188,7 +206,7 @@ export class GithubAuditSyncService {
       now,
       organization: settings.organization,
       auditToken: settings.auditToken,
-      repos: await this.registeredRepos(tenantId),
+      repos,
       tokens: new Map(),
       stopForBudget: false,
     };
@@ -197,6 +215,11 @@ export class GithubAuditSyncService {
     let error: string | undefined;
     let windowFrom: Date | undefined;
     let checkpointAt = checkpoint?.checkpointAt ?? undefined;
+    // Snapshot BEFORE this run can advance the checkpoint, so a successful run
+    // from a stale checkpoint still gets flagged — checking the post-advance
+    // value (now) would always read as fresh (defect fixed in review round 1).
+    const priorCheckpointAt =
+      checkpoint?.checkpointAt ?? checkpoint?.seededAt ?? undefined;
 
     try {
       if (!checkpoint?.seededAt) {
@@ -245,10 +268,15 @@ export class GithubAuditSyncService {
     }
 
     if (
-      checkpointAt &&
-      now.getTime() - checkpointAt.getTime() > RETENTION_RISK_MS
+      priorCheckpointAt &&
+      now.getTime() - priorCheckpointAt.getTime() > RETENTION_RISK_MS
     ) {
-      const warning = `Retention risk: the audit checkpoint is ${Math.round((now.getTime() - checkpointAt.getTime()) / 3_600_000)}h old and GitHub keeps git events for 7 days.`;
+      const ageMs = now.getTime() - priorCheckpointAt.getTime();
+      let warning = `Retention risk: the audit checkpoint is ${Math.round(ageMs / 3_600_000)}h old and GitHub keeps git events for 7 days.`;
+      if (ageMs > RETENTION_LOSS_MS) {
+        warning +=
+          " This window is older than GitHub's 7-day git-event retention and cannot be recovered from the audit log.";
+      }
       this.logger.error(`[tenant ${tenantId}] ${warning}`);
       error = error ? `${warning} ${error}` : warning;
     }
