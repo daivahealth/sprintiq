@@ -27,7 +27,7 @@ import {
   buildCommitEnvelope,
   commitIdempotencyKey,
 } from './github-commit-envelope';
-import { evaluateBudget } from './github-rate-budget';
+import { evaluateBudget, rateReserve } from './github-rate-budget';
 import { GithubClient, GithubCompareResult } from './github.client';
 
 export interface AuditRunCounters {
@@ -80,6 +80,10 @@ export interface RunContext {
   repos: Map<string, Connection>;
   tokens: Map<string, string>;
   stopForBudget: boolean;
+  /** Run-level estimate of `core` quota left above the reserve; undefined until a Compare reports a reading (review round 1, issue 1). */
+  coreBudget?: number;
+  /** Idempotency keys already resolved this run, so a commit reachable from two ranges is counted once, not once per range (review round 1, issue 5). */
+  seenKeys: Set<string>;
 }
 
 /** Git events live 7 days (spec F6); warn a day before the window is lost. */
@@ -218,6 +222,7 @@ export class GithubAuditSyncService {
       repos,
       tokens: new Map(),
       stopForBudget: false,
+      seenKeys: new Set(),
     };
 
     let status: AuditRunSummary['status'] = 'success';
@@ -619,14 +624,28 @@ export class GithubAuditSyncService {
   }
 
   private async executePending(ctx: RunContext): Promise<void> {
-    const statuses =
-      ctx.cfg.mode === 'ingest' ? ['pending', 'shadowed'] : ['pending'];
+    // `pending` ranges are always eligible until they finish or hit
+    // maxRangeAttempts — the 7-day window applies only to `shadowed` ranges,
+    // which ingest mode replays. A `pending` range aging out here would be
+    // silently abandoned while still counted in `pendingRanges` (review
+    // round 1, issue 4).
+    const where =
+      ctx.cfg.mode === 'ingest'
+        ? {
+            tenantId: ctx.tenantId,
+            OR: [
+              { status: 'pending' },
+              {
+                status: 'shadowed',
+                createdAt: {
+                  gte: new Date(ctx.now.getTime() - SHADOW_REPLAY_MS),
+                },
+              },
+            ],
+          }
+        : { tenantId: ctx.tenantId, status: 'pending' };
     const ranges = await this.prisma.githubPushRange.findMany({
-      where: {
-        tenantId: ctx.tenantId,
-        status: { in: statuses },
-        createdAt: { gte: new Date(ctx.now.getTime() - SHADOW_REPLAY_MS) },
-      },
+      where,
       orderBy: { createdAt: 'asc' },
     });
     await forEachBounded(ranges, ctx.cfg.compareConcurrency, async (range) => {
@@ -668,6 +687,12 @@ export class GithubAuditSyncService {
       );
       return;
     }
+    // Declared outside the try so a `finally` can flush them to ctx.counters
+    // on EVERY exit path (success, budget stop, detail-missing failure, or a
+    // thrown exception) — a mid-range throw must never drop the commits
+    // already ingested before it (review round 1, issue 3).
+    let alreadyPresent = 0;
+    let ingested = 0;
     try {
       const token = await this.collectorToken(ctx, connection);
       const compared = await this.compareRange(ctx, range, token);
@@ -686,11 +711,34 @@ export class GithubAuditSyncService {
       ctx.counters.coreRateRemaining =
         compared.rateLimit?.remaining ?? ctx.counters.coreRateRemaining;
 
-      let alreadyPresent = 0;
-      let ingested = 0;
+      // Run-level `core` budget estimate (review round 1, issue 1): refresh
+      // from the latest reading, then charge this Compare's own pages so a
+      // range that burns the rest of the reserve on Compare never reaches
+      // the per-commit detail calls below. Concurrent ranges share `ctx`, so
+      // one range crossing zero stops every other range's next detail call
+      // too, not just its own.
+      if (compared.rateLimit) {
+        ctx.coreBudget = compared.rateLimit.remaining - rateReserve();
+      }
+      if (ctx.coreBudget !== undefined) {
+        ctx.coreBudget -= compared.pages;
+        if (ctx.coreBudget <= 0) ctx.stopForBudget = true;
+      }
+
+      let detailFailure: string | undefined;
+      let stoppedForBudget = false;
       for (const c of compared.commits) {
         if (!c.authorLogin) ctx.counters.commitsWithoutLogin++;
         const key = commitIdempotencyKey(range.repoFullName, c.sha);
+        if (ctx.seenKeys.has(key)) {
+          alreadyPresent++;
+          continue;
+        }
+        // Claimed synchronously, before any `await` below, so a concurrent
+        // range resolving the same commit sees it immediately instead of
+        // racing to double-count it as `wouldIngest` or issue a second
+        // detail call for it (review round 1, issue 5).
+        ctx.seenKeys.add(key);
         const existing = await this.prisma.rawEvent.findUnique({
           where: {
             tenantId_idempotencyKey: {
@@ -708,18 +756,33 @@ export class GithubAuditSyncService {
           ctx.counters.wouldIngest++;
           continue;
         }
+        if (ctx.stopForBudget) {
+          stoppedForBudget = true;
+          break;
+        }
         const detail = await this.client.getCommitDetail(
           range.repoFullName,
           token,
           c.sha,
         );
+        if (ctx.coreBudget !== undefined) {
+          ctx.coreBudget -= 1;
+          if (ctx.coreBudget <= 0) ctx.stopForBudget = true;
+        }
         if (detail.rateLimitedUntil && detail.additions === undefined) {
           // No stats to write and quota gone: leave the range pending. Commits
           // already ingested above are dropped as duplicates on the retry.
           ctx.stopForBudget = true;
-          ctx.counters.alreadyPresent += alreadyPresent;
-          ctx.counters.ingested += ingested;
-          return;
+          stoppedForBudget = true;
+          break;
+        }
+        if (detail.additions === undefined) {
+          // Stats-less for a reason OTHER than rate-limiting (404, 5xx, blank
+          // token): never ingest a commit with no line stats permanently —
+          // fail this attempt so the next run retries the detail call
+          // (review round 1, issue 2).
+          detailFailure = `Commit detail unavailable for ${c.sha.slice(0, 7)}`;
+          break;
         }
         const payload: CodeCommitPayload = {
           repoFullName: range.repoFullName,
@@ -753,8 +816,17 @@ export class GithubAuditSyncService {
         else alreadyPresent++;
         if (detail.rateLimitedUntil) ctx.stopForBudget = true;
       }
-      ctx.counters.alreadyPresent += alreadyPresent;
-      ctx.counters.ingested += ingested;
+
+      if (detailFailure) {
+        await fail(detailFailure);
+        return;
+      }
+      if (stoppedForBudget) {
+        // Leave the range pending for the next run; partial counts are
+        // still flushed below via `finally`.
+        return;
+      }
+
       await this.prisma.githubPushRange.update({
         where: { id: range.id },
         data: {
@@ -771,6 +843,9 @@ export class GithubAuditSyncService {
       }
     } catch (err) {
       await fail((err as Error).message);
+    } finally {
+      ctx.counters.alreadyPresent += alreadyPresent;
+      ctx.counters.ingested += ingested;
     }
   }
 

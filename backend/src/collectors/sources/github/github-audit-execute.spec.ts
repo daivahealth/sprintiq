@@ -355,11 +355,118 @@ describe('executePending', () => {
     expect(r.counters).toMatchObject({ truncatedRanges: 1, comparePages: 3 });
   });
 
-  it("ignores ranges older than the replay window and other tenants' ranges", async () => {
+  it("executes an aged pending range but ignores an aged shadowed range and other tenants' ranges", async () => {
     const { prisma, client, svc } = setup();
-    addRange(prisma, { createdAt: new Date(NOW.getTime() - 8 * 86_400_000) });
-    addRange(prisma, { tenantId: 't2' });
+    addRange(prisma, {
+      headSha: 'agedpending',
+      createdAt: new Date(NOW.getTime() - 8 * 86_400_000),
+    });
+    addRange(prisma, {
+      headSha: 'agedshadowed',
+      status: 'shadowed',
+      createdAt: new Date(NOW.getTime() - 8 * 86_400_000),
+    });
+    addRange(prisma, { tenantId: 't2', headSha: 'othertenant' });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+    });
     await svc.runTenant('t1', INGEST, NOW);
-    expect(client.compareAll).not.toHaveBeenCalled();
+    expect(client.compareAll).toHaveBeenCalledTimes(1);
+    expect(client.compareAll).toHaveBeenCalledWith(
+      'athmahealth/ehr',
+      'tok:GITHUB_TOKEN',
+      'master',
+      'agedpending',
+    );
+  });
+
+  it('stops issuing detail calls once the core rate budget estimate is exhausted, leaving the range pending', async () => {
+    const { prisma, client, svc } = setup();
+    const originalReserve = process.env.GITHUB_BACKFILL_RATE_RESERVE;
+    process.env.GITHUB_BACKFILL_RATE_RESERVE = '1000';
+    try {
+      addRange(prisma);
+      client.compareAll.mockResolvedValue({
+        commits: [commit('d1', 'x'), commit('d2', 'x'), commit('d3', 'x')],
+        pages: 1,
+        truncated: false,
+        rateLimit: { remaining: 1002, resetAt: NOW },
+      });
+      const r = await svc.runTenant('t1', INGEST, NOW);
+      // budget = (1002 - 1000) - 1 page = 1; the first detail call spends it
+      // to 0, so the second and third commits never reach getCommitDetail.
+      expect(client.getCommitDetail).toHaveBeenCalledTimes(1);
+      expect(prisma.githubPushRange.rows[0].status).toBe('pending');
+      expect(r.counters.ingested).toBe(1);
+    } finally {
+      if (originalReserve === undefined) {
+        delete process.env.GITHUB_BACKFILL_RATE_RESERVE;
+      } else {
+        process.env.GITHUB_BACKFILL_RATE_RESERVE = originalReserve;
+      }
+    }
+  });
+
+  it('does not ingest a commit whose detail call returned no stats, and fails the range for retry', async () => {
+    const { prisma, ingestion, client, svc } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('abc1234567', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    client.getCommitDetail.mockResolvedValue({});
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    expect(
+      ingestion.ingest.mock.calls.some(
+        (c) => c[1].eventType === 'code.commit.pushed',
+      ),
+    ).toBe(false);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+    });
+    expect(prisma.githubPushRange.rows[0].lastError).toMatch(
+      /Commit detail unavailable for abc1234/,
+    );
+    expect(r.counters.ingested).toBe(0);
+  });
+
+  it('keeps the partial ingested count when a later commit in the same range throws', async () => {
+    const { prisma, ingestion, client, svc } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('ok1', 'x'), commit('boom', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    const originalImpl = ingestion.ingest.getMockImplementation();
+    ingestion.ingest
+      .mockImplementationOnce(async (tenantId, envelope) =>
+        originalImpl!(tenantId, envelope),
+      )
+      .mockRejectedValueOnce(new Error('kaboom'));
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    expect(r.counters.ingested).toBe(1);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+    });
+    expect(prisma.githubPushRange.rows[0].lastError).toMatch(/kaboom/);
+  });
+
+  it('counts a commit reachable from two ranges only once as wouldIngest in shadow mode', async () => {
+    const { prisma, client, svc } = setup();
+    addRange(prisma);
+    addRange(prisma, { ref: 'other', headSha: 'zzz' });
+    client.compareAll.mockResolvedValue({
+      commits: [commit('dup', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.counters).toMatchObject({ wouldIngest: 1, alreadyPresent: 1 });
   });
 });

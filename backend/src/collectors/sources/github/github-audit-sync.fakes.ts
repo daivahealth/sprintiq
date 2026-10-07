@@ -8,6 +8,12 @@ type Row = Record<string, any>;
 
 function matches(row: Row, where: Row = {}): boolean {
   return Object.entries(where).every(([k, v]) => {
+    // Top-level `OR`: an array of sub-wheres, satisfied if any one matches —
+    // just enough to let the audit-range query express "pending, OR shadowed
+    // within the replay window" (review round 1, issue 4).
+    if (k === 'OR' && Array.isArray(v)) {
+      return v.some((cond) => matches(row, cond as Row));
+    }
     if (v && typeof v === 'object' && !(v instanceof Date)) {
       if ('in' in v) return (v.in as unknown[]).includes(row[k]);
       if ('gte' in v) return row[k] >= v.gte;
