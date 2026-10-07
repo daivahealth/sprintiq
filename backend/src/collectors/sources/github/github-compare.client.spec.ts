@@ -63,7 +63,9 @@ describe('GithubClient REST additions', () => {
   it('getDefaultBranch reads default_branch', async () => {
     global.fetch = jest
       .fn()
-      .mockResolvedValue(res({ body: { default_branch: 'master' } })) as unknown as typeof fetch;
+      .mockResolvedValue(
+        res({ body: { default_branch: 'master' } }),
+      ) as unknown as typeof fetch;
     expect((await client.getDefaultBranch('acme/ehr', 'tok')).name).toBe(
       'master',
     );
