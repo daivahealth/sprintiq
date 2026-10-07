@@ -149,6 +149,23 @@ DIGEST_CRON_ENABLED=                 # BC-15 daily digest cron kill switch — s
 |---|---|---|---|
 | `DIGEST_CRON_ENABLED` | unset/empty, `true`\|`1`\|`on`, `false`\|`0`\|`off` (case-insensitive) | **Yes** — parsed once into typed config at boot (`configuration.ts`) | Deployment-wide kill switch for the daily commit digest cron (§6.4, [features/NOTIFICATIONS.md](../features/NOTIFICATIONS.md)), layered on top of — never a replacement for — the per-tenant `dailyDigestEnabled` DB flag. Unset/empty is the no-change path: the per-tenant flag alone decides. Falsey disarms the sweep for every tenant regardless of the DB flag. Truthy still defers to the per-tenant flag — it does **not** force-enable every tenant; that asymmetry is deliberate (see the docblocks on `configuration.ts`'s `notifications.digestCronEnabled` and `NotificationSchedulerService.envArmed()`). An unrecognised value fails `validateEnv` at boot rather than silently arming the cron. The per-tenant `dailyDigestEnabled` flag remains the **live, no-restart control** — flip it in `admin/configuration` and it takes effect on the next sweep; this env var only takes effect on the next process boot. |
 
+### 5.1 GitHub audit-log commit discovery (`GITHUB_AUDIT_*`, [ADR-0010](../ADR/0010-github-audit-log-commit-discovery.md))
+
+All parsed in one place (`github-audit.config.ts`) and boot-validated — an out-of-range or misspelled value fails `validateEnv` rather than silently running at a default nobody chose. Every one takes effect only on the next restart (parsed once at boot, like the table above).
+
+| Variable | Default | Range / values | Purpose |
+|---|---|---|---|
+| `GITHUB_AUDIT_SYNC_MODE` | `off` | `off` \| `shadow` \| `ingest` | Deployment-wide switch for the whole route. `off`: the scheduler and the admin run-now endpoint are no-ops. `shadow`: runs discovery and Compare, counts `wouldIngest`, writes no commit. `ingest`: writes commits, and on first switching to it, replays `shadowed` ranges from the last 7 days. |
+| `GITHUB_AUDIT_SYNC_INTERVAL_MINUTES` | `5` | one of `5, 10, 15, 20, 30, 60` | Cron cadence for `GithubAuditSchedulerService`, built into the cron expression at module load. |
+| `GITHUB_AUDIT_PAGE_SIZE` | `100` | integer `1–100` | `per_page` on the audit-log request. |
+| `GITHUB_AUDIT_OVERLAP_MINUTES` | `15` | integer `0–120` | How far before the stored checkpoint each run re-reads, to catch audit events that surfaced late. |
+| `GITHUB_AUDIT_COMPARE_CONCURRENCY` | `2` | integer `1–8` | Bounded concurrency for seeding, branch-tip diffing and range execution (`forEachBounded`). |
+| `GITHUB_AUDIT_MAX_RANGE_ATTEMPTS` | `5` | integer `1–20` | A `pending` push range is retried every run with no age cutoff until it succeeds or reaches this many attempts, then becomes `failed`. |
+| `GITHUB_AUDIT_MAX_PAGES` | `200` | integer `1–1000` | Runaway guard on audit-log pagination (200 × 100/page = 20,000 pushes). Hitting it **fails** the run rather than silently stopping. |
+| `GITHUB_AUDIT_TOKEN` | *(none)* | an org-owner **classic** PAT with `read:audit_log`, SSO-authorized for the org | Resolved by `SecretsService` from the GitHub configuration's `auditLogTokenRef` secret ref (DB store, then env fallback). It is a **separate credential from the collector token** — used only for the audit-log call; Compare, `matching-refs` and commit-detail calls keep using the connection's own `secretRef`. Never store it in `values`; it is a credential, not configuration (see [security/AUTH-AND-RBAC.md §7](../security/AUTH-AND-RBAC.md)). |
+
+Execution also respects the existing `GITHUB_BACKFILL_RATE_RESERVE` ([api/README.md §3.2](../api/README.md)): Compare and detail calls are charged against a run-level `core` budget estimate (latest remaining minus the reserve), and exhausting it stops the run, leaving the remaining ranges `pending` for the next tick.
+
 ---
 
 ## 6. Collector operations
@@ -192,6 +209,19 @@ On top of `dailyDigestEnabled`, `NotificationSchedulerService` also checks the `
 - **Truthy** (`true`/`1`/`on`, case-insensitive): still just permission to run — the per-tenant flag still decides who is actually swept. **It does not force-enable any tenant.** This is deliberate and asymmetric: a symmetric switch that could turn on notifications for every tenant with a webhook configured would let one env edit start naming people in Teams channels belonging to tenants who never opted in, which is exactly what CLAUDE.md's multi-tenant isolation and ethics-first rules forbid. Do not "simplify" this into a force-enable switch.
 
 **Takes effect only on restart.** `configuration.ts` parses `process.env.DIGEST_CRON_ENABLED` once at process boot; changing it in a running deployment's environment has no effect until the affected `worker` pods restart. The per-tenant `dailyDigestEnabled` flag has no such lag — it is read fresh on every sweep from `tenantsToDigest()`, so it remains the **live, no-restart control** for day-to-day per-tenant enable/disable.
+
+### 6.5 GitHub audit-log commit discovery rollout ([ADR-0010](../ADR/0010-github-audit-log-commit-discovery.md))
+
+The third commit-discovery route — org audit log → branch-tip diff → Compare, feeding the existing ingestion pipeline. Full behaviour: [api/README.md §3](../api/README.md), env vars: §5.1 above.
+
+1. **Apply migration `20261006120000_add_github_audit_sync` by hand.** Same caveat as §6.4 step 1 — on a host whose start command doesn't run `prisma migrate deploy` automatically, this is not optional. `npx prisma migrate status` first to confirm it is genuinely pending, then `npx prisma migrate deploy`. Stop the backend before the subsequent `npx prisma generate` and `rm -rf dist && nest build` (§6.4 step 2's caveat applies here too).
+2. **Set the audit credential.** Put the org-owner classic PAT (`read:audit_log`, SSO-authorized) in `backend/.env` as `GITHUB_AUDIT_TOKEN` (or whatever env var the secret ref will point to), then in Admin → Configuration → GitHub save **"Audit-log token secret ref"** (`auditLogTokenRef`) with that env var's name — never the token value itself.
+3. **Deploy in `shadow` first.** Set `GITHUB_AUDIT_SYNC_MODE=shadow`, restart (`rm -rf dist`, rebuild, restart). The very first run for a tenant is the **seeding pass**: about one `matching-refs` call per active repo, no Compare at all — it only captures today's branch tips as the diff baseline.
+4. **Watch shadow mode for several days.** Check `GET /admin/configurations/github/audit-commit-report?day=YYYY-MM-DD` ([api/README.md §9](../api/README.md)) daily against independent ground truth (design spec §9) before trusting the route.
+5. **Switch to `ingest` and restart.** Ranges that completed in `shadow` mode within the last 7 days are replayed and actually ingested. **Historical figures move** when this happens — branch-only commits appear for days already shown on dashboards — so announce it before flipping the switch, don't let people discover it.
+6. **Rollback is just `off`.** Set `GITHUB_AUDIT_SYNC_MODE=off` and restart. Commits already ingested stay (idempotent keys, full lineage) — turning the route off only stops new discovery, it never un-ingests anything.
+7. **Signals to watch**, in the scheduler/sync log line and the day report: `status` and any `Retention risk` warning (logged at error level once the checkpoint is over 6 days old), `failedRanges`, `pendingRanges` growth over time, `truncatedRanges`, `coreRateRemaining` / `auditRateRemaining`, and run `durationMs`.
+8. **Keep `dailyDigestEnabled` off** until the route's acceptance (design spec §9) has passed — the digest must not name people off figures this route hasn't yet been verified against.
 
 An unrecognised value (e.g. `DIGEST_CRON_ENABLED=flase`) fails `validateEnv` at boot rather than being silently treated as unset — a typo here has an unusually bad failure mode (a real person's name reaching a channel because an operator believed the cron was disarmed), so it fails loudly instead of guessing.
 
