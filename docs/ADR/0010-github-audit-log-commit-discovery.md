@@ -37,7 +37,7 @@ The existing walk and PR harvest are unchanged and keep running.
 - **Retention is a run-level signal, not a per-range one.** A run compares `now` against the checkpoint as it stood *before* that run (so a successful run from a stale checkpoint is still flagged): past 6 days of age the run is reported and logged at error level as a retention risk; past 7 days the message states the gap is unrecoverable from the audit log. The checkpoint still advances on a successful run regardless.
 - **Historical figures move** once ingest is enabled. That is a restatement, and it must be announced.
 - If a tenant's registered repos cannot even be loaded, the run reports `failed` and no run row is created for it — there is nothing yet to report counters against.
-- New secret: an org-owner token, used only for the audit call. New tables: 4 (DATA-MODEL.md). Expected `core` spend is one `matching-refs` call per touched repo plus one Compare per moved ref plus one detail call per new commit, all under the rate reserve.
+- New secret: an org-owner token, used only for the audit call. New tables: 4 (DATA-MODEL.md). Expected `core` spend is two calls per active repo once for seeding (default branch + branch tips), then one `matching-refs` call per touched repo plus one Compare per moved ref plus one detail call per new commit. All of it is charged against one run-level budget (remaining − `GITHUB_BACKFILL_RATE_RESERVE`) checked before each seeding repo, listing, and detail call, so a run stops at the reserve (in-flight concurrent calls can overrun it by at most the Compare concurrency) and resumes next run.
 - The digest's gate 1 is unchanged. `dailyDigestEnabled` stays off until acceptance (spec §9) passes.
 
 ## Alternatives considered
