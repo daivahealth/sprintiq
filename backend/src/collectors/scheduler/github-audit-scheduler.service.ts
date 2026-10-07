@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
+import { AppRole, roleRunsScheduler } from '../../config/app-role';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
 import { PrismaService } from '../../database/prisma.service';
 import {
@@ -38,12 +40,13 @@ export class GithubAuditSchedulerService {
     private readonly prisma: PrismaService,
     private readonly sync: GithubAuditSyncService,
     private readonly tenantContext: TenantContextService,
+    private readonly config: ConfigService,
   ) {}
 
   @Cron(AUDIT_CRON)
   async tick(): Promise<void> {
     const cfg = readGithubAuditConfig();
-    if (cfg.mode === 'off') {
+    if (cfg.mode === 'off' || !this.shouldSweep()) {
       return;
     }
     const staleAfterMs = Math.max(10, cfg.intervalMinutes * 2) * 60_000;
@@ -79,9 +82,14 @@ export class GithubAuditSchedulerService {
     try {
       for (const tenantId of tenants) {
         try {
-          await this.tenantContext.runWithTenant(tenantId, () =>
+          const summary = await this.tenantContext.runWithTenant(tenantId, () =>
             this.sync.runTenant(tenantId, cfg),
           );
+          if (summary?.status === 'skipped') {
+            this.logger.log(
+              `GitHub audit sync skipped for tenant ${tenantId}: ${summary.reason ?? 'no reason given'}`,
+            );
+          }
         } catch (err) {
           this.logger.error(
             `GitHub audit sync failed for tenant ${tenantId}: ${(err as Error).message}`,
@@ -94,5 +102,21 @@ export class GithubAuditSchedulerService {
         data: { finishedAt: new Date() },
       });
     }
+  }
+
+  /**
+   * Worker-only in production; unrestricted everywhere else. The SAME rule as
+   * `NotificationSchedulerService.shouldSweep()`
+   * (src/modules/notifications/notification-scheduler.service.ts), replicated
+   * because that helper is private to its class: the image runs as api |
+   * collector | worker and @nestjs/schedule fires this cron in every pod, so
+   * without the gate production would sweep three times concurrently. Dev and
+   * test run all roles in one process (APP_ROLE defaults to `api`), so the
+   * gate applies only when `env === 'production'`.
+   */
+  private shouldSweep(): boolean {
+    const role = this.config.get<AppRole>('appRole') ?? AppRole.API;
+    const env = this.config.get<string>('env') ?? 'development';
+    return env !== 'production' || roleRunsScheduler(role);
   }
 }

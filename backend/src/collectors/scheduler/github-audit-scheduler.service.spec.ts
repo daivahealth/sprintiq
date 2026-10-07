@@ -1,6 +1,10 @@
+import { Logger } from '@nestjs/common';
 import { GithubAuditSchedulerService } from './github-audit-scheduler.service';
 
-function setup(tick: Record<string, unknown> | null = null) {
+function setup(
+  tick: Record<string, unknown> | null = null,
+  config: Record<string, unknown> = {},
+) {
   const prisma = {
     schedulerTick: {
       findUnique: jest.fn().mockResolvedValue(tick),
@@ -17,10 +21,12 @@ function setup(tick: Record<string, unknown> | null = null) {
       fn(),
     ),
   };
+  const configService = { get: jest.fn((key: string) => config[key]) };
   const svc = new GithubAuditSchedulerService(
     prisma as never,
     sync as never,
     tenantContext as never,
+    configService as never,
   );
   return { prisma, sync, tenantContext, svc };
 }
@@ -29,6 +35,7 @@ describe('GithubAuditSchedulerService', () => {
   const env = process.env;
   afterEach(() => {
     process.env = env;
+    jest.restoreAllMocks();
   });
 
   it('does nothing when the mode is off (the default)', async () => {
@@ -73,5 +80,45 @@ describe('GithubAuditSchedulerService', () => {
     await svc.tick();
     expect(sync.runTenant).toHaveBeenCalledTimes(2);
     expect(prisma.schedulerTick.update).toHaveBeenCalled();
+  });
+
+  it('does not sweep from a non-worker pod in production', async () => {
+    process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: 'shadow' };
+    const { svc, sync, prisma } = setup(null, {
+      env: 'production',
+      appRole: 'api',
+    });
+    await svc.tick();
+    expect(sync.listEnabledTenants).not.toHaveBeenCalled();
+    expect(prisma.schedulerTick.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('sweeps from the worker pod in production', async () => {
+    process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: 'shadow' };
+    const { svc, sync } = setup(null, {
+      env: 'production',
+      appRole: 'worker',
+    });
+    await svc.tick();
+    expect(sync.runTenant).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs the reason when a tenant run is skipped', async () => {
+    process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: 'shadow' };
+    const log = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    const { svc, sync } = setup();
+    sync.runTenant.mockResolvedValueOnce({
+      tenantId: 't1',
+      status: 'skipped',
+      reason: 'Another audit sync run for this tenant is in progress.',
+    });
+    await svc.tick();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /t1.*Another audit sync run for this tenant is in progress\./,
+      ),
+    );
   });
 });
