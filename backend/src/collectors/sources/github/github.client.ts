@@ -74,10 +74,7 @@ export interface GithubRateLimit {
 }
 
 export type GithubCallFailure =
-  | 'not_found'
-  | 'failed'
-  | 'rate_limited'
-  | 'forbidden';
+  'not_found' | 'failed' | 'rate_limited' | 'forbidden';
 
 export interface GithubHeadRefs {
   tips?: Map<string, string>;
@@ -742,8 +739,15 @@ export class GithubClient implements GithubSourceClient {
     const res = await this.restGet(
       `${this.baseUrl}/repos/${repoFullName}/git/matching-refs/heads/`,
       token,
+      [409],
     );
     if ('failure' in res) return res;
+    if (res.response.status === 409) {
+      // GitHub answers git-ref reads on an EMPTY repository with 409 "Git
+      // Repository is empty." That is a valid state (no branches yet), not a
+      // failure — treating it as one would block seeding forever.
+      return { tips: new Map(), rateLimit: this.readRateLimit(res.response) };
+    }
     const body = (await res.response.json()) as {
       ref?: string;
       object?: { sha?: string };
@@ -847,10 +851,15 @@ export class GithubClient implements GithubSourceClient {
     return { commits, status, totalCommits, pages, truncated, rateLimit };
   }
 
-  /** One authenticated GET, with 403 split into rate-limit vs permission (spec F8). */
+  /**
+   * One authenticated GET, with 403 split into rate-limit vs permission (spec F8).
+   * `passStatuses` lets one caller receive a specific non-2xx response
+   * (e.g. `listHeadRefs`'s 409 on an empty repo) instead of `failed`.
+   */
   private async restGet(
     url: string,
     token: string,
+    passStatuses: number[] = [],
   ): Promise<
     | { response: Response }
     | {
@@ -882,6 +891,9 @@ export class GithubClient implements GithubSourceClient {
     }
     if (response.status === 404) {
       return { failure: 'not_found' };
+    }
+    if (passStatuses.includes(response.status)) {
+      return { response };
     }
     if (!response.ok) {
       this.logger.warn(

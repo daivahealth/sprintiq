@@ -60,6 +60,28 @@ describe('GithubClient REST additions', () => {
     );
   });
 
+  it('listHeadRefs maps 409 (empty repository) to an empty tip set, not a failure', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      res({
+        status: 409,
+        headers: { 'x-ratelimit-remaining': '4321' },
+      }),
+    ) as unknown as typeof fetch;
+    const r = await client.listHeadRefs('acme/empty', 'tok');
+    expect(r.failure).toBeUndefined();
+    expect(r.tips).toEqual(new Map());
+    expect(r.rateLimit?.remaining).toBe(4321);
+  });
+
+  it('getDefaultBranch still reports 409 as failed (409 handling is listHeadRefs-only)', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(res({ status: 409 })) as unknown as typeof fetch;
+    expect((await client.getDefaultBranch('acme/empty', 'tok')).failure).toBe(
+      'failed',
+    );
+  });
+
   it('getDefaultBranch reads default_branch', async () => {
     global.fetch = jest
       .fn()
