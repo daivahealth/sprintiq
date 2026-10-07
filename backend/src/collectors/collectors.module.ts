@@ -6,6 +6,9 @@ import { IngestionService } from './ingestion/ingestion.service';
 import { CollectionProgressService } from './scheduler/collection-progress.service';
 import { BackfillSchedulerService } from './scheduler/backfill-scheduler.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
+import { GithubAuditLogClient } from './sources/github/github-audit-log.client';
+import { GithubAuditSyncService } from './sources/github/github-audit-sync.service';
+import { GithubAuditSchedulerService } from './scheduler/github-audit-scheduler.service';
 import { GithubCommitMessageReconcilerService } from './sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from './sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from './sources/github/github-commit-reconciler.service';
@@ -62,6 +65,9 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     },
     GithubCollector,
     GithubOrgSyncService,
+    GithubAuditLogClient,
+    GithubAuditSyncService,
+    GithubAuditSchedulerService,
     GithubCommitMessageReconcilerService,
     GithubPrCommitBackfillService,
     GithubCommitReconcilerService,
@@ -80,6 +86,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
   exports: [
     IngestionService,
     GithubOrgSyncService,
+    GithubAuditSyncService,
     GithubCommitMessageReconcilerService,
     GithubPrCommitBackfillService,
     GithubCommitReconcilerService,
