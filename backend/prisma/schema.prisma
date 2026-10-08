@@ -210,6 +210,97 @@ model RawEvent {
 }
 
 // ---------------------------------------------------------------------------
+// BC-1 GitHub audit-log push discovery (ADR-0010). Collector-owned state only;
+// commits still reach code_commit exclusively through the ingestion pipeline.
+// ---------------------------------------------------------------------------
+
+/// Per-tenant position in the org audit log. `checkpointAt` advances only
+/// after a window's complete audit set has been fetched AND its work queued
+/// as GithubPushRange rows (spec §4.5). `seededAt` marks the one-off pass that
+/// stored every repo's branch tips; audit discovery covers pushes after it.
+model GithubAuditCheckpoint {
+  id           String    @id
+  tenantId     String    @unique
+  organization String
+  seededAt     DateTime?
+  checkpointAt DateTime?
+  lastRunAt    DateTime?
+  lastStatus   String?
+  lastError    String?
+  /// Per-tenant run claim: set while a sync run holds this tenant, cleared in
+  /// a `finally`; a claim older than 60 minutes is treated as stale.
+  runningSince DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("collectors_github_audit_checkpoint")
+}
+
+/// One sync run: its window, outcome and every counter (spec §7).
+model GithubAuditRun {
+  id         String    @id
+  tenantId   String
+  mode       String // off | shadow | ingest
+  startedAt  DateTime
+  finishedAt DateTime?
+  windowFrom DateTime?
+  windowTo   DateTime?
+  status     String // running | seeded | success | partial | failed
+  counters   Json
+  error      String?
+
+  @@index([tenantId, startedAt])
+  @@map("collectors_github_audit_run")
+}
+
+/// One planned Compare (or a recorded deletion) for a repo+ref, and the
+/// durable retry queue for it. `auditDocumentIds` ties it to the pushes that
+/// prompted it — per repo and run, because audit events carry no ref (F2).
+model GithubPushRange {
+  id               String   @id
+  tenantId         String
+  runId            String
+  connectionId     String
+  repoFullName     String
+  ref              String
+  baseSha          String?
+  baseRef          String?
+  headSha          String?
+  kind             String // moved | new_ref | deleted
+  auditDocumentIds Json
+  status           String   @default("pending") // pending | shadowed | done | failed
+  attempts         Int      @default(0)
+  commitsFound     Int      @default(0)
+  alreadyPresent   Int      @default(0)
+  ingested         Int      @default(0)
+  truncated        Boolean  @default(false)
+  /// Per-commit evidence for the commits processed so far:
+  /// [{ sha, outcome: ingested | alreadyPresent | wouldIngest }].
+  commitOutcomes   Json?
+  lastError        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("collectors_github_push_range")
+}
+
+/// The branch tip last observed per repo+ref. The diff against the current
+/// tips is the Compare plan. `ref = 'HEAD'` caches the default branch NAME in `sha`.
+model GithubRefTip {
+  id           String   @id
+  tenantId     String
+  repoFullName String
+  ref          String
+  sha          String
+  seenAt       DateTime
+
+  @@unique([tenantId, repoFullName, ref])
+  @@map("collectors_github_ref_tip")
+}
+
+// ---------------------------------------------------------------------------
 // BC-16 Audit & Lineage
 // ---------------------------------------------------------------------------
 

@@ -30,6 +30,7 @@ Each ADR follows: **Status · Context · Decision · Consequences · Alternative
 | [0007](0007-vite-spa-over-nextjs.md) | Frontend stays a Vite SPA (Next.js evaluated and declined) | Accepted |
 | [0008](0008-github-graphql-over-webhooks.md) | GitHub collection moves to GraphQL; webhooks stay deferred | Accepted |
 | [0009](0009-attributed-commit-digest.md) | Attributed daily commit digest to Microsoft Teams | Accepted |
+| [0010](0010-github-audit-log-commit-discovery.md) | Discover branch-only commits from the GitHub org audit log | Accepted |
 
 ## Conventions
 

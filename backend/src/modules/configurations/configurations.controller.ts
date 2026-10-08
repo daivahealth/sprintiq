@@ -8,6 +8,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 import {
   IsArray,
@@ -19,6 +20,8 @@ import {
 } from 'class-validator';
 import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { ConnectionsService } from '../connections/connections.service';
+import { GithubAuditReportService } from '../../collectors/sources/github/github-audit-report.service';
+import { GithubAuditSyncService } from '../../collectors/sources/github/github-audit-sync.service';
 import { GithubCommitMessageReconcilerService } from '../../collectors/sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from '../../collectors/sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
@@ -114,6 +117,8 @@ export class ConfigurationsController {
     private readonly identities: DeveloperIdentityService,
     private readonly connections: ConnectionsService,
     private readonly progress: CollectionProgressService,
+    private readonly auditSync: GithubAuditSyncService,
+    private readonly auditReport: GithubAuditReportService,
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
@@ -326,6 +331,53 @@ export class ConfigurationsController {
       this.prCommitBackfill.countRemaining(user.tenantId),
     ]);
     return { uncollectedMergedHeads, prsAwaitingHarvest };
+  }
+
+  /**
+   * Run the GitHub audit-log sync once for this tenant, now (ADR-0010). Uses
+   * the deployment's GITHUB_AUDIT_SYNC_MODE — a `shadow` deployment cannot be
+   * talked into ingesting from here.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/audit-sync/run')
+  async runAuditSync(@CurrentUser() user: AuthUser) {
+    const summary = await this.auditSync.runTenant(user.tenantId);
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'collectors.github_audit_sync.run',
+      targetType: 'github_audit_run',
+      targetId: summary.runId,
+      metadata: { status: summary.status, counters: summary.counters },
+    });
+    return summary;
+  }
+
+  /**
+   * One IST day of the audit route: what it saw, planned, fetched and ingested,
+   * and how many of its commits nobody can be attributed to. Unattributed is
+   * reported as unattributed — never as anyone being idle.
+   */
+  @Roles(Role.ADMIN)
+  @Get('github/audit-commit-report')
+  async auditCommitReport(
+    @CurrentUser() user: AuthUser,
+    @Query('day') day: string,
+  ) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '')) {
+      throw new BadRequestException('day must be YYYY-MM-DD (IST).');
+    }
+    const [report, index] = await Promise.all([
+      this.auditReport.dayReport(user.tenantId, day),
+      this.identities.attributionIndex(user.tenantId),
+    ]);
+    const unattributedCommits = report.auditCommits.filter(
+      (c) =>
+        !c.authorLogin &&
+        !(c.authorEmail && index.byEmail.has(c.authorEmail.toLowerCase())),
+    ).length;
+    return { ...report, unattributedCommits };
   }
 
   /**
