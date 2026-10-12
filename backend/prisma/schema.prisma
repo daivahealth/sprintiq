@@ -241,6 +241,10 @@ model GithubAuditRun {
   id         String    @id
   tenantId   String
   mode       String // off | shadow | ingest
+  /// What started the run: 'audit' (the audit-log sync, which owns the
+  /// checkpoint) or 'full_sweep' (the full branch sweep, which lists every
+  /// registered repo's branches and never moves the checkpoint).
+  trigger    String    @default("audit")
   startedAt  DateTime
   finishedAt DateTime?
   windowFrom DateTime?

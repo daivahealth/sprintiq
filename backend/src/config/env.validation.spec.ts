@@ -58,6 +58,11 @@ describe('GitHub audit sync env', () => {
       validateEnv({ ...base, GITHUB_AUDIT_SYNC_MODE: 'yes' }),
     ).toThrow(/GITHUB_AUDIT_SYNC_MODE/);
   });
+  it('fails boot on an invalid full-sweep interval', () => {
+    expect(() =>
+      validateEnv({ ...base, GITHUB_AUDIT_FULL_SWEEP_MINUTES: '45' }),
+    ).toThrow(/GITHUB_AUDIT_FULL_SWEEP_MINUTES/);
+  });
   it('accepts valid audit settings', () => {
     expect(() =>
       validateEnv({

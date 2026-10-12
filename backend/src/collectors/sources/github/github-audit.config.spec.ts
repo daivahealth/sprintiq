@@ -1,5 +1,6 @@
 import {
   auditCronExpression,
+  fullSweepCronExpression,
   readGithubAuditConfig,
 } from './github-audit.config';
 
@@ -14,6 +15,7 @@ describe('readGithubAuditConfig', () => {
       maxRangeAttempts: 5,
       maxPages: 200,
       lagWarnMinutes: 30,
+      fullSweepMinutes: 60,
     });
   });
 
@@ -69,6 +71,42 @@ describe('readGithubAuditConfig', () => {
     expect(() =>
       readGithubAuditConfig({ GITHUB_AUDIT_LAG_WARN_MINUTES: '1441' }),
     ).toThrow(/GITHUB_AUDIT_LAG_WARN_MINUTES/);
+  });
+});
+
+describe('GITHUB_AUDIT_FULL_SWEEP_MINUTES', () => {
+  it.each([0, 30, 60, 120, 240])('accepts %i', (n) => {
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_FULL_SWEEP_MINUTES: String(n) })
+        .fullSweepMinutes,
+    ).toBe(n);
+  });
+
+  it('defaults to 60 and treats an empty value as unset', () => {
+    expect(readGithubAuditConfig({}).fullSweepMinutes).toBe(60);
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_FULL_SWEEP_MINUTES: '' })
+        .fullSweepMinutes,
+    ).toBe(60);
+  });
+
+  it.each(['15', '90', '480', '-30', 'hourly'])('rejects %s', (raw) => {
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_FULL_SWEEP_MINUTES: raw }),
+    ).toThrow(/GITHUB_AUDIT_FULL_SWEEP_MINUTES/);
+  });
+});
+
+describe('fullSweepCronExpression', () => {
+  it('builds a seconds-precision cron for each sweep interval', () => {
+    expect(fullSweepCronExpression(30)).toBe('0 */30 * * * *');
+    expect(fullSweepCronExpression(60)).toBe('0 0 * * * *');
+    expect(fullSweepCronExpression(120)).toBe('0 0 */2 * * *');
+    expect(fullSweepCronExpression(240)).toBe('0 0 */4 * * *');
+  });
+
+  it('still returns a valid (hourly) expression for 0 — the tick itself is gated off', () => {
+    expect(fullSweepCronExpression(0)).toBe('0 0 * * * *');
   });
 });
 

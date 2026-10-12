@@ -7,6 +7,9 @@ export type GithubAuditMode = 'off' | 'shadow' | 'ingest';
 
 export const ALLOWED_AUDIT_INTERVALS = [5, 10, 15, 20, 30, 60] as const;
 
+/** Full branch sweep cadence in minutes; 0 turns the sweep off (spec item 3). */
+export const ALLOWED_FULL_SWEEP_INTERVALS = [0, 30, 60, 120, 240] as const;
+
 export interface GithubAuditConfig {
   mode: GithubAuditMode;
   intervalMinutes: number;
@@ -17,6 +20,11 @@ export interface GithubAuditConfig {
   maxPages: number;
   /** A pre-run checkpoint older than this is reported as a lag warning in `run.error` (spec item 2). */
   lagWarnMinutes: number;
+  /**
+   * How often the full branch sweep lists every registered repo's branches,
+   * the backstop for pushes the audit log never records (spec item 3). 0 = off.
+   */
+  fullSweepMinutes: number;
 }
 
 function intIn(
@@ -63,9 +71,26 @@ export function readGithubAuditConfig(
       `Invalid GITHUB_AUDIT_SYNC_INTERVAL_MINUTES "${intervalMinutes}". Expected one of ${ALLOWED_AUDIT_INTERVALS.join(', ')}.`,
     );
   }
+  const fullSweepMinutes = intIn(
+    env,
+    'GITHUB_AUDIT_FULL_SWEEP_MINUTES',
+    60,
+    0,
+    240,
+  );
+  if (
+    !(ALLOWED_FULL_SWEEP_INTERVALS as readonly number[]).includes(
+      fullSweepMinutes,
+    )
+  ) {
+    throw new Error(
+      `Invalid GITHUB_AUDIT_FULL_SWEEP_MINUTES "${fullSweepMinutes}". Expected one of ${ALLOWED_FULL_SWEEP_INTERVALS.join(', ')} (0 = off).`,
+    );
+  }
   return {
     mode,
     intervalMinutes,
+    fullSweepMinutes,
     pageSize: intIn(env, 'GITHUB_AUDIT_PAGE_SIZE', 100, 1, 100),
     overlapMinutes: intIn(env, 'GITHUB_AUDIT_OVERLAP_MINUTES', 15, 0, 120),
     compareConcurrency: intIn(env, 'GITHUB_AUDIT_COMPARE_CONCURRENCY', 2, 1, 8),
@@ -80,4 +105,16 @@ export function auditCronExpression(intervalMinutes: number): string {
   return intervalMinutes === 60
     ? '0 0 * * * *'
     : `0 */${intervalMinutes} * * * *`;
+}
+
+/**
+ * Cron for the full branch sweep. 120/240 run on the hour every 2/4 hours.
+ * 0 (off) still yields a valid hourly expression because the decorator needs
+ * one at module load — `sweepTick` itself returns immediately when off.
+ */
+export function fullSweepCronExpression(sweepMinutes: number): string {
+  if (sweepMinutes === 120 || sweepMinutes === 240) {
+    return `0 0 */${sweepMinutes / 60} * * *`;
+  }
+  return auditCronExpression(sweepMinutes === 30 ? 30 : 60);
 }

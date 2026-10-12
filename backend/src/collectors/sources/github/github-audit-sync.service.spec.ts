@@ -958,3 +958,263 @@ describe('GithubAuditSyncService.status', () => {
     expect(status.failedRanges).toBe(0);
   });
 });
+
+describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
+  const noCommits = { commits: [], pages: 1, truncated: false };
+
+  it('plans a range for a moved branch in a repo the audit log never reported, then executes it', async () => {
+    const { svc, prisma, audit, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/amma']);
+    seeded(prisma, 't1', {
+      'acme/ehr': { master: 'm1', 'feature-A': 'A' },
+      'acme/amma': { master: 'm2' },
+    });
+    client.listHeadRefs.mockImplementation(async (repo: string) =>
+      repo === 'acme/ehr'
+        ? {
+            tips: new Map([
+              ['master', 'm1'],
+              ['feature-A', 'B'],
+            ]),
+          }
+        : { tips: new Map([['master', 'm2']]) },
+    );
+    client.compareAll.mockResolvedValue(noCommits);
+    const r = await svc.runFullSweep('t1', SHADOW, NOW);
+
+    expect(r.status).toBe('success');
+    expect(r.counters).toMatchObject({
+      reposTouched: 2,
+      refsMoved: 1,
+      compareRequestsPlanned: 1,
+      compareRequestsExecuted: 1,
+      compareCandidatesNaive: 0,
+    });
+    expect(prisma.githubPushRange.rows).toHaveLength(1);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      repoFullName: 'acme/ehr',
+      ref: 'feature-A',
+      baseSha: 'A',
+      headSha: 'B',
+      kind: 'moved',
+      auditDocumentIds: [],
+      status: 'shadowed',
+      runId: r.runId,
+    });
+    expect(client.compareAll).toHaveBeenCalledWith(
+      'acme/ehr',
+      'tok:GITHUB_TOKEN',
+      'A',
+      'B',
+    );
+    expect(
+      prisma.githubRefTip.rows.find(
+        (t) => t.repoFullName === 'acme/ehr' && t.ref === 'feature-A',
+      )!.sha,
+    ).toBe('B');
+    expect(audit.listGitPushes).not.toHaveBeenCalled();
+  });
+
+  it('never calls the audit client and never moves checkpointAt or seededAt', async () => {
+    const { svc, prisma, audit, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const { checkpointAt, seededAt } = prisma.githubAuditCheckpoint.rows[0];
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['master', 'm1'],
+        ['feature-new', 'N'],
+      ]),
+    });
+    client.compareAll.mockResolvedValue(noCommits);
+    await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(audit.listGitPushes).not.toHaveBeenCalled();
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toBe(
+      checkpointAt,
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt).toBe(seededAt);
+    const writes = prisma.calls.flatMap((c) => [c.data ?? {}, c.update ?? {}]);
+    expect(writes.some((d) => 'checkpointAt' in d || 'seededAt' in d)).toBe(
+      false,
+    );
+  });
+
+  it('writes a run row with trigger full_sweep (and audit runs write trigger audit)', async () => {
+    const { svc, prisma, audit, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      events: [],
+      pages: 1,
+      nextTraversals: 0,
+    });
+    const sweep = await svc.runFullSweep('t1', SHADOW, NOW);
+    const auditRun = await svc.runTenant('t1', SHADOW, NOW);
+    const byId = (id?: string) =>
+      prisma.githubAuditRun.rows.find((x) => x.id === id)!;
+    expect(byId(sweep.runId)).toMatchObject({
+      trigger: 'full_sweep',
+      status: 'success',
+      windowFrom: null,
+      windowTo: null,
+    });
+    expect(byId(auditRun.runId).trigger).toBe('audit');
+  });
+
+  it('skips, without a run row or any GitHub call, while another run holds the claim', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const held = new Date(NOW.getTime() - 5 * 60_000);
+    prisma.githubAuditCheckpoint.rows[0].runningSince = held;
+    const r = await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(r).toMatchObject({
+      status: 'skipped',
+      reason: 'Another audit sync run for this tenant is in progress.',
+    });
+    expect(prisma.githubAuditRun.rows).toHaveLength(0);
+    expect(client.listHeadRefs).not.toHaveBeenCalled();
+    expect(prisma.githubAuditCheckpoint.rows[0].runningSince).toBe(held);
+  });
+
+  it('releases its claim even when the sweep fails', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    client.listHeadRefs.mockRejectedValue(new Error('boom'));
+    const r = await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(
+      prisma.githubAuditCheckpoint.rows[0].runningSince ?? null,
+    ).toBeNull();
+    expect(prisma.githubAuditRun.rows[0]).toMatchObject({
+      trigger: 'full_sweep',
+      status: 'failed',
+    });
+  });
+
+  it('does nothing until the audit sync has seeded the tenant', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    const r = await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(r).toMatchObject({
+      status: 'skipped',
+      reason: 'not seeded yet — the audit sync seeds first',
+    });
+    expect(client.getDefaultBranch).not.toHaveBeenCalled();
+    expect(client.listHeadRefs).not.toHaveBeenCalled();
+    expect(prisma.githubAuditRun.rows).toHaveLength(0);
+  });
+
+  it('skips when the mode is off or no audit-log token ref is configured', async () => {
+    const off = setup();
+    seedTenant(off.prisma, 't1', ['acme/ehr']);
+    seeded(off.prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const r1 = await off.svc.runFullSweep('t1', readGithubAuditConfig({}), NOW);
+    expect(r1.status).toBe('skipped');
+    expect(off.client.listHeadRefs).not.toHaveBeenCalled();
+
+    const noRef = setup();
+    seedTenant(noRef.prisma, 't1', ['acme/ehr'], {});
+    seeded(noRef.prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const r2 = await noRef.svc.runFullSweep('t1', SHADOW, NOW);
+    expect(r2.status).toBe('skipped');
+    expect(r2.reason).toMatch(/audit-log token/i);
+    expect(noRef.client.listHeadRefs).not.toHaveBeenCalled();
+  });
+
+  it('seeds a registered repo that has never been seeded, planning no range for it', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/new']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['master', 'm1'],
+        ['feat', 'f1'],
+      ]),
+    });
+    client.compareAll.mockResolvedValue(noCommits);
+    const r = await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(r.counters.reposSeeded).toBe(1);
+    expect(
+      prisma.githubRefTip.rows
+        .filter((t) => t.repoFullName === 'acme/new')
+        .map((t) => t.ref)
+        .sort(),
+    ).toEqual(['HEAD', 'feat', 'master']);
+    expect(
+      prisma.githubPushRange.rows.filter((x) => x.repoFullName === 'acme/new'),
+    ).toHaveLength(0);
+  });
+
+  it('stops at the core budget: the remaining repos are left unplanned and named in run.error', async () => {
+    const { svc, prisma, client } = setup();
+    const originalReserve = process.env.GITHUB_BACKFILL_RATE_RESERVE;
+    process.env.GITHUB_BACKFILL_RATE_RESERVE = '1000';
+    try {
+      seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c']);
+      seeded(prisma, 't1', {
+        'acme/a': { feat: 'a0' },
+        'acme/b': { feat: 'b0' },
+        'acme/c': { feat: 'c0' },
+      });
+      const { checkpointAt } = prisma.githubAuditCheckpoint.rows[0];
+      client.listHeadRefs.mockImplementation(async (repo: string) => ({
+        tips: new Map([['feat', `${repo}-moved`]]),
+        rateLimit: { remaining: 1000, resetAt: NOW },
+      }));
+      const cfg = readGithubAuditConfig({
+        GITHUB_AUDIT_SYNC_MODE: 'shadow',
+        GITHUB_AUDIT_COMPARE_CONCURRENCY: '1',
+      });
+      const r = await svc.runFullSweep('t1', cfg, NOW);
+      expect(client.listHeadRefs).toHaveBeenCalledTimes(1);
+      expect(r.status).toBe('partial');
+      expect(r.counters.reposTouched).toBe(1);
+      const error = prisma.githubAuditRun.rows[0].error as string;
+      expect(error).toMatch(/2 repo\(s\).*reserve/i);
+      expect(error).toContain('acme/b');
+      expect(error).toContain('acme/c');
+      // Unplanned repos keep their old tips, so the next sweep still sees the move.
+      expect(
+        prisma.githubRefTip.rows.find(
+          (t) => t.repoFullName === 'acme/b' && t.ref === 'feat',
+        )!.sha,
+      ).toBe('b0');
+      expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toBe(
+        checkpointAt,
+      );
+    } finally {
+      if (originalReserve === undefined) {
+        delete process.env.GITHUB_BACKFILL_RATE_RESERVE;
+      } else {
+        process.env.GITHUB_BACKFILL_RATE_RESERVE = originalReserve;
+      }
+    }
+  });
+
+  it('reads and writes only the requested tenant (tenant isolation)', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seedTenant(prisma, 't2', ['other/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    seeded(prisma, 't2', { 'other/ehr': { master: 'z1' } });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(client.listHeadRefs.mock.calls.map((c) => c[0])).toEqual([
+      'acme/ehr',
+    ]);
+    const tenantIds = prisma.calls
+      .flatMap((c) => [c.where, c.data, c.create])
+      .map((x) => x?.tenantId)
+      .filter((t) => t !== undefined);
+    expect(tenantIds.length).toBeGreaterThan(0);
+    expect(new Set(tenantIds)).toEqual(new Set(['t1']));
+  });
+});

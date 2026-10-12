@@ -339,6 +339,90 @@ export class GithubAuditSyncService {
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
   ): Promise<AuditRunSummary> {
+    const prep = await this.prepareRun(tenantId, cfg);
+    if ('summary' in prep) return prep.summary;
+    const { settings, repos, counters, startedMs, skipped } = prep;
+    return this.withRunClaim(
+      tenantId,
+      settings.organization,
+      now,
+      skipped,
+      () =>
+        this.runClaimed(
+          tenantId,
+          cfg,
+          now,
+          settings,
+          repos,
+          counters,
+          startedMs,
+        ),
+    );
+  }
+
+  /**
+   * Full branch sweep (spec item 3): the backstop for pushes the audit log
+   * never records (web-UI/API pushes, merges, anything it drops). Lists the
+   * branches of EVERY registered repo, plans ranges from the tip diff exactly
+   * as discovery does (with no audit evidence attached), then executes the
+   * pending queue. It never reads the audit log and never moves
+   * `checkpointAt`/`seededAt` — the checkpoint answers only for what the
+   * audit log covered. Shares the per-tenant run claim with `runTenant`, so a
+   * sweep and an audit run never plan or execute at the same time.
+   */
+  async runFullSweep(
+    tenantId: string,
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+    now: Date = new Date(),
+  ): Promise<AuditRunSummary> {
+    const prep = await this.prepareRun(tenantId, cfg);
+    if ('summary' in prep) return prep.summary;
+    const { settings, repos, counters, startedMs, skipped } = prep;
+    // Seeding is the audit sync's job (it owns seededAt/checkpointAt and the
+    // org-wide refusal guard); a sweep before it would seed every repo with
+    // none of those checks, so it waits.
+    const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+      where: { tenantId },
+    });
+    if (!checkpoint?.seededAt) {
+      return skipped('not seeded yet — the audit sync seeds first');
+    }
+    return this.withRunClaim(
+      tenantId,
+      settings.organization,
+      now,
+      skipped,
+      () =>
+        this.sweepClaimed(
+          tenantId,
+          cfg,
+          now,
+          settings,
+          repos,
+          counters,
+          startedMs,
+        ),
+    );
+  }
+
+  /**
+   * Shared opening of `runTenant` and `runFullSweep`: mode gate, settings and
+   * registered repos. Both skip/fail here before any run row exists, so a
+   * thrown error never leaves a `githubAuditRun` row stuck at 'running'.
+   */
+  private async prepareRun(
+    tenantId: string,
+    cfg: GithubAuditConfig,
+  ): Promise<
+    | { summary: AuditRunSummary }
+    | {
+        settings: { organization: string; auditToken: string };
+        repos: Map<string, Connection>;
+        counters: AuditRunCounters;
+        startedMs: number;
+        skipped: (reason: string) => AuditRunSummary;
+      }
+  > {
     const startedMs = Date.now();
     const counters = emptyCounters();
     const skipped = (reason: string): AuditRunSummary => ({
@@ -349,36 +433,47 @@ export class GithubAuditSyncService {
       durationMs: Date.now() - startedMs,
     });
     if (cfg.mode === 'off') {
-      return skipped('GITHUB_AUDIT_SYNC_MODE is off.');
+      return { summary: skipped('GITHUB_AUDIT_SYNC_MODE is off.') };
     }
     const settings = await this.loadSettings(tenantId);
     if ('reason' in settings) {
-      return skipped(settings.reason);
+      return { summary: skipped(settings.reason) };
     }
-
-    // Loaded — and allowed to fail gracefully — before any run row exists, so a
-    // thrown error here never leaves a `githubAuditRun` row stuck at 'running'.
-    let repos: Map<string, Connection>;
     try {
-      repos = await this.registeredRepos(tenantId);
+      const repos = await this.registeredRepos(tenantId);
+      return { settings, repos, counters, startedMs, skipped };
     } catch (err) {
       return {
-        tenantId,
-        status: 'failed',
-        reason: (err as Error).message.slice(0, 500),
-        counters,
-        durationMs: Date.now() - startedMs,
+        summary: {
+          tenantId,
+          status: 'failed',
+          reason: (err as Error).message.slice(0, 500),
+          counters,
+          durationMs: Date.now() - startedMs,
+        },
       };
     }
+  }
 
-    // Per-tenant claim, shared by the cron and the manual admin endpoint, so
-    // two runs for one tenant never plan/execute the same window at once. The
-    // row must exist before it can be claimed; the upsert leaves
+  /**
+   * Per-tenant claim, shared by the audit cron, the sweep cron and the manual
+   * admin endpoint, so two runs for one tenant never plan/execute at once.
+   * `body` runs only while the claim is held; the claim is released after it
+   * whatever happens.
+   */
+  private async withRunClaim(
+    tenantId: string,
+    organization: string,
+    now: Date,
+    skipped: (reason: string) => AuditRunSummary,
+    body: () => Promise<AuditRunSummary>,
+  ): Promise<AuditRunSummary> {
+    // The row must exist before it can be claimed; the upsert leaves
     // seededAt/checkpointAt untouched on an existing row.
     await this.prisma.githubAuditCheckpoint.upsert({
       where: { tenantId },
-      create: { id: newId(), tenantId, organization: settings.organization },
-      update: { organization: settings.organization },
+      create: { id: newId(), tenantId, organization },
+      update: { organization },
     });
     const claim = await this.prisma.githubAuditCheckpoint.updateMany({
       where: {
@@ -396,15 +491,7 @@ export class GithubAuditSyncService {
       return skipped('Another audit sync run for this tenant is in progress.');
     }
     try {
-      return await this.runClaimed(
-        tenantId,
-        cfg,
-        now,
-        settings,
-        repos,
-        counters,
-        startedMs,
-      );
+      return await body();
     } finally {
       try {
         // Release only OUR claim: if a stale claim of ours was taken over,
@@ -438,6 +525,7 @@ export class GithubAuditSyncService {
         id: newId(),
         tenantId,
         mode: cfg.mode,
+        trigger: 'audit',
         startedAt: now,
         status: 'running',
         counters: {},
@@ -602,6 +690,120 @@ export class GithubAuditSyncService {
       counters,
       windowFrom,
       checkpointAt,
+      durationMs,
+    };
+  }
+
+  private async sweepClaimed(
+    tenantId: string,
+    cfg: GithubAuditConfig,
+    now: Date,
+    settings: { organization: string; auditToken: string },
+    repos: Map<string, Connection>,
+    counters: AuditRunCounters,
+    startedMs: number,
+  ): Promise<AuditRunSummary> {
+    const run = await this.prisma.githubAuditRun.create({
+      data: {
+        id: newId(),
+        tenantId,
+        mode: cfg.mode,
+        trigger: 'full_sweep',
+        startedAt: now,
+        status: 'running',
+        counters: {},
+      },
+    });
+    const ctx: RunContext = {
+      tenantId,
+      runId: run.id,
+      cfg,
+      counters,
+      now,
+      organization: settings.organization,
+      auditToken: settings.auditToken,
+      repos,
+      tokens: new Map(),
+      stopForBudget: false,
+      seenKeys: new Set(),
+      unseedable: [],
+      budgetSkipped: [],
+    };
+
+    let status: AuditRunSummary['status'] = 'success';
+    const notes: string[] = [];
+    const notPlanned: string[] = [];
+    const failures: string[] = [];
+    try {
+      await forEachBounded(
+        [...repos.entries()],
+        cfg.compareConcurrency,
+        async ([repo, connection]) => {
+          // No audit evidence: these ranges were found by listing, not by a
+          // recorded push, so `auditDocumentIds` stays empty.
+          const planned = await this.planRepo(ctx, repo, connection, []);
+          if (planned.ok) {
+            if (!ctx.unseedable.includes(repo)) counters.reposTouched++;
+          } else if (planned.error === BUDGET_NOT_PLANNED) {
+            // Tips are left as they were, so the next sweep still sees the move.
+            notPlanned.push(repo);
+          } else {
+            failures.push(`${repo}: ${planned.error}`);
+          }
+        },
+      );
+      await this.executePending(ctx);
+      if (failures.length > 0) {
+        status = 'partial';
+        notes.push(
+          `Could not list branches for ${failures.length} repo(s): ${failures.slice(0, 5).join('; ')}.`,
+        );
+      }
+      if (notPlanned.length > 0) {
+        status = 'partial';
+        notes.push(
+          `${notPlanned.length} repo(s) not swept because the core rate budget reached the reserve (GITHUB_BACKFILL_RATE_RESERVE): ${nameRepos(notPlanned)}.`,
+        );
+      }
+    } catch (err) {
+      status = 'failed';
+      notes.push((err as Error).message.slice(0, 500));
+    }
+    if (ctx.unseedable.length > 0) {
+      notes.push(
+        `${ctx.unseedable.length} repo(s) skipped as unseedable (GitHub answered 404/403 — deleted, renamed or no access): ${nameRepos(ctx.unseedable)}.`,
+      );
+    }
+    const error = notes.length > 0 ? notes.join(' ') : undefined;
+
+    // The checkpoint row's lastRunAt/lastStatus/lastError describe the AUDIT
+    // route and feed `status()`; a sweep reports only through its own run row.
+    await this.prisma.githubAuditRun.update({
+      where: { id: run.id },
+      data: {
+        finishedAt: new Date(),
+        status,
+        error: error ?? null,
+        windowFrom: null,
+        windowTo: null,
+        counters: counters as unknown as object,
+      },
+    });
+
+    const durationMs = Date.now() - startedMs;
+    this.logger.log(
+      `github audit full sweep tenant=${tenantId} mode=${cfg.mode} status=${status} ` +
+        Object.entries(counters)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ') +
+        ` durationMs=${durationMs}`,
+    );
+    return {
+      tenantId,
+      runId: run.id,
+      status,
+      reason: error,
+      counters,
       durationMs,
     };
   }
