@@ -685,7 +685,7 @@ describe('GithubAuditSyncService.runTenant (org-wide refusal guard)', () => {
     const r = await svc.runTenant('t1', SHADOW, NOW);
     expect(r.status).toBe('failed');
     expect(r.reason).toMatch(
-      /collector token refused for 4 of 4 repos — check token scope\/SSO/,
+      /collector token refused \(403\/404\) for 4 of 4 repos — check token scope, SSO authorization and that these repos still exist/,
     );
     expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
     expect(
@@ -705,8 +705,68 @@ describe('GithubAuditSyncService.runTenant (org-wide refusal guard)', () => {
     const r = await svc.runTenant('t1', SHADOW, NOW);
     expect(r.status).toBe('failed');
     expect(r.reason).toMatch(
-      /collector token refused for 3 of 4 repos — check token scope\/SSO/,
+      /collector token refused \(403\/404\) for 3 of 4 repos — check token scope, SSO authorization and that these repos still exist/,
     );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
+  });
+
+  it('fails the run when every repo returns 404, not just 403 (org-wide access loss usually shows up as 404)', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c', 'acme/d']);
+    client.getDefaultBranch.mockResolvedValue({ failure: 'not_found' });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(r.reason).toMatch(
+      /collector token refused \(403\/404\) for 4 of 4 repos — check token scope, SSO authorization and that these repos still exist/,
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
+  });
+
+  it('fails the run when 2 of 4 repos return 404 and 0 return 403 (ratio reaches half)', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c', 'acme/d']);
+    client.getDefaultBranch.mockImplementation(async (repo: string) =>
+      repo === 'acme/a' || repo === 'acme/b'
+        ? { failure: 'not_found' }
+        : { name: 'master' },
+    );
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(r.reason).toMatch(
+      /collector token refused \(403\/404\) for 2 of 4 repos/,
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
+  });
+
+  it('fails the run when a mix of 403 and 404 together reach half the attempted repos', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c', 'acme/d']);
+    client.getDefaultBranch.mockImplementation(async (repo: string) => {
+      if (repo === 'acme/a') return { failure: 'forbidden' };
+      if (repo === 'acme/b') return { failure: 'not_found' };
+      return { name: 'master' };
+    });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(r.reason).toMatch(
+      /collector token refused \(403\/404\) for 2 of 4 repos/,
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
+  });
+
+  it('stays partial when every attempted repo fails transiently, with none refused', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c']);
+    client.getDefaultBranch.mockResolvedValue({ failure: 'failed' });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('partial');
+    expect(r.counters.reposUnseedable).toBe(0);
     expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
   });
 

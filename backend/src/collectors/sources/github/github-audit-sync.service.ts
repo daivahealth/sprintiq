@@ -112,19 +112,21 @@ export interface RunContext {
   coreBudget?: number;
   /** Idempotency keys already resolved this run, so a commit reachable from two ranges is counted once, not once per range (review round 1, issue 5). */
   seenKeys: Set<string>;
-  /** Repos skipped as unseedable (404/403) this run, named in `run.error`. */
-  unseedable: string[];
   /**
-   * The subset of `unseedable` that GitHub specifically answered 403
-   * (forbidden) to, as opposed to 404 (not_found) — kept separate so the
-   * org-wide refusal guard (spec item 1) can tell "the token has no access"
-   * from "the repo is gone," which a 404 never implies. Populated only
-   * during `seedAll`'s own seeding pass and read by it alone; a 403 on a
-   * repo seeded individually later in the same run (`planRepo`) is never
-   * read back into the guard, since the guard applies only to the initial
-   * seeding pass.
+   * Repos skipped as unseedable this run, named in `run.error` — GitHub
+   * answered either 403 (forbidden: the token has no access) or 404
+   * (not_found: deleted, renamed, OR a repo the token can no longer see,
+   * which is indistinguishable from "gone" at this API). An org-wide access
+   * loss (SSO revoked, wrong org, rotated-but-unauthorized token) typically
+   * shows up as 404 on every repo, not 403 — GitHub does not reveal a
+   * private repo's existence to a token it has revoked (controller ruling,
+   * fix round 1) — so the org-wide refusal guard below must count both the
+   * same way rather than only 403. Populated only during `seedAll`'s own
+   * seeding pass and read by it alone; entries added later in the same run
+   * by `planRepo` seeding a never-seen touched repo are never read back into
+   * the guard, since the guard applies only to the initial seeding pass.
    */
-  forbidden: string[];
+  unseedable: string[];
   /** Repos whose seeding was skipped because the core budget reached the reserve. */
   budgetSkipped: string[];
 }
@@ -140,18 +142,31 @@ interface SeedAllResult {
   status: 'complete' | 'incomplete' | 'refused';
   /** Repos this seeding pass tried (excludes ones already seeded by an earlier run). */
   attempted: number;
-  forbiddenCount: number;
+  /** Repos this pass answered 403 or 404 for (see `RunContext.unseedable`). */
+  refusedCount: number;
 }
 
 /**
- * A seeding pass that seeds nothing, or where at least half the attempted
- * repos come back `forbidden`, cannot be trusted to represent the org: the
- * token is refused, not merely rate-limited or transiently unlucky, so
- * reporting `seeded` (and starting the checkpoint) would silently assert
- * coverage of repos the token can't even see (spec item 1).
+ * A seeding pass cannot be trusted to represent the org — and must not be
+ * reported `seeded`, which would start the checkpoint as if the org had
+ * actually been observed — when (controller ruling, fix round 1):
+ *   - at least half the attempted repos were refused (403 or 404), since an
+ *     org-wide access loss (SSO revoked, wrong org) usually shows up as 404
+ *     on every repo, not 403; or
+ *   - nothing seeded AND at least one repo was refused — catching a smaller
+ *     refused fraction sitting alongside otherwise-transient failures,
+ *     which alone (zero refused) must still retry as `partial`.
+ * A pass with 0 seeded, 0 refused, and only transient failures (rate
+ * limits, 5xx) is deliberately NOT refused — those retry next run.
  */
-function isRefused(attempted: number, forbiddenCount: number): boolean {
-  return attempted > 0 && forbiddenCount * 2 >= attempted;
+function isRefused(
+  attempted: number,
+  seededCount: number,
+  refusedCount: number,
+): boolean {
+  if (attempted === 0) return false;
+  if (refusedCount * 2 >= attempted) return true;
+  return seededCount === 0 && refusedCount > 0;
 }
 
 /** One commit's outcome inside a push range — the per-SHA evidence shadow-mode acceptance compares with ground truth (spec §9 step 3). */
@@ -441,7 +456,6 @@ export class GithubAuditSyncService {
       stopForBudget: false,
       seenKeys: new Set(),
       unseedable: [],
-      forbidden: [],
       budgetSkipped: [],
     };
 
@@ -495,7 +509,7 @@ export class GithubAuditSyncService {
           // actually observed the org, so starting the checkpoint would
           // silently assert coverage it does not have (spec item 1).
           status = 'failed';
-          error = `collector token refused for ${seedResult.forbiddenCount} of ${seedResult.attempted} repos — check token scope/SSO`;
+          error = `collector token refused (403/404) for ${seedResult.refusedCount} of ${seedResult.attempted} repos — check token scope, SSO authorization and that these repos still exist`;
         } else {
           status = 'partial';
           error =
@@ -687,14 +701,15 @@ export class GithubAuditSyncService {
       },
     );
     const attempted = todo.length;
-    const forbiddenCount = ctx.forbidden.length;
-    if (isRefused(attempted, forbiddenCount)) {
-      return { status: 'refused', attempted, forbiddenCount };
+    const refusedCount = ctx.unseedable.length;
+    const seededCount = ctx.counters.reposSeeded;
+    if (isRefused(attempted, seededCount, refusedCount)) {
+      return { status: 'refused', attempted, refusedCount };
     }
     return {
       status: complete ? 'complete' : 'incomplete',
       attempted,
-      forbiddenCount,
+      refusedCount,
     };
   }
 
@@ -727,21 +742,16 @@ export class GithubAuditSyncService {
       `[tenant ${ctx.tenantId}] could not seed ${repo}: ${failure ?? 'unknown'}`,
     );
     if (isUnseedable(failure)) {
-      this.noteUnseedable(ctx, repo, failure);
+      this.noteUnseedable(ctx, repo);
       return 'unseedable';
     }
     if (failure === 'rate_limited') ctx.stopForBudget = true;
     return 'failed';
   }
 
-  private noteUnseedable(
-    ctx: RunContext,
-    repo: string,
-    failure: GithubCallFailure | undefined,
-  ): void {
+  private noteUnseedable(ctx: RunContext, repo: string): void {
     ctx.counters.reposUnseedable++;
     ctx.unseedable.push(repo);
-    if (failure === 'forbidden') ctx.forbidden.push(repo);
   }
 
   private async seedRepo(
@@ -878,7 +888,7 @@ export class GithubAuditSyncService {
       if (isUnseedable(refs.failure)) {
         // Deleted / renamed / access revoked: nothing to plan, ever — skip it
         // rather than hold the checkpoint for every other repo.
-        this.noteUnseedable(ctx, repo, refs.failure);
+        this.noteUnseedable(ctx, repo);
         return { ok: true };
       }
       if (refs.failure === 'rate_limited') ctx.stopForBudget = true;
