@@ -56,6 +56,13 @@ export interface AuditRunCounters {
   reposUnregistered: number;
   /** Pushed repos that had no connection at all and were auto-registered this run (spec item 4). */
   reposRegistered: number;
+  /**
+   * Shadow mode only: pushed repos with no connection that passed the
+   * existence/archived checks and WOULD have been auto-registered in ingest
+   * mode. Shadow never creates a connection (that would make the regular
+   * collectors backfill the repo), seeds it or plans ranges for it.
+   */
+  reposWouldRegister: number;
   refsMoved: number;
   refsNew: number;
   refsDeleted: number;
@@ -160,6 +167,8 @@ export interface RegistrationContext {
   noTokenRef: string[];
   /** Repos registered this run with more branches than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES — seeded only. */
   overCap: string[];
+  /** Shadow mode: repos that would have been auto-registered, named in `run.error`. */
+  wouldRegister: string[];
 }
 
 /** Org-sync default when the GitHub configuration sets no `backfillDays`. */
@@ -171,6 +180,7 @@ function registrationOf(settings: AuditSettings): RegistrationContext {
     backfillDays: settings.backfillDays,
     noTokenRef: [],
     overCap: [],
+    wouldRegister: [],
   };
 }
 
@@ -265,6 +275,7 @@ export function emptyCounters(): AuditRunCounters {
     reposTouched: 0,
     reposUnregistered: 0,
     reposRegistered: 0,
+    reposWouldRegister: 0,
     refsMoved: 0,
     refsNew: 0,
     refsDeleted: 0,
@@ -686,6 +697,10 @@ export class GithubAuditSyncService {
     const { overCap, noTokenRef } = ctx.registration;
     if (overCap.length > 0) {
       const note = `${overCap.length} auto-registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so they were seeded only — their non-default-branch pushes in this window are left to the regular collector: ${nameRepos(overCap)}.`;
+      error = error ? `${error} ${note}` : note;
+    }
+    if (ctx.registration.wouldRegister.length > 0) {
+      const note = `would auto-register (shadow): ${nameRepos(ctx.registration.wouldRegister)}.`;
       error = error ? `${error} ${note}` : note;
     }
     if (noTokenRef.length > 0) {
@@ -1184,6 +1199,8 @@ export class GithubAuditSyncService {
    *   connection is an admin decision. Counted `reposUnregistered`.
    * - 404/403 → skipped, counted and named as unseedable.
    * - archived/disabled → skipped, counted `reposUnregistered`, no connection.
+   * - Shadow mode → after those checks, only counted `reposWouldRegister` and
+   *   named in `run.error`; no connection, tips or ranges, checkpoint not held.
    * - Transient failure or the core budget at the reserve → `ok: false`, which
    *   holds the checkpoint so the window is re-read, as in `planRepo`.
    *
@@ -1226,6 +1243,15 @@ export class GithubAuditSyncService {
     }
     if (branch.archived || branch.disabled) {
       counters.reposUnregistered++;
+      return { ok: true };
+    }
+    if (ctx.cfg.mode !== 'ingest') {
+      // Shadow mode must not change collection outside the audit route's own
+      // state: a connection would make the regular collectors backfill this
+      // repo. Report it only — no connection, tips or ranges — and do not
+      // hold the checkpoint: it was examined, nothing is pending.
+      counters.reposWouldRegister++;
+      registration.wouldRegister.push(repo);
       return { ok: true };
     }
     if (ctx.stopForBudget) return { ok: false, error: BUDGET_NOT_PLANNED };

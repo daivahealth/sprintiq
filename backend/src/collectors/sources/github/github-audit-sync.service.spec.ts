@@ -1283,6 +1283,7 @@ describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
 });
 
 describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)', () => {
+  const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
   const noCommits = { commits: [], pages: 1, truncated: false };
   const auditOf = (...events: ReturnType<typeof push>[]) => ({
     status: 'complete',
@@ -1320,7 +1321,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       ]),
     });
 
-    const r = await svc.runTenant('t1', SHADOW, NOW);
+    const r = await svc.runTenant('t1', INGEST, NOW);
 
     expect(r.status).toBe('success');
     expect(r.counters).toMatchObject({
@@ -1400,7 +1401,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
     client.getDefaultBranch.mockResolvedValue({ name: 'main' });
     client.listHeadRefs.mockResolvedValue({ tips: new Map([['main', 'n1']]) });
-    await svc.runTenant('t1', SHADOW, NOW);
+    await svc.runTenant('t1', INGEST, NOW);
     expect(connections.create.mock.calls[0][1].config).toEqual({
       repoFullName: 'acme/fresh',
       backfillSince: new Date(NOW.getTime() - 90 * 86_400_000).toISOString(),
@@ -1412,10 +1413,10 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
     client.getDefaultBranch.mockResolvedValue({ name: 'main' });
     client.listHeadRefs.mockResolvedValue({ tips: new Map([['main', 'n1']]) });
-    await svc.runTenant('t1', SHADOW, NOW);
+    await svc.runTenant('t1', INGEST, NOW);
     const second = await svc.runTenant(
       't1',
-      SHADOW,
+      INGEST,
       new Date(NOW.getTime() + 300_000),
     );
     expect(connections.create).toHaveBeenCalledTimes(1);
@@ -1432,7 +1433,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       const { svc, prisma, audit, client, connections } = fresh();
       audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
       client.getDefaultBranch.mockResolvedValue(branch);
-      const r = await svc.runTenant('t1', SHADOW, NOW);
+      const r = await svc.runTenant('t1', INGEST, NOW);
       expect(r.status).toBe('success');
       expect(r.counters).toMatchObject({
         reposRegistered: 0,
@@ -1450,7 +1451,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       const { svc, prisma, audit, client, connections } = fresh();
       audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
       client.getDefaultBranch.mockResolvedValue({ failure });
-      const r = await svc.runTenant('t1', SHADOW, NOW);
+      const r = await svc.runTenant('t1', INGEST, NOW);
       expect(r.status).toBe('success');
       expect(r.counters).toMatchObject({
         reposRegistered: 0,
@@ -1474,7 +1475,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       config: { repoFullName: 'acme/fresh' },
     });
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
-    const r = await svc.runTenant('t1', SHADOW, NOW);
+    const r = await svc.runTenant('t1', INGEST, NOW);
     expect(r.status).toBe('success');
     expect(r.counters).toMatchObject({
       reposRegistered: 0,
@@ -1499,7 +1500,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       config: { repoFullName: 'acme/fresh' },
     });
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
-    const r = await svc.runTenant('t1', SHADOW, NOW);
+    const r = await svc.runTenant('t1', INGEST, NOW);
     expect(r.counters.reposUnregistered).toBe(1);
     expect(connections.create).not.toHaveBeenCalled();
     expect(client.getDefaultBranch).not.toHaveBeenCalled();
@@ -1517,7 +1518,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       ]),
     });
     const cfg = readGithubAuditConfig({
-      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
       GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '2',
     });
     const r = await svc.runTenant('t1', cfg, NOW);
@@ -1547,7 +1548,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       ]),
     });
     const cfg = readGithubAuditConfig({
-      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
       GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '2',
     });
     const r = await svc.runTenant('t1', cfg, NOW);
@@ -1560,7 +1561,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
     const before = prisma.githubAuditCheckpoint.rows[0].checkpointAt;
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
     client.getDefaultBranch.mockResolvedValue({ failure: 'failed' });
-    const r = await svc.runTenant('t1', SHADOW, NOW);
+    const r = await svc.runTenant('t1', INGEST, NOW);
     expect(r.status).toBe('failed');
     expect(connections.create).not.toHaveBeenCalled();
     expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(before);
@@ -1573,7 +1574,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
     client.getDefaultBranch.mockResolvedValue({ name: 'main' });
     client.listHeadRefs.mockResolvedValue({ failure: 'failed' });
-    const r = await svc.runTenant('t1', SHADOW, NOW);
+    const r = await svc.runTenant('t1', INGEST, NOW);
     expect(r.status).toBe('failed');
     expect(connections.create).not.toHaveBeenCalled();
     expect(
@@ -1598,7 +1599,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
         rateLimit: { remaining: 1000, resetAt: NOW },
       });
       const cfg = readGithubAuditConfig({
-        GITHUB_AUDIT_SYNC_MODE: 'shadow',
+        GITHUB_AUDIT_SYNC_MODE: 'ingest',
         GITHUB_AUDIT_COMPARE_CONCURRENCY: '1',
       });
       const r = await svc.runTenant('t1', cfg, NOW);
@@ -1623,7 +1624,7 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
     const { svc, prisma, audit, client, connections } = fresh();
     delete prisma.tenantConfiguration.rows[0].secretRefs.tokenRef;
     audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
-    const r = await svc.runTenant('t1', SHADOW, NOW);
+    const r = await svc.runTenant('t1', INGEST, NOW);
     expect(r.counters).toMatchObject({
       reposRegistered: 0,
       reposUnregistered: 1,
@@ -1631,5 +1632,57 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
     expect(connections.create).not.toHaveBeenCalled();
     expect(client.getDefaultBranch).not.toHaveBeenCalled();
     expect(prisma.githubAuditRun.rows[0].error).toMatch(/tokenRef/);
+  });
+
+  it('in shadow mode only reports it: checks GitHub, creates no connection, seeds and plans nothing, advances the checkpoint', async () => {
+    const { svc, prisma, audit, client, connections, ingestion, auditSink } =
+      fresh();
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['main', 'n1'],
+        ['feat-a', 'a1'],
+      ]),
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('success');
+    expect(r.counters).toMatchObject({
+      reposWouldRegister: 1,
+      reposRegistered: 0,
+      reposUnregistered: 0,
+    });
+    expect(client.getDefaultBranch).toHaveBeenCalledWith(
+      'acme/fresh',
+      'tok:GITHUB_TOKEN',
+    );
+    expect(client.listHeadRefs).not.toHaveBeenCalled();
+    expect(connections.create).not.toHaveBeenCalled();
+    expect(auditSink.record).not.toHaveBeenCalled();
+    expect(
+      prisma.githubRefTip.rows.filter((t) => t.repoFullName === 'acme/fresh'),
+    ).toHaveLength(0);
+    expect(prisma.githubPushRange.rows).toHaveLength(0);
+    expect(
+      ingestion.ingest.mock.calls.filter(
+        (c) => c[1].connectionId === undefined,
+      ),
+    ).toHaveLength(0);
+    expect(prisma.githubAuditRun.rows[0].error).toContain(
+      'would auto-register (shadow): acme/fresh',
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+  });
+
+  it('in shadow mode still skips an archived repo without reporting it as would-register', async () => {
+    const { svc, audit, client, connections } = fresh();
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main', archived: true });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.counters).toMatchObject({
+      reposWouldRegister: 0,
+      reposUnregistered: 1,
+    });
+    expect(connections.create).not.toHaveBeenCalled();
   });
 });
