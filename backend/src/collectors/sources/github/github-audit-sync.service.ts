@@ -5,6 +5,7 @@ import { forEachBounded } from '../../../common/concurrency';
 import { CodeCommitPayload } from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
+import { istDayEnd, istDayStart } from '../../../common/time';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { ConnectionsService } from '../../../modules/connections/connections.service';
@@ -113,6 +114,22 @@ export interface AuditStatus {
   pendingRanges: number;
   failedRanges: number;
 }
+
+/**
+ * Whether the audit route can vouch that a reported IST day's commits are in
+ * (spec item 5, the digest seal). `applies` is false when the route is not
+ * part of commit collection for the tenant (mode not `ingest`, or no
+ * audit-log token ref) — then `ok` is true and `reasons` empty, and the
+ * digest behaves exactly as before the route existed.
+ */
+export interface AuditDayCoverage {
+  applies: boolean;
+  ok: boolean;
+  reasons: string[];
+}
+
+/** Ranges named in a coverage reason; the rest are counted. */
+const COVERAGE_RANGES_SHOWN = 5;
 
 export interface RunContext {
   tenantId: string;
@@ -389,6 +406,109 @@ export class GithubAuditSyncService {
       pendingRanges: pendingRanges.length,
       failedRanges: failedRanges.length,
     };
+  }
+
+  /**
+   * "Can the audit route vouch for `day`?" — the digest's seal (spec item 5).
+   * Read-only and tenant-scoped: it never resolves a secret (the ref's
+   * presence is what makes the route part of collection) and never calls
+   * GitHub. Completeness, not liveness, is what it proves, and all of:
+   *   - the audit log has been read through the day's last instant plus the
+   *     overlap the next window re-reads (`checkpointAt`, which only moves
+   *     once a window's work is durably queued);
+   *   - nothing queued while the day's pushes could still be planned —
+   *     [day start, day end + overlap + 60 min] — is `pending` or `failed`;
+   *   - when the full sweep is on, a sweep finished successfully after the
+   *     day ended, covering pushes the audit log never records.
+   * Every failing condition is reported, so the withheld card names them all.
+   */
+  async coverageForDay(
+    tenantId: string,
+    day: string,
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+  ): Promise<AuditDayCoverage> {
+    const notApplicable: AuditDayCoverage = {
+      applies: false,
+      ok: true,
+      reasons: [],
+    };
+    if (cfg.mode !== 'ingest') return notApplicable;
+    const config = await this.prisma.tenantConfiguration.findUnique({
+      where: {
+        tenantId_namespace_key: {
+          tenantId,
+          namespace: 'github',
+          key: 'default',
+        },
+      },
+    });
+    const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
+    if (
+      !config ||
+      config.status !== 'active' ||
+      typeof refs.auditLogTokenRef !== 'string'
+    ) {
+      return notApplicable;
+    }
+
+    const dayEndMs = istDayEnd(day).getTime();
+    const overlapMs = cfg.overlapMinutes * 60_000;
+    const mustReach = new Date(dayEndMs + overlapMs);
+    const unfinishedWhere = {
+      tenantId,
+      status: { in: ['pending', 'failed'] },
+      createdAt: {
+        gte: istDayStart(day),
+        lte: new Date(dayEndMs + overlapMs + 60 * 60_000),
+      },
+    };
+    const [checkpoint, unfinished, shown, sweep] = await Promise.all([
+      this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+      this.prisma.githubPushRange.count({ where: unfinishedWhere }),
+      this.prisma.githubPushRange.findMany({
+        where: unfinishedWhere,
+        select: { repoFullName: true, ref: true },
+        orderBy: { createdAt: 'asc' },
+        take: COVERAGE_RANGES_SHOWN,
+      }),
+      cfg.fullSweepMinutes > 0
+        ? this.prisma.githubAuditRun.findFirst({
+            where: {
+              tenantId,
+              trigger: 'full_sweep',
+              status: 'success',
+              finishedAt: { gt: new Date(dayEndMs) },
+            },
+            select: { id: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const reasons: string[] = [];
+    if (!checkpoint?.seededAt) {
+      reasons.push('audit sync has not completed its seeding pass');
+    }
+    const checkpointAt = checkpoint?.checkpointAt ?? null;
+    if (!checkpointAt) {
+      reasons.push('audit log never read');
+    } else if (checkpointAt.getTime() < mustReach.getTime()) {
+      reasons.push(`audit log read only through ${checkpointAt.toISOString()}`);
+    }
+    if (unfinished > 0) {
+      const named = shown.map((r) => `${r.repoFullName}@${r.ref}`).join(', ');
+      const rest = unfinished - shown.length;
+      reasons.push(
+        `${unfinished} unfinished range(s): ${named}${
+          rest > 0 ? ` (and ${rest} more)` : ''
+        }`,
+      );
+    }
+    if (cfg.fullSweepMinutes > 0 && !sweep) {
+      reasons.push(
+        `no successful full branch sweep has finished since ${day} ended`,
+      );
+    }
+    return { applies: true, ok: reasons.length === 0, reasons };
   }
 
   async runTenant(

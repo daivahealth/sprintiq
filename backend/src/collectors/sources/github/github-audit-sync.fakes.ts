@@ -15,10 +15,18 @@ function matches(row: Row, where: Row = {}): boolean {
       return v.some((cond) => matches(row, cond as Row));
     }
     if (v && typeof v === 'object' && !(v instanceof Date)) {
-      if ('in' in v) return (v.in as unknown[]).includes(row[k]);
-      if ('gte' in v) return row[k] >= v.gte;
-      if ('lte' in v) return row[k] <= v.lte;
-      if ('lt' in v) return row[k] != null && row[k] < v.lt;
+      // Every operator present must hold, as in Prisma — a `{ gte, lte }`
+      // window is a window, not just its lower bound.
+      const ops = ['in', 'gte', 'gt', 'lte', 'lt'].filter((op) => op in v);
+      if (ops.length > 0) {
+        const x = row[k];
+        if ('in' in v && !(v.in as unknown[]).includes(x)) return false;
+        if ('gte' in v && !(x != null && x >= v.gte)) return false;
+        if ('gt' in v && !(x != null && x > v.gt)) return false;
+        if ('lte' in v && !(x != null && x <= v.lte)) return false;
+        if ('lt' in v && !(x != null && x < v.lt)) return false;
+        return true;
+      }
     }
     // Prisma's `{ col: null }` also matches a column the fake never set.
     if (v === null) return row[k] == null;
@@ -39,6 +47,14 @@ function table(calls: Row[], rows: Row[], uniqueOf: (where: Row) => Row) {
       if (orderBy?.createdAt === 'asc')
         out = [...out].sort((a, b) => a.createdAt - b.createdAt);
       return take ? out.slice(0, take) : out;
+    }),
+    findFirst: jest.fn(async ({ where }: Row = {}) => {
+      calls.push({ where });
+      return rows.find((r) => matches(r, where)) ?? null;
+    }),
+    count: jest.fn(async ({ where }: Row = {}) => {
+      calls.push({ where });
+      return rows.filter((r) => matches(r, where)).length;
     }),
     create: jest.fn(async ({ data }: Row) => {
       calls.push({ data });

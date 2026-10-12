@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { GithubAuditSyncService } from '../collectors/sources/github/github-audit-sync.service';
 import {
   isAnonymizedAccount,
   isBotDeveloper,
@@ -237,6 +238,9 @@ export class NoCommitDetectionService {
     private readonly identities: DeveloperIdentityService,
     private readonly code: CodeService,
     private readonly connections: ConnectionsService,
+    // Optional and last: a positional 4-argument construction (the existing
+    // specs) means "no audit gate", exactly the pre-audit-route behaviour.
+    @Optional() private readonly auditSync?: GithubAuditSyncService,
   ) {}
 
   async detect(
@@ -369,6 +373,45 @@ export class NoCommitDetectionService {
         // No commit read has run yet — nothing to count.
         unattributedCommits: 0,
       };
+    }
+
+    // Gate 1b: has the GitHub audit route covered the reported day? Once the
+    // tenant runs it in `ingest` mode with an audit-log token ref, the route
+    // is part of commit collection, and gate 1's liveness check cannot see
+    // it: every connection can be syncing while the audit log is hours
+    // behind or its ranges are stuck. Here completeness, not liveness, is
+    // what gets proven — checkpoint past day end + overlap, no unfinished
+    // range from the day, a full branch sweep since the day ended
+    // (`GithubAuditSyncService.coverageForDay`). Withhold, never add, so a
+    // check that cannot run withholds too (fail closed). Absent service or
+    // `applies: false` leaves the digest exactly as it was.
+    if (this.auditSync) {
+      let auditGap: string | null = null;
+      try {
+        const coverage = await this.auditSync.coverageForDay(
+          tenantId,
+          reportedDay,
+        );
+        if (coverage.applies && !coverage.ok) {
+          auditGap = `GitHub audit sync has not covered ${reportedDay}: ${coverage.reasons.join(
+            '; ',
+          )}. Names withheld.`;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        auditGap = `GitHub audit sync coverage could not be checked for ${reportedDay}: ${message}. Names withheld.`;
+      }
+      if (auditGap) {
+        return {
+          reportedDay,
+          rosterCount: roster.length,
+          evaluation: empty,
+          withhold: { outcome: 'withheld_stale_data', detail: auditGap },
+          lastSyncAt: freshness.lastSyncAt,
+          // No commit read has run yet — nothing to count.
+          unattributedCommits: 0,
+        };
+      }
     }
 
     const [{ commits, truncated }, prs] = await Promise.all([

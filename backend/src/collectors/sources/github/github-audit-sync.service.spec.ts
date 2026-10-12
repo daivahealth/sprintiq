@@ -1022,6 +1022,262 @@ describe('GithubAuditSyncService.status', () => {
   });
 });
 
+describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
+  const DAY = '2026-10-05';
+  // istDayEnd('2026-10-05') = 2026-10-05T18:29:59.999Z; overlap defaults to 15.
+  const DAY_START = new Date('2026-10-04T18:30:00.000Z');
+  const DAY_END = new Date('2026-10-05T18:29:59.999Z');
+  const MUST_REACH = new Date(DAY_END.getTime() + 15 * 60_000);
+  const RANGE_UPPER = new Date(MUST_REACH.getTime() + 60 * 60_000);
+  const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
+  const NO_SWEEP = readGithubAuditConfig({
+    GITHUB_AUDIT_SYNC_MODE: 'ingest',
+    GITHUB_AUDIT_FULL_SWEEP_MINUTES: '0',
+  });
+  const SWEEP_REASON =
+    'no successful full branch sweep has finished since 2026-10-05 ended';
+
+  /** A tenant the audit route fully vouches for on DAY. */
+  function covered(prisma: ReturnType<typeof fakePrisma>, tenantId: string) {
+    seedTenant(prisma, tenantId, ['acme/ehr']);
+    prisma.githubAuditCheckpoint.rows.push({
+      id: `cp-${tenantId}`,
+      tenantId,
+      organization: 'acme',
+      seededAt: new Date('2026-10-01T00:00:00.000Z'),
+      checkpointAt: new Date('2026-10-06T04:00:00.000Z'),
+    });
+    prisma.githubAuditRun.rows.push({
+      id: `sweep-${tenantId}`,
+      tenantId,
+      trigger: 'full_sweep',
+      status: 'success',
+      finishedAt: new Date('2026-10-05T19:00:00.000Z'),
+    });
+  }
+
+  const range = (
+    id: string,
+    tenantId: string,
+    status: string,
+    createdAt: Date,
+    repo = 'acme/ehr',
+    ref = 'main',
+  ) => ({ id, tenantId, status, createdAt, repoFullName: repo, ref });
+
+  it('does not apply in shadow mode', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    expect(await svc.coverageForDay('t1', DAY, SHADOW)).toEqual({
+      applies: false,
+      ok: true,
+      reasons: [],
+    });
+  });
+
+  it('does not apply when no audit-log token ref is configured', async () => {
+    const { svc, prisma, secrets } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr'], {});
+    expect(await svc.coverageForDay('t1', DAY, INGEST)).toEqual({
+      applies: false,
+      ok: true,
+      reasons: [],
+    });
+    expect(secrets.resolve).not.toHaveBeenCalled();
+  });
+
+  it('does not apply when the GitHub configuration is not active', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.tenantConfiguration.rows[0].status = 'draft';
+    expect((await svc.coverageForDay('t1', DAY, INGEST)).applies).toBe(false);
+  });
+
+  it('is ok when checkpoint, ranges and the sweep all cover the day — and never resolves a secret or calls GitHub', async () => {
+    const { svc, prisma, secrets, audit, client } = setup();
+    covered(prisma, 't1');
+    expect(await svc.coverageForDay('t1', DAY, INGEST)).toEqual({
+      applies: true,
+      ok: true,
+      reasons: [],
+    });
+    expect(secrets.resolve).not.toHaveBeenCalled();
+    expect(audit.listGitPushes).not.toHaveBeenCalled();
+    expect(client.listHeadRefs).not.toHaveBeenCalled();
+  });
+
+  it('is not ok before the seeding pass has completed', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditCheckpoint.rows[0].seededAt = null;
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.applies).toBe(true);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual([
+      'audit sync has not completed its seeding pass',
+    ]);
+  });
+
+  it('is not ok with no checkpoint row at all', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditCheckpoint.rows.length = 0;
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual([
+      'audit sync has not completed its seeding pass',
+      'audit log never read',
+    ]);
+  });
+
+  it('is not ok when the checkpoint stops short of day end + overlap', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    const short = new Date(MUST_REACH.getTime() - 1);
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = short;
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual([
+      `audit log read only through ${short.toISOString()}`,
+    ]);
+  });
+
+  it('is ok with the checkpoint exactly at day end + overlap', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = MUST_REACH;
+    expect((await svc.coverageForDay('t1', DAY, INGEST)).ok).toBe(true);
+  });
+
+  it('is not ok with a pending or failed range created in the window; finished ranges and ranges outside it are ignored', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubPushRange.rows.push(
+      range('in-1', 't1', 'pending', DAY_START, 'acme/ehr', 'main'),
+      range('in-2', 't1', 'failed', RANGE_UPPER, 'acme/lab', 'dev'),
+      range('done', 't1', 'done', DAY_END),
+      range('shadowed', 't1', 'shadowed', DAY_END),
+      range('before', 't1', 'pending', new Date(DAY_START.getTime() - 1)),
+      range('after', 't1', 'failed', new Date(RANGE_UPPER.getTime() + 1)),
+    );
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual([
+      '2 unfinished range(s): acme/ehr@main, acme/lab@dev',
+    ]);
+  });
+
+  it('names at most 5 unfinished ranges and counts the rest, with bounded reads', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    for (let i = 0; i < 7; i++) {
+      prisma.githubPushRange.rows.push(
+        range(
+          `r${i}`,
+          't1',
+          'pending',
+          new Date(DAY_START.getTime() + i * 60_000),
+          `acme/r${i}`,
+          'main',
+        ),
+      );
+    }
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.reasons).toEqual([
+      '7 unfinished range(s): acme/r0@main, acme/r1@main, acme/r2@main, acme/r3@main, acme/r4@main (and 2 more)',
+    ]);
+    // A count plus at most 5 rows — never the whole queue.
+    expect(prisma.githubPushRange.findMany.mock.calls[0][0]?.take).toBe(5);
+    expect(prisma.githubPushRange.count).toHaveBeenCalled();
+  });
+
+  it('is not ok when no full sweep has run', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditRun.rows.length = 0;
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual([SWEEP_REASON]);
+  });
+
+  it.each([
+    ['failed', { status: 'failed' }],
+    ['partial', { status: 'partial' }],
+    ['finished at the last instant of the day', { finishedAt: DAY_END }],
+    ['an audit run, not a sweep', { trigger: 'audit' }],
+    ['still running', { status: 'running', finishedAt: null }],
+  ])(
+    'is not ok when the only sweep is %s',
+    async (_label: string, patch: Record<string, unknown>) => {
+      const { svc, prisma } = setup();
+      covered(prisma, 't1');
+      Object.assign(prisma.githubAuditRun.rows[0], patch);
+      const c = await svc.coverageForDay('t1', DAY, INGEST);
+      expect(c.ok).toBe(false);
+      expect(c.reasons).toEqual([SWEEP_REASON]);
+    },
+  );
+
+  it('skips the sweep condition when the sweep is disabled (0)', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditRun.rows.length = 0;
+    expect(await svc.coverageForDay('t1', DAY, NO_SWEEP)).toEqual({
+      applies: true,
+      ok: true,
+      reasons: [],
+    });
+    expect(prisma.githubAuditRun.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('reports every failing condition together', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = DAY_END;
+    prisma.githubAuditRun.rows.length = 0;
+    prisma.githubPushRange.rows.push(range('r', 't1', 'pending', DAY_END));
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.reasons).toEqual([
+      `audit log read only through ${DAY_END.toISOString()}`,
+      '1 unfinished range(s): acme/ehr@main',
+      SWEEP_REASON,
+    ]);
+  });
+
+  it("never lets another tenant's checkpoint, ranges or sweep affect the result (tenant isolation)", async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    covered(prisma, 't2');
+    // t1 has no sweep; t2's must not stand in for it.
+    prisma.githubAuditRun.rows.splice(0, 1);
+    // t2's unfinished range in the window must not count against t1.
+    prisma.githubPushRange.rows.push(
+      range('t2-r', 't2', 'pending', DAY_END, 'other/ehr', 'main'),
+    );
+    // t1 not seeded; t2's seeded checkpoint must not stand in for it.
+    prisma.githubAuditCheckpoint.rows[0].seededAt = null;
+    prisma.calls.length = 0;
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.reasons).toEqual([
+      'audit sync has not completed its seeding pass',
+      SWEEP_REASON,
+    ]);
+    expect(prisma.calls.length).toBeGreaterThan(0);
+    for (const call of prisma.calls) {
+      const where = call.where as {
+        tenantId?: string;
+        tenantId_namespace_key?: { tenantId: string };
+      };
+      expect(where.tenantId ?? where.tenantId_namespace_key?.tenantId).toBe(
+        't1',
+      );
+    }
+    // And t2 sees its own range, not t1's state.
+    const c2 = await svc.coverageForDay('t2', DAY, INGEST);
+    expect(c2.reasons).toEqual(['1 unfinished range(s): other/ehr@main']);
+  });
+});
+
 describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
   const noCommits = { commits: [], pages: 1, truncated: false };
 

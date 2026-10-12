@@ -1,5 +1,6 @@
 import {
   IMPLAUSIBLE_FLAGGED_SHARE,
+  NoCommitDetectionService,
   evaluateRoster,
   implausible,
 } from './no-commit-detection.service';
@@ -126,5 +127,177 @@ describe('implausible', () => {
 
   it('is false for an empty roster rather than dividing by zero', () => {
     expect(implausible(0, 0)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Audit-sync coverage gate (the digest seal, ADR-0010 spec item 5).
+// ---------------------------------------------------------------------------
+
+describe('NoCommitDetectionService audit-sync coverage gate', () => {
+  const DAY = '2026-10-05';
+  const LAST_SYNC = new Date('2026-10-06T02:00:00.000Z');
+
+  /**
+   * One tracked, resolvable developer with commits from nobody. Without a
+   * gate they would be flagged — that is what makes a withhold discriminating.
+   * A two-person roster with one active keeps the implausible gate quiet.
+   */
+  function harness(
+    opts: {
+      audit?: { coverageForDay: jest.Mock } | null;
+      failing?: { sourceSystem: string; name: string; error: string }[];
+    } = {},
+  ) {
+    const prisma = {
+      trackedDeveloper: {
+        findMany: jest.fn().mockResolvedValue([
+          { canonicalDeveloperId: 'erin', addedAs: 'erin' },
+          { canonicalDeveloperId: 'finn', addedAs: 'finn' },
+        ]),
+      },
+      watchlistExclusion: { findMany: jest.fn().mockResolvedValue([]) },
+      pullRequest: {
+        findMany: jest.fn().mockResolvedValue([{ authorLogin: 'finn' }]),
+      },
+      commit: { groupBy: jest.fn().mockResolvedValue([]) },
+    };
+    const identities = {
+      attributionIndex: jest.fn().mockResolvedValue({
+        byLogin: new Map([
+          ['erin', 'erin'],
+          ['finn', 'finn'],
+        ]),
+        byEmail: new Map(),
+        displayNames: new Map([
+          ['erin', 'Erin E'],
+          ['finn', 'Finn F'],
+        ]),
+        excluded: new Set(),
+      }),
+    };
+    const code = {
+      listCommitsPage: jest
+        .fn()
+        .mockResolvedValue({ commits: [], truncated: false }),
+    };
+    const connections = {
+      getDataFreshness: jest.fn().mockResolvedValue({
+        collectedThroughAt: null,
+        failing: opts.failing ?? [],
+        neverSynced: 0,
+        staleSeconds: 3600,
+        lastSyncAt: LAST_SYNC,
+      }),
+    };
+    const args = [
+      prisma as never,
+      identities as never,
+      code as never,
+      connections as never,
+    ] as const;
+    const service =
+      opts.audit === null || opts.audit === undefined
+        ? new NoCommitDetectionService(...args)
+        : new NoCommitDetectionService(...args, opts.audit as never);
+    return { service, code };
+  }
+
+  const coverage = (value: unknown) => ({
+    coverageForDay: jest.fn().mockResolvedValue(value),
+  });
+
+  it('withholds as withheld_stale_data, naming every reason, when the audit route applies and has not covered the day', async () => {
+    const audit = coverage({
+      applies: true,
+      ok: false,
+      reasons: [
+        'audit log read only through 2026-10-05T12:00:00.000Z',
+        '2 unfinished range(s): acme/ehr@main, acme/lab@dev',
+      ],
+    });
+    const { service, code } = harness({ audit });
+
+    const result = await service.detect('tenant_a', DAY);
+
+    expect(audit.coverageForDay).toHaveBeenCalledWith('tenant_a', DAY);
+    expect(result).toEqual({
+      reportedDay: DAY,
+      rosterCount: 2,
+      evaluation: {
+        flagged: [],
+        unresolved: [],
+        incomplete: [],
+        suppressed: [],
+      },
+      withhold: {
+        outcome: 'withheld_stale_data',
+        detail:
+          'GitHub audit sync has not covered 2026-10-05: audit log read only through 2026-10-05T12:00:00.000Z; 2 unfinished range(s): acme/ehr@main, acme/lab@dev. Names withheld.',
+      },
+      lastSyncAt: LAST_SYNC,
+      unattributedCommits: 0,
+    });
+    // Short-circuits before the commit read, like gate 1.
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+  });
+
+  it('fails closed — withholds — when the coverage check throws', async () => {
+    const audit = {
+      coverageForDay: jest.fn().mockRejectedValue(new Error('db down')),
+    };
+    const { service, code } = harness({ audit });
+
+    const result = await service.detect('tenant_a', DAY);
+
+    expect(result.withhold).toEqual({
+      outcome: 'withheld_stale_data',
+      detail:
+        'GitHub audit sync coverage could not be checked for 2026-10-05: db down. Names withheld.',
+    });
+    expect(result.evaluation.flagged).toEqual([]);
+    expect(result.unattributedCommits).toBe(0);
+    expect(result.lastSyncAt).toBe(LAST_SYNC);
+    expect(code.listCommitsPage).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the existing behaviour when the route does not apply', async () => {
+    const audit = coverage({ applies: false, ok: true, reasons: [] });
+    const gated = await harness({ audit }).service.detect('tenant_a', DAY);
+    const plain = await harness().service.detect('tenant_a', DAY);
+
+    expect(gated).toEqual(plain);
+    expect(gated.withhold).toBeNull();
+    expect(gated.evaluation.flagged.map((f) => f.developer)).toEqual(['erin']);
+  });
+
+  it('falls through when the route applies and has covered the day', async () => {
+    const audit = coverage({ applies: true, ok: true, reasons: [] });
+    const result = await harness({ audit }).service.detect('tenant_a', DAY);
+    expect(result.withhold).toBeNull();
+    expect(result.evaluation.flagged.map((f) => f.developer)).toEqual(['erin']);
+  });
+
+  it('is unchanged when the service is absent (positional 4-arg construction)', async () => {
+    const result = await harness({ audit: null }).service.detect(
+      'tenant_a',
+      DAY,
+    );
+    expect(result.withhold).toBeNull();
+    expect(result.evaluation.flagged.map((f) => f.developer)).toEqual(['erin']);
+  });
+
+  it('runs after gate 1 — a broken collector wins and the coverage check is never consulted', async () => {
+    const audit = coverage({ applies: true, ok: false, reasons: ['x'] });
+    const { service } = harness({
+      audit,
+      failing: [{ sourceSystem: 'github', name: 'acme/ehr', error: '401' }],
+    });
+
+    const result = await service.detect('tenant_a', DAY);
+
+    expect(result.withhold?.outcome).toBe('withheld_stale_data');
+    expect(result.withhold?.detail).toMatch(/^Collector pipeline looks broken/);
+    expect(audit.coverageForDay).not.toHaveBeenCalled();
   });
 });
