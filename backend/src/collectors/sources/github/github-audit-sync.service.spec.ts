@@ -157,8 +157,11 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
   });
 
   it('does not list refs for a repo whose default-branch read failed', async () => {
+    // Three repos so one `forbidden` repo is below the refusal-guard's
+    // half threshold (1/3), keeping this scenario distinct from the
+    // refusal-guard tests below.
     const { svc, prisma, client } = setup();
-    seedTenant(prisma, 't1', ['acme/ehr', 'acme/private']);
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/private', 'acme/amma']);
     client.getDefaultBranch.mockImplementation(async (repo: string) =>
       repo === 'acme/private' ? { failure: 'forbidden' } : { name: 'master' },
     );
@@ -168,7 +171,8 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
     const r = await svc.runTenant('t1', SHADOW, NOW);
     expect(r.status).toBe('seeded');
     expect(r.counters.reposUnseedable).toBe(1);
-    expect(client.listHeadRefs.mock.calls.map((c) => c[0])).toEqual([
+    expect(client.listHeadRefs.mock.calls.map((c) => c[0]).sort()).toEqual([
+      'acme/amma',
       'acme/ehr',
     ]);
   });
@@ -670,5 +674,227 @@ describe('GithubAuditSyncService.runTenant (per-tenant run claim)', () => {
     expect(
       prisma.githubAuditCheckpoint.rows[0].runningSince ?? null,
     ).toBeNull();
+  });
+});
+
+describe('GithubAuditSyncService.runTenant (org-wide refusal guard)', () => {
+  it('fails the run, leaving seededAt unset, when every repo is forbidden', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c', 'acme/d']);
+    client.getDefaultBranch.mockResolvedValue({ failure: 'forbidden' });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(r.reason).toMatch(
+      /collector token refused for 4 of 4 repos — check token scope\/SSO/,
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
+    expect(
+      prisma.githubAuditCheckpoint.rows[0].checkpointAt ?? null,
+    ).toBeNull();
+  });
+
+  it('fails the run when at least half (3 of 4) of the attempted repos are forbidden', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c', 'acme/d']);
+    client.getDefaultBranch.mockImplementation(async (repo: string) =>
+      repo === 'acme/d' ? { name: 'master' } : { failure: 'forbidden' },
+    );
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(r.reason).toMatch(
+      /collector token refused for 3 of 4 repos — check token scope\/SSO/,
+    );
+    expect(prisma.githubAuditCheckpoint.rows[0].seededAt ?? null).toBeNull();
+  });
+
+  it('still seeds when only 1 of 4 attempted repos is forbidden', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c', 'acme/d']);
+    client.getDefaultBranch.mockImplementation(async (repo: string) =>
+      repo === 'acme/a' ? { failure: 'forbidden' } : { name: 'master' },
+    );
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('seeded');
+    expect(r.counters.reposUnseedable).toBe(1);
+    expect(prisma.githubAuditCheckpoint.rows[0]).toMatchObject({
+      seededAt: NOW,
+      checkpointAt: NOW,
+    });
+  });
+
+  it('does not apply the refusal guard outside the seeding pass (a 403 on a never-seen touched repo)', async () => {
+    const { svc, prisma, audit, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/gone']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      pages: 1,
+      nextTraversals: 0,
+      events: [push('e1', 'acme/gone')],
+    });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    client.getDefaultBranch.mockImplementation(async (repo: string) =>
+      repo === 'acme/gone' ? { failure: 'forbidden' } : { name: 'master' },
+    );
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    // Only one repo (acme/gone) was ever touched by planRepo's own seeding —
+    // the refusal guard is scoped to the initial seedAll pass, so a single
+    // forbidden repo discovered via the audit log never fails the whole run.
+    expect(r.status).toBe('success');
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+  });
+});
+
+describe('GithubAuditSyncService.runTenant (lag visibility)', () => {
+  it('records a lag warning in run.error when the pre-run checkpoint is older than the threshold', async () => {
+    const { svc, prisma, audit } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 45 * 60_000,
+    );
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      events: [],
+      pages: 1,
+      nextTraversals: 0,
+    });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_LAG_WARN_MINUTES: '30',
+    });
+    const r = await svc.runTenant('t1', cfg, NOW);
+    expect(r.status).toBe('success');
+    expect(prisma.githubAuditRun.rows[0].error).toMatch(
+      /Audit sync is 45 minutes behind\./,
+    );
+  });
+
+  it('does not warn when the pre-run checkpoint is within the threshold', async () => {
+    const { svc, prisma, audit } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 5 * 60_000,
+    );
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      events: [],
+      pages: 1,
+      nextTraversals: 0,
+    });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_LAG_WARN_MINUTES: '30',
+    });
+    const r = await svc.runTenant('t1', cfg, NOW);
+    expect(r.status).toBe('success');
+    expect(prisma.githubAuditRun.rows[0].error ?? null).toBeNull();
+  });
+
+  it('never warns before seeding exists (no pre-run checkpoint at all)', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([['master', 'm1']]),
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('seeded');
+    expect(prisma.githubAuditRun.rows[0].error ?? null).toBeNull();
+  });
+
+  it('puts the lag sentence before the retention-risk warning when both apply', async () => {
+    const { svc, prisma, audit } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 6.5 * 86_400_000,
+    );
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      events: [],
+      pages: 1,
+      nextTraversals: 0,
+    });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('success');
+    const error = prisma.githubAuditRun.rows[0].error as string;
+    const lagIndex = error.indexOf('minutes behind');
+    const retentionIndex = error.indexOf('Retention risk');
+    expect(lagIndex).toBeGreaterThanOrEqual(0);
+    expect(retentionIndex).toBeGreaterThan(lagIndex);
+  });
+});
+
+describe('GithubAuditSyncService.status', () => {
+  it('reports mode, enabled, lag and range counts for the tenant', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 45 * 60_000,
+    );
+    prisma.githubAuditCheckpoint.rows[0].lastRunAt = NOW;
+    prisma.githubAuditCheckpoint.rows[0].lastStatus = 'success';
+    prisma.githubAuditCheckpoint.rows[0].lastError = null;
+    prisma.githubPushRange.rows.push(
+      { id: 'r1', tenantId: 't1', status: 'pending' },
+      { id: 'r2', tenantId: 't1', status: 'pending' },
+      { id: 'r3', tenantId: 't1', status: 'failed' },
+    );
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      GITHUB_AUDIT_LAG_WARN_MINUTES: '30',
+    });
+    const status = await svc.status('t1', cfg, NOW);
+    expect(status).toMatchObject({
+      mode: 'ingest',
+      enabled: true,
+      lagMinutes: 45,
+      behind: true,
+      lastRunAt: NOW,
+      lastStatus: 'success',
+      lastError: null,
+      pendingRanges: 2,
+      failedRanges: 1,
+    });
+  });
+
+  it('is not enabled when no audit-log token ref is configured', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr'], {});
+    const status = await svc.status('t1', readGithubAuditConfig({}), NOW);
+    expect(status.enabled).toBe(false);
+  });
+
+  it('reports a null lag when there is no checkpoint yet', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    const status = await svc.status('t1', readGithubAuditConfig({}), NOW);
+    expect(status.lagMinutes).toBeNull();
+    expect(status.behind).toBe(false);
+  });
+
+  it('reads only the requested tenant (tenant isolation)', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seedTenant(prisma, 't2', ['other/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    seeded(prisma, 't2', { 'other/ehr': { master: 'z1' } });
+    prisma.githubPushRange.rows.push(
+      { id: 'r1', tenantId: 't2', status: 'pending' },
+      { id: 'r2', tenantId: 't2', status: 'failed' },
+    );
+    const status = await svc.status('t1', readGithubAuditConfig({}), NOW);
+    expect(status.pendingRanges).toBe(0);
+    expect(status.failedRanges).toBe(0);
   });
 });

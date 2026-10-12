@@ -10,6 +10,7 @@ import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
 import { IngestionService } from '../../ingestion/ingestion.service';
 import {
   GithubAuditConfig,
+  GithubAuditMode,
   readGithubAuditConfig,
 } from './github-audit.config';
 import {
@@ -76,6 +77,26 @@ export interface AuditRunSummary {
   durationMs: number;
 }
 
+/**
+ * "Is the audit route currently trustworthy?" — the admin-facing status
+ * (spec item 2). `lagMinutes`/`behind` are computed from the checkpoint as of
+ * `now`, not from the last run's own report, so a cron that stopped firing
+ * entirely still shows as behind.
+ */
+export interface AuditStatus {
+  mode: GithubAuditMode;
+  enabled: boolean;
+  seededAt: Date | null;
+  checkpointAt: Date | null;
+  lagMinutes: number | null;
+  behind: boolean;
+  lastRunAt: Date | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  pendingRanges: number;
+  failedRanges: number;
+}
+
 export interface RunContext {
   tenantId: string;
   runId: string;
@@ -93,8 +114,44 @@ export interface RunContext {
   seenKeys: Set<string>;
   /** Repos skipped as unseedable (404/403) this run, named in `run.error`. */
   unseedable: string[];
+  /**
+   * The subset of `unseedable` that GitHub specifically answered 403
+   * (forbidden) to, as opposed to 404 (not_found) — kept separate so the
+   * org-wide refusal guard (spec item 1) can tell "the token has no access"
+   * from "the repo is gone," which a 404 never implies. Populated only
+   * during `seedAll`'s own seeding pass and read by it alone; a 403 on a
+   * repo seeded individually later in the same run (`planRepo`) is never
+   * read back into the guard, since the guard applies only to the initial
+   * seeding pass.
+   */
+  forbidden: string[];
   /** Repos whose seeding was skipped because the core budget reached the reserve. */
   budgetSkipped: string[];
+}
+
+/** `seedAll`'s own outcome, distinct from a single repo's `SeedOutcome`. */
+interface SeedAllResult {
+  /**
+   * `refused` overrides `complete`/`incomplete`: the org-wide refusal guard
+   * fired (spec item 1) because the token itself cannot be trusted for this
+   * tenant, so the run must never start the checkpoint from here, even if
+   * every OTHER repo happened to seed cleanly.
+   */
+  status: 'complete' | 'incomplete' | 'refused';
+  /** Repos this seeding pass tried (excludes ones already seeded by an earlier run). */
+  attempted: number;
+  forbiddenCount: number;
+}
+
+/**
+ * A seeding pass that seeds nothing, or where at least half the attempted
+ * repos come back `forbidden`, cannot be trusted to represent the org: the
+ * token is refused, not merely rate-limited or transiently unlucky, so
+ * reporting `seeded` (and starting the checkpoint) would silently assert
+ * coverage of repos the token can't even see (spec item 1).
+ */
+function isRefused(attempted: number, forbiddenCount: number): boolean {
+  return attempted > 0 && forbiddenCount * 2 >= attempted;
 }
 
 /** One commit's outcome inside a push range — the per-SHA evidence shadow-mode acceptance compares with ground truth (spec §9 step 3). */
@@ -204,6 +261,62 @@ export class GithubAuditSyncService {
             ?.auditLogTokenRef === 'string',
       )
       .map((r) => r.tenantId);
+  }
+
+  /**
+   * "Is the audit route currently trustworthy for this tenant?" — read-only,
+   * tenant-scoped, and independent of whether a run is in flight (spec item
+   * 2). `lagMinutes`/`behind` are computed against `now`, not against the
+   * last run's own report, so a cron that silently stopped firing still
+   * shows as behind rather than reporting the last success forever.
+   */
+  async status(
+    tenantId: string,
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+    now: Date = new Date(),
+  ): Promise<AuditStatus> {
+    const [config, checkpoint, pendingRanges, failedRanges] = await Promise.all(
+      [
+        this.prisma.tenantConfiguration.findUnique({
+          where: {
+            tenantId_namespace_key: {
+              tenantId,
+              namespace: 'github',
+              key: 'default',
+            },
+          },
+        }),
+        this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+        this.prisma.githubPushRange.findMany({
+          where: { tenantId, status: 'pending' },
+        }),
+        this.prisma.githubPushRange.findMany({
+          where: { tenantId, status: 'failed' },
+        }),
+      ],
+    );
+    const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
+    const enabled =
+      !!config &&
+      config.status === 'active' &&
+      typeof refs.auditLogTokenRef === 'string';
+    const checkpointAt = checkpoint?.checkpointAt ?? null;
+    const lagMinutes = checkpointAt
+      ? Math.round((now.getTime() - checkpointAt.getTime()) / 60_000)
+      : null;
+    return {
+      mode: cfg.mode,
+      enabled,
+      seededAt: checkpoint?.seededAt ?? null,
+      checkpointAt,
+      lagMinutes,
+      behind: lagMinutes !== null && lagMinutes > cfg.lagWarnMinutes,
+      lastRunAt: checkpoint?.lastRunAt ?? null,
+      lastStatus: checkpoint?.lastStatus ?? null,
+      lastError: checkpoint?.lastError ?? null,
+      pendingRanges: pendingRanges.length,
+      failedRanges: failedRanges.length,
+    };
   }
 
   async runTenant(
@@ -328,6 +441,7 @@ export class GithubAuditSyncService {
       stopForBudget: false,
       seenKeys: new Set(),
       unseedable: [],
+      forbidden: [],
       budgetSkipped: [],
     };
 
@@ -340,11 +454,25 @@ export class GithubAuditSyncService {
     // value (now) would always read as fresh (defect fixed in review round 1).
     const priorCheckpointAt =
       checkpoint?.checkpointAt ?? checkpoint?.seededAt ?? undefined;
+    // Lag is measured against that SAME pre-run value, at the start of the
+    // run — "no warning before seeding exists" falls out for free, since
+    // priorCheckpointAt is undefined until a first seeding run has happened
+    // (spec item 2).
+    let lagWarning: string | undefined;
+    if (priorCheckpointAt) {
+      const lagMinutes = Math.round(
+        (now.getTime() - priorCheckpointAt.getTime()) / 60_000,
+      );
+      if (lagMinutes > cfg.lagWarnMinutes) {
+        lagWarning = `Audit sync is ${lagMinutes} minutes behind.`;
+        this.logger.warn(`[tenant ${tenantId}] ${lagWarning}`);
+      }
+    }
 
     try {
       if (!checkpoint?.seededAt) {
-        const allSeeded = await this.seedAll(ctx);
-        if (allSeeded) {
+        const seedResult = await this.seedAll(ctx);
+        if (seedResult.status === 'complete') {
           await this.prisma.githubAuditCheckpoint.upsert({
             where: { tenantId },
             create: {
@@ -362,6 +490,12 @@ export class GithubAuditSyncService {
           });
           checkpointAt = now;
           status = 'seeded';
+        } else if (seedResult.status === 'refused') {
+          // Never set seededAt/checkpointAt here: a refused token has not
+          // actually observed the org, so starting the checkpoint would
+          // silently assert coverage it does not have (spec item 1).
+          status = 'failed';
+          error = `collector token refused for ${seedResult.forbiddenCount} of ${seedResult.attempted} repos — check token scope/SSO`;
         } else {
           status = 'partial';
           error =
@@ -413,6 +547,13 @@ export class GithubAuditSyncService {
       }
       this.logger.error(`[tenant ${tenantId}] ${warning}`);
       error = error ? `${warning} ${error}` : warning;
+    }
+
+    // Prefixed last so it lands first when both apply (spec item 2): the
+    // lag sentence is the most actionable one-liner for an admin skimming
+    // `run.error`, ahead of the retention-risk detail.
+    if (lagWarning) {
+      error = error ? `${lagWarning} ${error}` : lagWarning;
     }
 
     await this.prisma.githubAuditRun.update({
@@ -523,7 +664,7 @@ export class GithubAuditSyncService {
   }
 
   /** One-off pass storing every repo's tips; repos already seeded are skipped. */
-  private async seedAll(ctx: RunContext): Promise<boolean> {
+  private async seedAll(ctx: RunContext): Promise<SeedAllResult> {
     const markers = await this.prisma.githubRefTip.findMany({
       where: { tenantId: ctx.tenantId, ref: DEFAULT_BRANCH_MARKER },
     });
@@ -545,7 +686,16 @@ export class GithubAuditSyncService {
         } else if (outcome === 'failed') complete = false;
       },
     );
-    return complete;
+    const attempted = todo.length;
+    const forbiddenCount = ctx.forbidden.length;
+    if (isRefused(attempted, forbiddenCount)) {
+      return { status: 'refused', attempted, forbiddenCount };
+    }
+    return {
+      status: complete ? 'complete' : 'incomplete',
+      attempted,
+      forbiddenCount,
+    };
   }
 
   /**
@@ -577,16 +727,21 @@ export class GithubAuditSyncService {
       `[tenant ${ctx.tenantId}] could not seed ${repo}: ${failure ?? 'unknown'}`,
     );
     if (isUnseedable(failure)) {
-      this.noteUnseedable(ctx, repo);
+      this.noteUnseedable(ctx, repo, failure);
       return 'unseedable';
     }
     if (failure === 'rate_limited') ctx.stopForBudget = true;
     return 'failed';
   }
 
-  private noteUnseedable(ctx: RunContext, repo: string): void {
+  private noteUnseedable(
+    ctx: RunContext,
+    repo: string,
+    failure: GithubCallFailure | undefined,
+  ): void {
     ctx.counters.reposUnseedable++;
     ctx.unseedable.push(repo);
+    if (failure === 'forbidden') ctx.forbidden.push(repo);
   }
 
   private async seedRepo(
@@ -723,7 +878,7 @@ export class GithubAuditSyncService {
       if (isUnseedable(refs.failure)) {
         // Deleted / renamed / access revoked: nothing to plan, ever — skip it
         // rather than hold the checkpoint for every other repo.
-        this.noteUnseedable(ctx, repo);
+        this.noteUnseedable(ctx, repo, refs.failure);
         return { ok: true };
       }
       if (refs.failure === 'rate_limited') ctx.stopForBudget = true;

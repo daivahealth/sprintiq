@@ -15,6 +15,8 @@ export interface GithubAuditConfig {
   compareConcurrency: number;
   maxRangeAttempts: number;
   maxPages: number;
+  /** A pre-run checkpoint older than this is reported as a lag warning in `run.error` (spec item 2). */
+  lagWarnMinutes: number;
 }
 
 function intIn(
@@ -69,6 +71,7 @@ export function readGithubAuditConfig(
     compareConcurrency: intIn(env, 'GITHUB_AUDIT_COMPARE_CONCURRENCY', 2, 1, 8),
     maxRangeAttempts: intIn(env, 'GITHUB_AUDIT_MAX_RANGE_ATTEMPTS', 5, 1, 20),
     maxPages: intIn(env, 'GITHUB_AUDIT_MAX_PAGES', 200, 1, 1000),
+    lagWarnMinutes: intIn(env, 'GITHUB_AUDIT_LAG_WARN_MINUTES', 30, 5, 1440),
   };
 }
 

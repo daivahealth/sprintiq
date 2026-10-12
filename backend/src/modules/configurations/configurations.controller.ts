@@ -355,6 +355,17 @@ export class ConfigurationsController {
   }
 
   /**
+   * "Is the audit route currently trustworthy?" — mode, enabled, lag behind
+   * the pre-run checkpoint, the last run's own report, and how many ranges
+   * are pending/failed for this tenant (ADR-0010, spec item 2). Read-only.
+   */
+  @Roles(Role.ADMIN)
+  @Get('github/audit-sync/status')
+  async auditSyncStatus(@CurrentUser() user: AuthUser) {
+    return this.auditSync.status(user.tenantId);
+  }
+
+  /**
    * One IST day of the audit route: what it saw, planned, fetched and ingested,
    * and how many of its commits nobody can be attributed to. Unattributed is
    * reported as unattributed — never as anyone being idle.

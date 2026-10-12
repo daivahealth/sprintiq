@@ -13,6 +13,7 @@ describe('readGithubAuditConfig', () => {
       compareConcurrency: 2,
       maxRangeAttempts: 5,
       maxPages: 200,
+      lagWarnMinutes: 30,
     });
   });
 
@@ -54,6 +55,20 @@ describe('readGithubAuditConfig', () => {
     expect(readGithubAuditConfig({ GITHUB_AUDIT_PAGE_SIZE: '' }).pageSize).toBe(
       100,
     );
+  });
+
+  it('bounds the lag warning threshold to 5..1440 minutes, default 30', () => {
+    expect(readGithubAuditConfig({}).lagWarnMinutes).toBe(30);
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_LAG_WARN_MINUTES: '60' })
+        .lagWarnMinutes,
+    ).toBe(60);
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_LAG_WARN_MINUTES: '4' }),
+    ).toThrow(/GITHUB_AUDIT_LAG_WARN_MINUTES/);
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_LAG_WARN_MINUTES: '1441' }),
+    ).toThrow(/GITHUB_AUDIT_LAG_WARN_MINUTES/);
   });
 });
 
