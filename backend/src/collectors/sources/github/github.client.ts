@@ -85,6 +85,9 @@ export interface GithubHeadRefs {
 
 export interface GithubDefaultBranch {
   name?: string;
+  /** From the same `GET /repos/{repo}` response; GitHub omits neither in practice, absent reads as false. */
+  archived?: boolean;
+  disabled?: boolean;
   failure?: GithubCallFailure;
   rateLimit?: GithubRateLimit;
   resumeAt?: Date;
@@ -770,9 +773,15 @@ export class GithubClient implements GithubSourceClient {
       token,
     );
     if ('failure' in res) return res;
-    const body = (await res.response.json()) as { default_branch?: string };
+    const body = (await res.response.json()) as {
+      default_branch?: string;
+      archived?: boolean;
+      disabled?: boolean;
+    };
     return {
       name: body.default_branch,
+      archived: body.archived === true,
+      disabled: body.disabled === true,
       rateLimit: this.readRateLimit(res.response),
     };
   }

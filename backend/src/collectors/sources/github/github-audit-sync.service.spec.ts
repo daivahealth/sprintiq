@@ -30,14 +30,51 @@ function setup() {
       ref ? `tok:${ref}` : '',
     ),
   };
+  // Stand-in for ConnectionsService over the same fake connection table, so a
+  // registered connection is visible to the next run's `registeredRepos`.
+  const connections = {
+    findByTenantSourceAndName: jest.fn(
+      async (tenantId: string, sourceSystem: string, name: string) =>
+        prisma.connection.rows.find(
+          (r) =>
+            r.tenantId === tenantId &&
+            r.sourceSystem === sourceSystem &&
+            r.name === name,
+        ) ?? null,
+    ),
+    create: jest.fn(
+      async (tenantId: string, input: Record<string, unknown>) => {
+        const row = {
+          id: `new-${String(input.name)}`,
+          tenantId,
+          status: 'active',
+          ...input,
+        };
+        prisma.connection.rows.push(row);
+        return row;
+      },
+    ),
+  };
+  const auditSink = { record: jest.fn(async () => undefined) };
   const svc = new GithubAuditSyncService(
     prisma as never,
     secrets as never,
     ingestion as never,
     audit as never,
     client as never,
+    connections as never,
+    auditSink as never,
   );
-  return { prisma, ingestion, audit, client, secrets, svc };
+  return {
+    prisma,
+    ingestion,
+    audit,
+    client,
+    secrets,
+    connections,
+    auditSink,
+    svc,
+  };
 }
 
 /** Seeds tips the way a first run would, so tests can start from "already seeded". */
@@ -257,9 +294,22 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
     expect(prisma.githubPushRange.rows).toHaveLength(0);
   });
 
-  it('stores pushes, plans one range per moved ref per repo, skips unregistered repos, advances the checkpoint', async () => {
-    const { svc, prisma, audit, client, ingestion } = setup();
+  it('stores pushes, plans one range per moved ref per repo, skips a repo whose connection is disabled, advances the checkpoint', async () => {
+    const { svc, prisma, audit, client, ingestion, connections } = setup();
     seedTenant(prisma, 't1', ['acme/ehr', 'acme/amma']);
+    // Task 3 (auto-registration): a pushed repo with NO connection at all is
+    // now registered, so "skipped as unregistered" only still applies to a
+    // repo whose connection exists but is not active — an admin decision the
+    // audit sync must leave alone. That is the case this test now pins.
+    prisma.connection.rows.push({
+      id: 't1-conn-disabled',
+      tenantId: 't1',
+      sourceSystem: 'github',
+      status: 'disabled',
+      name: 'acme/not-registered',
+      secretRef: 'GITHUB_TOKEN',
+      config: { repoFullName: 'acme/not-registered' },
+    });
     seeded(prisma, 't1', {
       'acme/ehr': { master: 'm1', 'feature-A': 'A', 'feature-B': 'X' },
       'acme/amma': { master: 'm2', 'feature-X': 'P' },
@@ -328,6 +378,8 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
       expect.arrayContaining(['github:audit:e1', 'github:audit:e6']),
     );
     expect(pushKeys).not.toContain('github:audit:e7');
+    expect(r.counters.reposRegistered).toBe(0);
+    expect(connections.create).not.toHaveBeenCalled();
     expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
   });
 
@@ -545,7 +597,7 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
   });
 
   it('touches only the running tenant (tenant isolation)', async () => {
-    const { svc, prisma, audit, client } = setup();
+    const { svc, prisma, audit, client, connections } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);
     seedTenant(prisma, 't2', ['other/ehr']);
     seeded(prisma, 't1', { 'acme/ehr': { master: 'm1', f: 'A' } });
@@ -567,6 +619,17 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
       const blob = JSON.stringify(call);
       expect(blob).not.toContain('"t2"');
     }
+    // `other/ehr` has no connection IN t1, so t1's run may register it — but
+    // only ever as a t1 connection; t2's own connection is never looked at.
+    for (const call of [
+      ...connections.findByTenantSourceAndName.mock.calls,
+      ...connections.create.mock.calls,
+    ]) {
+      expect(call[0]).toBe('t1');
+    }
+    expect(
+      prisma.connection.rows.filter((c) => c.tenantId === 't2'),
+    ).toHaveLength(1);
     expect(
       prisma.githubRefTip.rows.find(
         (t) => t.tenantId === 't2' && t.ref === 'f',
@@ -1216,5 +1279,357 @@ describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
       .filter((t) => t !== undefined);
     expect(tenantIds.length).toBeGreaterThan(0);
     expect(new Set(tenantIds)).toEqual(new Set(['t1']));
+  });
+});
+
+describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)', () => {
+  const noCommits = { commits: [], pages: 1, truncated: false };
+  const auditOf = (...events: ReturnType<typeof push>[]) => ({
+    status: 'complete',
+    pages: 1,
+    nextTraversals: 0,
+    events,
+  });
+
+  /** t1 with acme/ehr registered and seeded; `acme/fresh` has no connection. */
+  function fresh() {
+    const s = setup();
+    seedTenant(s.prisma, 't1', ['acme/ehr']);
+    seeded(s.prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    s.client.compareAll.mockResolvedValue(noCommits);
+    return s;
+  }
+
+  it('registers a pushed repo with no connection in the org-sync shape, seeds it and plans new_ref ranges for its non-default branches', async () => {
+    const { svc, prisma, audit, client, connections, auditSink, ingestion } =
+      fresh();
+    prisma.tenantConfiguration.rows[0].values.backfillDays = 30;
+    audit.listGitPushes.mockResolvedValue(
+      auditOf(push('e1', 'acme/fresh'), push('e2', 'acme/fresh')),
+    );
+    client.getDefaultBranch.mockResolvedValue({
+      name: 'main',
+      archived: false,
+      disabled: false,
+    });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['main', 'n1'],
+        ['feat-a', 'a1'],
+        ['feat-b', 'b1'],
+      ]),
+    });
+
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+
+    expect(r.status).toBe('success');
+    expect(r.counters).toMatchObject({
+      reposRegistered: 1,
+      reposUnregistered: 0,
+      reposUnseedable: 0,
+      refsNew: 2,
+      compareRequestsPlanned: 2,
+    });
+    expect(connections.create).toHaveBeenCalledTimes(1);
+    expect(connections.create).toHaveBeenCalledWith('t1', {
+      sourceSystem: 'github',
+      name: 'acme/fresh',
+      config: {
+        repoFullName: 'acme/fresh',
+        backfillSince: new Date(NOW.getTime() - 30 * 86_400_000).toISOString(),
+      },
+      secretRef: 'GITHUB_TOKEN',
+    });
+    // The collector token from the new connection's ref — never the audit token.
+    for (const fn of [client.getDefaultBranch, client.listHeadRefs]) {
+      for (const call of fn.mock.calls) {
+        expect(call[1]).toBe('tok:GITHUB_TOKEN');
+      }
+    }
+    expect(
+      prisma.githubRefTip.rows
+        .filter((t) => t.repoFullName === 'acme/fresh')
+        .map((t) => `${t.ref}=${t.sha}`)
+        .sort(),
+    ).toEqual(['HEAD=main', 'feat-a=a1', 'feat-b=b1', 'main=n1']);
+    const ranges = prisma.githubPushRange.rows.filter(
+      (x) => x.repoFullName === 'acme/fresh',
+    );
+    expect(
+      ranges.map((x) => `${x.ref}:${x.baseRef}...${x.headSha}`).sort(),
+    ).toEqual(['feat-a:main...a1', 'feat-b:main...b1']);
+    for (const x of ranges) {
+      expect(x).toMatchObject({
+        kind: 'new_ref',
+        baseSha: null,
+        connectionId: 'new-acme/fresh',
+        auditDocumentIds: ['e1', 'e2'],
+        runId: r.runId,
+      });
+    }
+    // Executed in the same run, against the new connection.
+    expect(client.compareAll).toHaveBeenCalledWith(
+      'acme/fresh',
+      'tok:GITHUB_TOKEN',
+      'main',
+      'a1',
+    );
+    // The push evidence is stored against the new connection too.
+    const pushEnvelopes = ingestion.ingest.mock.calls
+      .map((c) => c[1])
+      .filter((e) => e.idempotencyKey.startsWith('github:audit:'));
+    expect(pushEnvelopes.map((e) => e.connectionId)).toEqual([
+      'new-acme/fresh',
+      'new-acme/fresh',
+    ]);
+    expect(auditSink.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 't1',
+        actorType: 'system',
+        action: 'connection.auto_registered',
+        targetType: 'connection',
+        targetId: 'new-acme/fresh',
+      }),
+    );
+    expect(JSON.stringify(auditSink.record.mock.calls)).not.toContain('tok:');
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+  });
+
+  it('defaults backfillSince to 90 days when the GitHub configuration sets no backfillDays', async () => {
+    const { svc, audit, client, connections } = fresh();
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.listHeadRefs.mockResolvedValue({ tips: new Map([['main', 'n1']]) });
+    await svc.runTenant('t1', SHADOW, NOW);
+    expect(connections.create.mock.calls[0][1].config).toEqual({
+      repoFullName: 'acme/fresh',
+      backfillSince: new Date(NOW.getTime() - 90 * 86_400_000).toISOString(),
+    });
+  });
+
+  it('registers it only once: the next run treats it as an ordinary registered repo', async () => {
+    const { svc, audit, client, connections } = fresh();
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.listHeadRefs.mockResolvedValue({ tips: new Map([['main', 'n1']]) });
+    await svc.runTenant('t1', SHADOW, NOW);
+    const second = await svc.runTenant(
+      't1',
+      SHADOW,
+      new Date(NOW.getTime() + 300_000),
+    );
+    expect(connections.create).toHaveBeenCalledTimes(1);
+    expect(second.counters.reposRegistered).toBe(0);
+    expect(second.counters.reposTouched).toBe(1);
+  });
+
+  it.each([
+    ['archived', { name: 'main', archived: true }],
+    ['disabled', { name: 'main', disabled: true }],
+  ])(
+    'skips an %s repo: no connection, counted as unregistered, checkpoint advances',
+    async (_label, branch) => {
+      const { svc, prisma, audit, client, connections } = fresh();
+      audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+      client.getDefaultBranch.mockResolvedValue(branch);
+      const r = await svc.runTenant('t1', SHADOW, NOW);
+      expect(r.status).toBe('success');
+      expect(r.counters).toMatchObject({
+        reposRegistered: 0,
+        reposUnregistered: 1,
+      });
+      expect(connections.create).not.toHaveBeenCalled();
+      expect(client.listHeadRefs).not.toHaveBeenCalled();
+      expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+    },
+  );
+
+  it.each(['not_found', 'forbidden'])(
+    'skips a repo GitHub answers %s for: no connection, counted and named as unseedable, checkpoint advances',
+    async (failure) => {
+      const { svc, prisma, audit, client, connections } = fresh();
+      audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+      client.getDefaultBranch.mockResolvedValue({ failure });
+      const r = await svc.runTenant('t1', SHADOW, NOW);
+      expect(r.status).toBe('success');
+      expect(r.counters).toMatchObject({
+        reposRegistered: 0,
+        reposUnseedable: 1,
+      });
+      expect(connections.create).not.toHaveBeenCalled();
+      expect(prisma.githubAuditRun.rows[0].error).toContain('acme/fresh');
+      expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+    },
+  );
+
+  it('leaves an existing disabled connection alone: no GitHub call, no new connection, counted as unregistered', async () => {
+    const { svc, prisma, audit, client, connections } = fresh();
+    prisma.connection.rows.push({
+      id: 't1-conn-off',
+      tenantId: 't1',
+      sourceSystem: 'github',
+      status: 'disabled',
+      name: 'acme/fresh',
+      secretRef: 'GITHUB_TOKEN',
+      config: { repoFullName: 'acme/fresh' },
+    });
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('success');
+    expect(r.counters).toMatchObject({
+      reposRegistered: 0,
+      reposUnregistered: 1,
+    });
+    expect(connections.create).not.toHaveBeenCalled();
+    expect(client.getDefaultBranch).not.toHaveBeenCalled();
+    expect(prisma.connection.rows.find((c) => c.id === 't1-conn-off')).toEqual(
+      expect.objectContaining({ status: 'disabled' }),
+    );
+  });
+
+  it('leaves alone a non-active connection for the repo even when it is named differently', async () => {
+    const { svc, prisma, audit, client, connections } = fresh();
+    prisma.connection.rows.push({
+      id: 't1-bridge',
+      tenantId: 't1',
+      sourceSystem: 'github',
+      status: 'disabled',
+      name: 'github-default',
+      secretRef: 'GITHUB_TOKEN',
+      config: { repoFullName: 'acme/fresh' },
+    });
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.counters.reposUnregistered).toBe(1);
+    expect(connections.create).not.toHaveBeenCalled();
+    expect(client.getDefaultBranch).not.toHaveBeenCalled();
+  });
+
+  it('above GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: seeds only, plans no range, and names the repo in run.error', async () => {
+    const { svc, prisma, audit, client } = fresh();
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['main', 'n1'],
+        ['feat-a', 'a1'],
+        ['feat-b', 'b1'],
+      ]),
+    });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '2',
+    });
+    const r = await svc.runTenant('t1', cfg, NOW);
+    expect(r.status).toBe('success');
+    expect(r.counters).toMatchObject({ reposRegistered: 1, refsNew: 0 });
+    expect(prisma.githubPushRange.rows).toHaveLength(0);
+    expect(
+      prisma.githubRefTip.rows
+        .filter((t) => t.repoFullName === 'acme/fresh')
+        .map((t) => t.ref)
+        .sort(),
+    ).toEqual(['HEAD', 'feat-a', 'feat-b', 'main']);
+    const error = prisma.githubAuditRun.rows[0].error as string;
+    expect(error).toContain('acme/fresh');
+    expect(error).toContain('GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES');
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(NOW);
+  });
+
+  it('at exactly the cap, still plans the ranges', async () => {
+    const { svc, prisma, audit, client } = fresh();
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['main', 'n1'],
+        ['feat-a', 'a1'],
+      ]),
+    });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '2',
+    });
+    const r = await svc.runTenant('t1', cfg, NOW);
+    expect(r.counters.refsNew).toBe(1);
+    expect(prisma.githubPushRange.rows).toHaveLength(1);
+  });
+
+  it('holds the checkpoint, creating no connection, when the default-branch read fails transiently', async () => {
+    const { svc, prisma, audit, client, connections } = fresh();
+    const before = prisma.githubAuditCheckpoint.rows[0].checkpointAt;
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ failure: 'failed' });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(connections.create).not.toHaveBeenCalled();
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(before);
+    expect(prisma.githubAuditRun.rows[0].error).toContain('acme/fresh');
+  });
+
+  it('holds the checkpoint, creating no connection, when listing its branches fails transiently', async () => {
+    const { svc, prisma, audit, client, connections } = fresh();
+    const before = prisma.githubAuditCheckpoint.rows[0].checkpointAt;
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.listHeadRefs.mockResolvedValue({ failure: 'failed' });
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.status).toBe('failed');
+    expect(connections.create).not.toHaveBeenCalled();
+    expect(
+      prisma.githubRefTip.rows.filter((t) => t.repoFullName === 'acme/fresh'),
+    ).toHaveLength(0);
+    expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(before);
+  });
+
+  it('does not register a repo once the core budget has reached the reserve; holds the checkpoint with the reason in run.error', async () => {
+    const { svc, prisma, audit, client, connections } = fresh();
+    const originalReserve = process.env.GITHUB_BACKFILL_RATE_RESERVE;
+    process.env.GITHUB_BACKFILL_RATE_RESERVE = '1000';
+    try {
+      const before = prisma.githubAuditCheckpoint.rows[0].checkpointAt;
+      // The registered repo is listed first and spends the budget down to the
+      // reserve, so the unregistered one behind it must not be checked at all.
+      audit.listGitPushes.mockResolvedValue(
+        auditOf(push('e1', 'acme/ehr'), push('e2', 'acme/fresh')),
+      );
+      client.listHeadRefs.mockResolvedValue({
+        tips: new Map([['master', 'm1']]),
+        rateLimit: { remaining: 1000, resetAt: NOW },
+      });
+      const cfg = readGithubAuditConfig({
+        GITHUB_AUDIT_SYNC_MODE: 'shadow',
+        GITHUB_AUDIT_COMPARE_CONCURRENCY: '1',
+      });
+      const r = await svc.runTenant('t1', cfg, NOW);
+      expect(client.getDefaultBranch).not.toHaveBeenCalled();
+      expect(connections.create).not.toHaveBeenCalled();
+      expect(r.status).toBe('failed');
+      expect(r.counters.reposRegistered).toBe(0);
+      const error = prisma.githubAuditRun.rows[0].error as string;
+      expect(error).toContain('acme/fresh');
+      expect(error).toMatch(/reserve/i);
+      expect(prisma.githubAuditCheckpoint.rows[0].checkpointAt).toEqual(before);
+    } finally {
+      if (originalReserve === undefined) {
+        delete process.env.GITHUB_BACKFILL_RATE_RESERVE;
+      } else {
+        process.env.GITHUB_BACKFILL_RATE_RESERVE = originalReserve;
+      }
+    }
+  });
+
+  it('does not register without a collector tokenRef on the GitHub configuration (never falls back to the audit token)', async () => {
+    const { svc, prisma, audit, client, connections } = fresh();
+    delete prisma.tenantConfiguration.rows[0].secretRefs.tokenRef;
+    audit.listGitPushes.mockResolvedValue(auditOf(push('e1', 'acme/fresh')));
+    const r = await svc.runTenant('t1', SHADOW, NOW);
+    expect(r.counters).toMatchObject({
+      reposRegistered: 0,
+      reposUnregistered: 1,
+    });
+    expect(connections.create).not.toHaveBeenCalled();
+    expect(client.getDefaultBranch).not.toHaveBeenCalled();
+    expect(prisma.githubAuditRun.rows[0].error).toMatch(/tokenRef/);
   });
 });

@@ -54,6 +54,8 @@ function setup() {
     ingestion as never,
     audit as never,
     client as never,
+    // Every audit window here is empty, so auto-registration never runs.
+    { findByTenantSourceAndName: jest.fn(), create: jest.fn() } as never,
   );
   seedTenant(prisma, 't1', ['athmahealth/ehr']);
   prisma.githubAuditCheckpoint.rows.push({

@@ -1,11 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Connection, GithubPushRange } from '@prisma/client';
+import { AUDIT_SINK, AuditSink } from '../../../common/audit/audit-sink';
 import { forEachBounded } from '../../../common/concurrency';
 import { CodeCommitPayload } from '../../../common/events/contracts';
 import { EventTypes } from '../../../common/events/event-types';
 import { newId } from '../../../common/id';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { PrismaService } from '../../../database/prisma.service';
+import { ConnectionsService } from '../../../modules/connections/connections.service';
 import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
 import { IngestionService } from '../../ingestion/ingestion.service';
 import {
@@ -44,8 +46,16 @@ export interface AuditRunCounters {
   auditNextTraversals: number;
   auditEvents: number;
   uniquePushes: number;
+  /** Registered repos (active connection at run start) the audit log reported pushes to. */
   reposTouched: number;
+  /**
+   * Pushed repos left without an active connection this run: a connection
+   * exists but is not active (an admin decision, left alone), the repo is
+   * archived/disabled, or no collector tokenRef is configured to register it.
+   */
   reposUnregistered: number;
+  /** Pushed repos that had no connection at all and were auto-registered this run (spec item 4). */
+  reposRegistered: number;
   refsMoved: number;
   refsNew: number;
   refsDeleted: number;
@@ -129,6 +139,39 @@ export interface RunContext {
   unseedable: string[];
   /** Repos whose seeding was skipped because the core budget reached the reserve. */
   budgetSkipped: string[];
+  /** Auto-registration of pushed repos with no connection (spec item 4); read only by `discover`. */
+  registration: RegistrationContext;
+}
+
+/** What the audit sync needs from the tenant's GitHub configuration. */
+interface AuditSettings {
+  organization: string;
+  auditToken: string;
+  /** The GitHub configuration's collector `tokenRef` — what an auto-registered connection uses. Never the audit-log ref. */
+  collectorTokenRef?: string;
+  /** The GitHub configuration's `backfillDays` (default 90), as the org sync uses it. */
+  backfillDays: number;
+}
+
+export interface RegistrationContext {
+  secretRef?: string;
+  backfillDays: number;
+  /** Pushed repos with no connection that could not be registered for want of a collector tokenRef. */
+  noTokenRef: string[];
+  /** Repos registered this run with more branches than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES — seeded only. */
+  overCap: string[];
+}
+
+/** Org-sync default when the GitHub configuration sets no `backfillDays`. */
+const DEFAULT_BACKFILL_DAYS = 90;
+
+function registrationOf(settings: AuditSettings): RegistrationContext {
+  return {
+    secretRef: settings.collectorTokenRef,
+    backfillDays: settings.backfillDays,
+    noTokenRef: [],
+    overCap: [],
+  };
 }
 
 /** `seedAll`'s own outcome, distinct from a single repo's `SeedOutcome`. */
@@ -221,6 +264,7 @@ export function emptyCounters(): AuditRunCounters {
     uniquePushes: 0,
     reposTouched: 0,
     reposUnregistered: 0,
+    reposRegistered: 0,
     refsMoved: 0,
     refsNew: 0,
     refsDeleted: 0,
@@ -261,6 +305,8 @@ export class GithubAuditSyncService {
     private readonly ingestion: IngestionService,
     private readonly auditClient: GithubAuditLogClient,
     private readonly client: GithubClient,
+    private readonly connections: ConnectionsService,
+    @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
   /** Tenants with an active GitHub configuration that names an audit-log token ref. */
@@ -416,7 +462,7 @@ export class GithubAuditSyncService {
   ): Promise<
     | { summary: AuditRunSummary }
     | {
-        settings: { organization: string; auditToken: string };
+        settings: AuditSettings;
         repos: Map<string, Connection>;
         counters: AuditRunCounters;
         startedMs: number;
@@ -512,7 +558,7 @@ export class GithubAuditSyncService {
     tenantId: string,
     cfg: GithubAuditConfig,
     now: Date,
-    settings: { organization: string; auditToken: string },
+    settings: AuditSettings,
     repos: Map<string, Connection>,
     counters: AuditRunCounters,
     startedMs: number,
@@ -545,6 +591,7 @@ export class GithubAuditSyncService {
       seenKeys: new Set(),
       unseedable: [],
       budgetSkipped: [],
+      registration: registrationOf(settings),
     };
 
     let status: AuditRunSummary['status'] = 'success';
@@ -636,6 +683,15 @@ export class GithubAuditSyncService {
       const note = `${ctx.unseedable.length} repo(s) skipped as unseedable (GitHub answered 404/403 — deleted, renamed or no access): ${nameRepos(ctx.unseedable)}.`;
       error = error ? `${error} ${note}` : note;
     }
+    const { overCap, noTokenRef } = ctx.registration;
+    if (overCap.length > 0) {
+      const note = `${overCap.length} auto-registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so they were seeded only — their non-default-branch pushes in this window are left to the regular collector: ${nameRepos(overCap)}.`;
+      error = error ? `${error} ${note}` : note;
+    }
+    if (noTokenRef.length > 0) {
+      const note = `${noTokenRef.length} pushed repo(s) have no connection and were not auto-registered because the GitHub configuration has no collector tokenRef: ${nameRepos(noTokenRef)}.`;
+      error = error ? `${error} ${note}` : note;
+    }
 
     if (
       priorCheckpointAt &&
@@ -698,7 +754,7 @@ export class GithubAuditSyncService {
     tenantId: string,
     cfg: GithubAuditConfig,
     now: Date,
-    settings: { organization: string; auditToken: string },
+    settings: AuditSettings,
     repos: Map<string, Connection>,
     counters: AuditRunCounters,
     startedMs: number,
@@ -728,6 +784,7 @@ export class GithubAuditSyncService {
       seenKeys: new Set(),
       unseedable: [],
       budgetSkipped: [],
+      registration: registrationOf(settings),
     };
 
     let status: AuditRunSummary['status'] = 'success';
@@ -810,9 +867,7 @@ export class GithubAuditSyncService {
 
   private async loadSettings(
     tenantId: string,
-  ): Promise<
-    { organization: string; auditToken: string } | { reason: string }
-  > {
+  ): Promise<AuditSettings | { reason: string }> {
     const config = await this.prisma.tenantConfiguration.findUnique({
       where: {
         tenantId_namespace_key: {
@@ -847,7 +902,18 @@ export class GithubAuditSyncService {
         reason: `No value is stored for audit-log token ref "${refs.auditLogTokenRef}".`,
       };
     }
-    return { organization: values.organization, auditToken };
+    return {
+      organization: values.organization,
+      auditToken,
+      collectorTokenRef:
+        typeof refs.tokenRef === 'string' ? refs.tokenRef : undefined,
+      // As the admin org sync reads it (a number, else 90); a non-positive
+      // value is not a usable history horizon, so it falls back too.
+      backfillDays:
+        typeof values.backfillDays === 'number' && values.backfillDays > 0
+          ? values.backfillDays
+          : DEFAULT_BACKFILL_DAYS,
+    };
   }
 
   private async registeredRepos(
@@ -869,14 +935,37 @@ export class GithubAuditSyncService {
     ctx: RunContext,
     connection: Connection,
   ): Promise<string> {
-    const ref = connection.secretRef ?? '';
+    return this.tokenForRef(ctx, connection.secretRef);
+  }
+
+  /** Resolves a collector secret ref once per run. Callers never pass the audit-log ref. */
+  private async tokenForRef(
+    ctx: RunContext,
+    secretRef: string | null | undefined,
+  ): Promise<string> {
+    const ref = secretRef ?? '';
     if (!ctx.tokens.has(ref)) {
-      ctx.tokens.set(
-        ref,
-        await this.secrets.resolve(ctx.tenantId, connection.secretRef),
-      );
+      ctx.tokens.set(ref, await this.secrets.resolve(ctx.tenantId, secretRef));
     }
     return ctx.tokens.get(ref) ?? '';
+  }
+
+  /**
+   * Every repo the tenant has ANY GitHub connection for, active or not, by
+   * name and by `config.repoFullName` — so auto-registration never creates a
+   * second connection beside one an admin disabled, whatever it is named.
+   */
+  private async knownGithubRepos(tenantId: string): Promise<Set<string>> {
+    const rows = await this.prisma.connection.findMany({
+      where: { tenantId, sourceSystem: 'github' },
+    });
+    const known = new Set<string>();
+    for (const c of rows) {
+      known.add(c.name);
+      const repo = (c.config as { repoFullName?: string } | null)?.repoFullName;
+      if (repo) known.add(repo);
+    }
+    return known;
   }
 
   /** One-off pass storing every repo's tips; repos already seeded are skipped. */
@@ -1016,34 +1105,57 @@ export class GithubAuditSyncService {
     counters.uniquePushes = pushes.length;
     // `compareCandidatesNaive` ("one Compare per push") is accumulated in
     // planRepo, only for repos that were registered AND already seeded at
-    // plan time — unregistered and seed-only repos could never be Compared,
-    // so counting them would overstate `compareRequestsSaved`.
+    // plan time, and in registerRepo only when it plans ranges — seed-only
+    // and skipped repos could never be Compared, so counting them would
+    // overstate `compareRequestsSaved`.
 
-    const touched = [...pushesByRepo(pushes).entries()].filter(([repo]) => {
-      if (ctx.repos.has(repo)) return true;
-      counters.reposUnregistered++;
-      return false;
-    });
-    counters.reposTouched = touched.length;
+    const byRepo = [...pushesByRepo(pushes).entries()];
+    counters.reposTouched = byRepo.filter(([repo]) =>
+      ctx.repos.has(repo),
+    ).length;
+    // Only read when some pushed repo has no active connection.
+    const known = byRepo.some(([repo]) => !ctx.repos.has(repo))
+      ? await this.knownGithubRepos(ctx.tenantId)
+      : new Set<string>();
 
     const failures: string[] = [];
     await forEachBounded(
-      touched,
+      byRepo,
       ctx.cfg.compareConcurrency,
       async ([repo, events]) => {
-        const connection = ctx.repos.get(repo) as Connection;
+        const documentIds = events.map((e) => e.documentId);
+        const registered = ctx.repos.get(repo);
+        if (!registered) {
+          const outcome = await this.registerRepo(
+            ctx,
+            repo,
+            documentIds,
+            known,
+          );
+          if (!outcome.ok) {
+            failures.push(`${repo}: ${outcome.error}`);
+            return;
+          }
+          // Push evidence is stored only once the repo has a connection to
+          // hang it on; a skipped repo's pushes are not kept (as before).
+          if (outcome.connection) {
+            for (const e of events) {
+              await this.ingestion.ingest(
+                ctx.tenantId,
+                pushEnvelope(outcome.connection.id, e, ctx.now),
+              );
+            }
+          }
+          return;
+        }
+        const connection = registered;
         for (const e of events) {
           await this.ingestion.ingest(
             ctx.tenantId,
             pushEnvelope(connection.id, e, ctx.now),
           );
         }
-        const planned = await this.planRepo(
-          ctx,
-          repo,
-          connection,
-          events.map((e) => e.documentId),
-        );
+        const planned = await this.planRepo(ctx, repo, connection, documentIds);
         if (!planned.ok) failures.push(`${repo}: ${planned.error}`);
       },
     );
@@ -1058,6 +1170,162 @@ export class GithubAuditSyncService {
           ok: false,
           error: `Could not list branches for ${failures.length} repo(s): ${failures.slice(0, 5).join('; ')}`,
         };
+  }
+
+  /**
+   * Auto-registration (spec item 4): a pushed repo with NO GitHub connection
+   * in the tenant is registered exactly as the admin org sync would register
+   * it, seeded, and — up to GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES branches — given
+   * a `new_ref` range per non-default branch, so the pushes that revealed it
+   * are collected now rather than lost. The regular collector then backfills
+   * its history like any org-synced repo.
+   *
+   * - Any existing connection (any status, any name) → left alone: a disabled
+   *   connection is an admin decision. Counted `reposUnregistered`.
+   * - 404/403 → skipped, counted and named as unseedable.
+   * - archived/disabled → skipped, counted `reposUnregistered`, no connection.
+   * - Transient failure or the core budget at the reserve → `ok: false`, which
+   *   holds the checkpoint so the window is re-read, as in `planRepo`.
+   *
+   * GitHub is checked BEFORE the connection is created, so a transient failure
+   * never leaves a connection behind without its tips. Every call uses the
+   * collector token of the configuration's `tokenRef` — never the audit token.
+   */
+  private async registerRepo(
+    ctx: RunContext,
+    repo: string,
+    documentIds: string[],
+    known: Set<string>,
+  ): Promise<
+    { ok: true; connection?: Connection } | { ok: false; error: string }
+  > {
+    const { counters, registration } = ctx;
+    if (
+      known.has(repo) ||
+      (await this.connections.findByTenantSourceAndName(
+        ctx.tenantId,
+        'github',
+        repo,
+      ))
+    ) {
+      counters.reposUnregistered++;
+      return { ok: true };
+    }
+    const secretRef = registration.secretRef;
+    if (!secretRef) {
+      counters.reposUnregistered++;
+      registration.noTokenRef.push(repo);
+      return { ok: true };
+    }
+    if (ctx.stopForBudget) return { ok: false, error: BUDGET_NOT_PLANNED };
+    const token = await this.tokenForRef(ctx, secretRef);
+    const branch = await this.client.getDefaultBranch(repo, token);
+    this.chargeCore(ctx, branch.rateLimit);
+    if (branch.failure || !branch.name) {
+      return this.registrationFailure(ctx, repo, branch.failure);
+    }
+    if (branch.archived || branch.disabled) {
+      counters.reposUnregistered++;
+      return { ok: true };
+    }
+    if (ctx.stopForBudget) return { ok: false, error: BUDGET_NOT_PLANNED };
+    const refs = await this.client.listHeadRefs(repo, token);
+    this.chargeCore(ctx, refs.rateLimit);
+    if (!refs.tips) return this.registrationFailure(ctx, repo, refs.failure);
+
+    const backfillSince = new Date(
+      ctx.now.getTime() - registration.backfillDays * 86_400_000,
+    ).toISOString();
+    const connection = await this.connections.create(ctx.tenantId, {
+      sourceSystem: 'github',
+      name: repo,
+      config: { repoFullName: repo, backfillSince },
+      secretRef,
+    });
+    ctx.repos.set(repo, connection);
+    counters.reposRegistered++;
+
+    // Against an empty store every branch is new: the default branch gets a
+    // tip only, every other branch a `new_ref` range based on it.
+    const diff = diffTips(repo, new Map(), refs.tips, branch.name);
+    const planRanges = refs.tips.size <= ctx.cfg.newRepoMaxBranches;
+    if (!planRanges) registration.overCap.push(repo);
+    const ranges = planRanges ? diff.ranges : [];
+    const c = countRanges(ranges);
+    counters.compareRequestsPlanned += c.compareRequestsPlanned;
+    counters.refsNew += c.refsNew;
+    if (ranges.length > 0)
+      counters.compareCandidatesNaive += documentIds.length;
+
+    const tips = [
+      { ref: DEFAULT_BRANCH_MARKER, sha: branch.name },
+      ...[...refs.tips].map(([ref, sha]) => ({ ref, sha })),
+    ].map((t) => ({
+      id: newId(),
+      tenantId: ctx.tenantId,
+      repoFullName: repo,
+      seenAt: ctx.now,
+      ...t,
+    }));
+    await this.prisma.$transaction(async (tx) => {
+      await tx.githubRefTip.deleteMany({
+        where: { tenantId: ctx.tenantId, repoFullName: repo },
+      });
+      await tx.githubRefTip.createMany({ data: tips });
+      for (const r of ranges) {
+        await tx.githubPushRange.create({
+          data: {
+            id: newId(),
+            tenantId: ctx.tenantId,
+            runId: ctx.runId,
+            connectionId: connection.id,
+            repoFullName: repo,
+            ref: r.ref,
+            baseSha: r.baseSha ?? null,
+            baseRef: r.baseRef ?? null,
+            headSha: r.headSha ?? null,
+            kind: r.kind,
+            auditDocumentIds: documentIds,
+            status: 'pending',
+          },
+        });
+      }
+    });
+    counters.reposSeeded++;
+
+    this.logger.log(
+      `auto-registered GitHub repo ${repo} for tenant ${ctx.tenantId}`,
+    );
+    await this.audit?.record({
+      tenantId: ctx.tenantId,
+      actorType: 'system',
+      action: 'connection.auto_registered',
+      targetType: 'connection',
+      targetId: connection.id,
+      metadata: {
+        repoFullName: repo,
+        source: 'github_audit_sync',
+        runId: ctx.runId,
+        backfillSince,
+        rangesPlanned: ranges.length,
+        seedOnly: !planRanges,
+      },
+    });
+    return { ok: true, connection };
+  }
+
+  /** A failed GitHub read while registering: 404/403 skip the repo for good; anything else holds the checkpoint. */
+  private registrationFailure(
+    ctx: RunContext,
+    repo: string,
+    failure: GithubCallFailure | undefined,
+  ): { ok: true } | { ok: false; error: string } {
+    if (isUnseedable(failure)) {
+      this.noteUnseedable(ctx, repo);
+      return { ok: true };
+    }
+    if (failure === 'rate_limited') ctx.stopForBudget = true;
+    return { ok: false, error: failure ?? 'failed' };
   }
 
   private async planRepo(

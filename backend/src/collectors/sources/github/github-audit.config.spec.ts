@@ -16,6 +16,7 @@ describe('readGithubAuditConfig', () => {
       maxPages: 200,
       lagWarnMinutes: 30,
       fullSweepMinutes: 60,
+      newRepoMaxBranches: 50,
     });
   });
 
@@ -115,5 +116,28 @@ describe('auditCronExpression', () => {
     expect(auditCronExpression(5)).toBe('0 */5 * * * *');
     expect(auditCronExpression(30)).toBe('0 */30 * * * *');
     expect(auditCronExpression(60)).toBe('0 0 * * * *');
+  });
+});
+
+describe('GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES', () => {
+  it('defaults to 50 and treats an empty value as unset', () => {
+    expect(readGithubAuditConfig({}).newRepoMaxBranches).toBe(50);
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '' })
+        .newRepoMaxBranches,
+    ).toBe(50);
+  });
+
+  it.each([0, 1, 500])('accepts %i', (n) => {
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: String(n) })
+        .newRepoMaxBranches,
+    ).toBe(n);
+  });
+
+  it.each(['-1', '501', '2.5', 'many'])('rejects %s', (v) => {
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: v }),
+    ).toThrow(/GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES/);
   });
 });

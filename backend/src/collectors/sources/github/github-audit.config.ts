@@ -25,6 +25,12 @@ export interface GithubAuditConfig {
    * the backstop for pushes the audit log never records (spec item 3). 0 = off.
    */
   fullSweepMinutes: number;
+  /**
+   * An auto-registered repo (spec item 4) gets a `new_ref` range for every
+   * non-default branch only when it has at most this many branches; above it,
+   * the repo is seeded only and named in `run.error`. 0 = always seed only.
+   */
+  newRepoMaxBranches: number;
 }
 
 function intIn(
@@ -97,6 +103,13 @@ export function readGithubAuditConfig(
     maxRangeAttempts: intIn(env, 'GITHUB_AUDIT_MAX_RANGE_ATTEMPTS', 5, 1, 20),
     maxPages: intIn(env, 'GITHUB_AUDIT_MAX_PAGES', 200, 1, 1000),
     lagWarnMinutes: intIn(env, 'GITHUB_AUDIT_LAG_WARN_MINUTES', 30, 5, 1440),
+    newRepoMaxBranches: intIn(
+      env,
+      'GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES',
+      50,
+      0,
+      500,
+    ),
   };
 }
 

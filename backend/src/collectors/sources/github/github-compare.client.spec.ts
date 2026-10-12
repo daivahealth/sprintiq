@@ -93,6 +93,31 @@ describe('GithubClient REST additions', () => {
     );
   });
 
+  it('getDefaultBranch also reports archived / disabled from the same response', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      res({
+        body: { default_branch: 'main', archived: true, disabled: false },
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const r = await client.getDefaultBranch('acme/old', 'tok');
+    expect(r).toMatchObject({ name: 'main', archived: true, disabled: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('getDefaultBranch reports archived / disabled as false when GitHub omits them', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        res({ body: { default_branch: 'master', disabled: true } }),
+      ) as unknown as typeof fetch;
+    expect(await client.getDefaultBranch('acme/ehr', 'tok')).toMatchObject({
+      name: 'master',
+      archived: false,
+      disabled: true,
+    });
+  });
+
   it('compareAll follows rel="next" and collects every page of commits', async () => {
     const fetchMock = jest
       .fn()
