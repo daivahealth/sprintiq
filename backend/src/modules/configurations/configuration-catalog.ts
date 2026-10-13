@@ -68,6 +68,13 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         required: true,
       },
       {
+        key: 'auditLogTokenRef',
+        label: 'Audit-log token secret ref',
+        kind: 'secret-ref',
+        helper:
+          'Org-owner classic PAT with read:audit_log, SSO-authorized for the org. Used ONLY to read git.push events from the org audit log (ADR-0010); every other GitHub call keeps using the token above. Env var name only (e.g. GITHUB_AUDIT_TOKEN).',
+      },
+      {
         // Kept, but honestly labelled. Collection is poll-only (api/README.md
         // §12 #2): the receiver exists and verifies signatures, but cannot be
         // reached from a real provider, so a value here changes nothing today.

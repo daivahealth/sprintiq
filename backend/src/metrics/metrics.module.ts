@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CollectorsModule } from '../collectors/collectors.module';
 import { CorrelationModule } from '../correlation/correlation.module';
 import { CodeModule } from '../modules/code/code.module';
 import { ConnectionsModule } from '../modules/connections/connections.module';
@@ -13,7 +14,16 @@ import { SprintHealthDetailService } from './sprint-health-detail.service';
 @Module({
   // ConnectionsModule: the velocity read needs the collection horizon, which
   // is a property of the connections, to know which sprints predate the data.
-  imports: [CodeModule, ConnectionsModule, CorrelationModule, PlanningModule],
+  // CollectorsModule: the digest's audit-coverage gate reads
+  // `GithubAuditSyncService.coverageForDay` — a read-only, tenant-scoped
+  // method; no GitHub call leaves the collector context through it.
+  imports: [
+    CodeModule,
+    CollectorsModule,
+    ConnectionsModule,
+    CorrelationModule,
+    PlanningModule,
+  ],
   providers: [
     MetricsService,
     InsightsService,

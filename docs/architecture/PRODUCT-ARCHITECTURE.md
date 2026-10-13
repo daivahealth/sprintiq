@@ -195,6 +195,7 @@ SprintIQ is decomposed using Domain-Driven Design. Contexts are classified as **
 - **Interactions:** External source APIs (in/out), all domain contexts (downstream consumers), BC-16 (audit), BC-0 (connection registry/health/secrets).
 - **Owner:** Platform / Integrations team.
 - **Key rule:** No other context calls a source API or receives its webhooks. Every collected event flows through this single pipeline; no source-specific writes scattered across domain tables.
+- **Three commit-discovery routes converge on one key.** GitHub commits reach `code_commit` by three independent routes inside BC-1: the default-branch walk (one ref per repo), the PR commit harvest (branch-agnostic, from each enriched PR's own commit list), and — added 2026-10-06 — audit-log push discovery, which reads the org Audit Log's `git.push` events, diffs branch tips to find moved/new refs, and retrieves the commits via Compare ([ADR-0010](../ADR/0010-github-audit-log-commit-discovery.md)). All three key on `github:{repo}:commit:{sha}` and pass through the single ingestion pipeline above, so a commit reachable from more than one route ingests exactly once; none of the three writes to a domain table directly.
 
 ### BC-2 — Identity, Tenancy & Access *(Generic)*
 - **Purpose:** Who can see and do what, across organizations and tenants.
