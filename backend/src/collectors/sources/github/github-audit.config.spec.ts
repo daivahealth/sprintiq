@@ -1,4 +1,6 @@
 import {
+  ALLOWED_AUDIT_INTERVALS,
+  ALLOWED_FULL_SWEEP_INTERVALS,
   auditCronExpression,
   fullSweepCronExpression,
   readGithubAuditConfig,
@@ -99,16 +101,51 @@ describe('GITHUB_AUDIT_FULL_SWEEP_MINUTES', () => {
 });
 
 describe('fullSweepCronExpression', () => {
-  it('builds a seconds-precision cron for each sweep interval', () => {
-    expect(fullSweepCronExpression(30)).toBe('0 */30 * * * *');
-    expect(fullSweepCronExpression(60)).toBe('0 0 * * * *');
-    expect(fullSweepCronExpression(120)).toBe('0 0 */2 * * *');
-    expect(fullSweepCronExpression(240)).toBe('0 0 */4 * * *');
+  it('builds a seconds-precision cron for each sweep interval, offset 2 minutes', () => {
+    expect(fullSweepCronExpression(30)).toBe('0 2,32 * * * *');
+    expect(fullSweepCronExpression(60)).toBe('0 2 * * * *');
+    expect(fullSweepCronExpression(120)).toBe('0 2 */2 * * *');
+    expect(fullSweepCronExpression(240)).toBe('0 2 */4 * * *');
   });
 
-  it('still returns a valid (hourly) expression for 0 — the tick itself is gated off', () => {
-    expect(fullSweepCronExpression(0)).toBe('0 0 * * * *');
+  it('still returns a valid (hourly, offset) expression for 0 — the tick itself is gated off', () => {
+    expect(fullSweepCronExpression(0)).toBe('0 2 * * * *');
   });
+
+  /** Minute values (0–59) a six-field cron's minute field fires on. */
+  function minutesOf(expr: string): Set<number> {
+    const field = expr.split(' ')[1];
+    const out = new Set<number>();
+    for (const part of field.split(',')) {
+      const step = /^\*\/(\d+)$/.exec(part);
+      if (step) {
+        for (let m = 0; m < 60; m += Number(step[1])) out.add(m);
+      } else if (part === '*') {
+        for (let m = 0; m < 60; m++) out.add(m);
+      } else if (/^\d+$/.test(part)) {
+        out.add(Number(part));
+      } else {
+        throw new Error(`unparsed minute field part "${part}" in "${expr}"`);
+      }
+    }
+    return out;
+  }
+
+  it.each(
+    ALLOWED_AUDIT_INTERVALS.flatMap((a) =>
+      ALLOWED_FULL_SWEEP_INTERVALS.map((s) => [a, s] as [number, number]),
+    ),
+  )(
+    'audit every %i min and sweep every %i min never fire in the same minute',
+    (audit, sweep) => {
+      const auditMinutes = minutesOf(auditCronExpression(audit));
+      const sweepMinutes = minutesOf(fullSweepCronExpression(sweep));
+      expect(auditMinutes.size).toBeGreaterThan(0);
+      expect(sweepMinutes.size).toBeGreaterThan(0);
+      const shared = [...sweepMinutes].filter((m) => auditMinutes.has(m));
+      expect(shared).toEqual([]);
+    },
+  );
 });
 
 describe('auditCronExpression', () => {

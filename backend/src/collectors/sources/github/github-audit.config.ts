@@ -121,13 +121,27 @@ export function auditCronExpression(intervalMinutes: number): string {
 }
 
 /**
- * Cron for the full branch sweep. 120/240 run on the hour every 2/4 hours.
- * 0 (off) still yields a valid hourly expression because the decorator needs
- * one at module load — `sweepTick` itself returns immediately when off.
+ * Minutes past the hour the full sweep is offset by. Every allowed audit
+ * interval fires on a multiple of 5 minutes, so a 2-minute offset means the
+ * sweep and the audit tick never fire in the same minute — they share one
+ * run-claim and a collision would make the sweep lose it every time.
+ */
+export const FULL_SWEEP_MINUTE_OFFSET = 2;
+
+/**
+ * Cron for the full branch sweep, offset {@link FULL_SWEEP_MINUTE_OFFSET}
+ * minutes past the hour: 30 ⇒ :02 and :32; 60 ⇒ :02 hourly; 120/240 ⇒ :02
+ * every 2/4 hours. 0 (off) still yields a valid hourly expression because the
+ * decorator needs one at module load — `sweepTick` itself returns immediately
+ * when off.
  */
 export function fullSweepCronExpression(sweepMinutes: number): string {
+  const m = FULL_SWEEP_MINUTE_OFFSET;
   if (sweepMinutes === 120 || sweepMinutes === 240) {
-    return `0 0 */${sweepMinutes / 60} * * *`;
+    return `0 ${m} */${sweepMinutes / 60} * * *`;
   }
-  return auditCronExpression(sweepMinutes === 30 ? 30 : 60);
+  if (sweepMinutes === 30) {
+    return `0 ${m},${m + 30} * * * *`;
+  }
+  return `0 ${m} * * * *`;
 }
