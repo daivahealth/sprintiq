@@ -88,9 +88,9 @@ describe('effectiveLagWarnMinutes', () => {
   ])(
     'threshold %i with a %i-minute interval → %i',
     (lagWarnMinutes, intervalMinutes, expected) => {
-      expect(
-        effectiveLagWarnMinutes({ lagWarnMinutes, intervalMinutes }),
-      ).toBe(expected);
+      expect(effectiveLagWarnMinutes({ lagWarnMinutes, intervalMinutes })).toBe(
+        expected,
+      );
     },
   );
 });

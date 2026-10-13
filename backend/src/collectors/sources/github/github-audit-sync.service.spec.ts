@@ -1300,9 +1300,9 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     prisma.githubPushRange.rows.push(
       range('sh', 't1', 'shadowed', new Date(DAY_START.getTime() - 1)),
     );
-    expect(
-      (await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW)).ok,
-    ).toBe(true);
+    expect((await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW)).ok).toBe(
+      true,
+    );
   });
 
   it('is not ok when the only successful sweep after the day ran in shadow mode', async () => {
@@ -1729,7 +1729,9 @@ describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
         attempts: 0,
         createdAt: new Date('2026-10-04T12:00:00.000Z'),
       });
-      const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
+      const INGEST = readGithubAuditConfig({
+        GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      });
       // A sweep that starts after 2026-10-05 (IST) has ended.
       const sweepAt = new Date('2026-10-05T19:00:00.000Z');
       const r = await svc.runFullSweep('t1', INGEST, sweepAt);
@@ -1776,7 +1778,9 @@ describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
     );
     const r = await svc.runFullSweep('t1', SHADOW, NOW);
     expect(r.status).toBe('partial');
-    expect(r.reason).toMatch(/Could not list branches for 1 repo\(s\): acme\/b: failed/);
+    expect(r.reason).toMatch(
+      /Could not list branches for 1 repo\(s\): acme\/b: failed/,
+    );
     expect(prisma.githubAuditRun.rows[0].status).toBe('partial');
   });
 
