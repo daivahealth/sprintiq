@@ -113,6 +113,18 @@ export function readGithubAuditConfig(
   };
 }
 
+/**
+ * The lag past which the route counts as behind: the configured
+ * `lagWarnMinutes`, but never less than two audit intervals — at a 60-minute
+ * interval the checkpoint is legitimately up to an hour old before every run,
+ * so a 30-minute threshold would warn on every healthy run.
+ */
+export function effectiveLagWarnMinutes(
+  cfg: Pick<GithubAuditConfig, 'lagWarnMinutes' | 'intervalMinutes'>,
+): number {
+  return Math.max(cfg.lagWarnMinutes, 2 * cfg.intervalMinutes);
+}
+
 /** Six-field (seconds-first) cron, as `@nestjs/schedule` accepts. 60 ⇒ top of every hour. */
 export function auditCronExpression(intervalMinutes: number): string {
   return intervalMinutes === 60

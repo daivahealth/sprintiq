@@ -926,6 +926,33 @@ describe('GithubAuditSyncService.runTenant (lag visibility)', () => {
     expect(prisma.githubAuditRun.rows[0].error ?? null).toBeNull();
   });
 
+  it('uses max(lag threshold, 2 × interval): a 60-minute interval does not warn at 65 or 120 minutes but does past 120', async () => {
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'shadow',
+      GITHUB_AUDIT_LAG_WARN_MINUTES: '30',
+      GITHUB_AUDIT_SYNC_INTERVAL_MINUTES: '60',
+    });
+    const run = async (lagMinutes: number) => {
+      const { svc, prisma, audit } = setup();
+      seedTenant(prisma, 't1', ['acme/ehr']);
+      seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+      prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+        NOW.getTime() - lagMinutes * 60_000,
+      );
+      audit.listGitPushes.mockResolvedValue({
+        status: 'complete',
+        events: [],
+        pages: 1,
+        nextTraversals: 0,
+      });
+      await svc.runTenant('t1', cfg, NOW);
+      return (prisma.githubAuditRun.rows[0].error ?? null) as string | null;
+    };
+    expect(await run(65)).toBeNull();
+    expect(await run(120)).toBeNull();
+    expect(await run(121)).toMatch(/Audit sync is 121 minutes behind\./);
+  });
+
   it('never warns before seeding exists (no pre-run checkpoint at all)', async () => {
     const { svc, prisma, client } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);
@@ -992,6 +1019,25 @@ describe('GithubAuditSyncService.status', () => {
       pendingRanges: 2,
       failedRanges: 1,
     });
+  });
+
+  it('judges behind against max(lag threshold, 2 × interval)', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      GITHUB_AUDIT_LAG_WARN_MINUTES: '30',
+      GITHUB_AUDIT_SYNC_INTERVAL_MINUTES: '60',
+    });
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 90 * 60_000,
+    );
+    expect((await svc.status('t1', cfg, NOW)).behind).toBe(false);
+    prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+      NOW.getTime() - 121 * 60_000,
+    );
+    expect((await svc.status('t1', cfg, NOW)).behind).toBe(true);
   });
 
   it('is not enabled when no audit-log token ref is configured', async () => {

@@ -2,6 +2,7 @@ import {
   ALLOWED_AUDIT_INTERVALS,
   ALLOWED_FULL_SWEEP_INTERVALS,
   auditCronExpression,
+  effectiveLagWarnMinutes,
   fullSweepCronExpression,
   readGithubAuditConfig,
 } from './github-audit.config';
@@ -75,6 +76,23 @@ describe('readGithubAuditConfig', () => {
       readGithubAuditConfig({ GITHUB_AUDIT_LAG_WARN_MINUTES: '1441' }),
     ).toThrow(/GITHUB_AUDIT_LAG_WARN_MINUTES/);
   });
+});
+
+describe('effectiveLagWarnMinutes', () => {
+  it.each([
+    [30, 5, 30],
+    [30, 15, 30],
+    [30, 20, 40],
+    [30, 60, 120],
+    [180, 60, 180],
+  ])(
+    'threshold %i with a %i-minute interval → %i',
+    (lagWarnMinutes, intervalMinutes, expected) => {
+      expect(
+        effectiveLagWarnMinutes({ lagWarnMinutes, intervalMinutes }),
+      ).toBe(expected);
+    },
+  );
 });
 
 describe('GITHUB_AUDIT_FULL_SWEEP_MINUTES', () => {

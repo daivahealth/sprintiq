@@ -12,6 +12,7 @@ import { ConnectionsService } from '../../../modules/connections/connections.ser
 import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
 import { IngestionService } from '../../ingestion/ingestion.service';
 import {
+  effectiveLagWarnMinutes,
   GithubAuditConfig,
   GithubAuditMode,
   readGithubAuditConfig,
@@ -414,7 +415,7 @@ export class GithubAuditSyncService {
       seededAt: checkpoint?.seededAt ?? null,
       checkpointAt,
       lagMinutes,
-      behind: lagMinutes !== null && lagMinutes > cfg.lagWarnMinutes,
+      behind: lagMinutes !== null && lagMinutes > effectiveLagWarnMinutes(cfg),
       lastRunAt: checkpoint?.lastRunAt ?? null,
       lastStatus: checkpoint?.lastStatus ?? null,
       lastError: checkpoint?.lastError ?? null,
@@ -794,7 +795,7 @@ export class GithubAuditSyncService {
       const lagMinutes = Math.round(
         (now.getTime() - priorCheckpointAt.getTime()) / 60_000,
       );
-      if (lagMinutes > cfg.lagWarnMinutes) {
+      if (lagMinutes > effectiveLagWarnMinutes(cfg)) {
         lagWarning = `Audit sync is ${lagMinutes} minutes behind.`;
         this.logger.warn(`[tenant ${tenantId}] ${lagWarning}`);
       }
