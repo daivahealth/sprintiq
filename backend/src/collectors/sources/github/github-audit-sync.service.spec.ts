@@ -1658,6 +1658,82 @@ describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
     }
   });
 
+  it.each(['not_found', 'forbidden'])(
+    'fails under an org-wide refusal (every repo answers %s) and does not satisfy the digest gate',
+    async (failure) => {
+      const { svc, prisma, client } = setup();
+      seedTenant(prisma, 't1', ['acme/a', 'acme/b', 'acme/c']);
+      seeded(prisma, 't1', {
+        'acme/a': { feat: 'a0' },
+        'acme/b': { feat: 'b0' },
+        'acme/c': { feat: 'c0' },
+      });
+      client.listHeadRefs.mockResolvedValue({ failure });
+      // A range queued earlier is not executed under a refused token — that
+      // would only burn its attempts.
+      prisma.githubPushRange.rows.push({
+        id: 'queued',
+        tenantId: 't1',
+        status: 'pending',
+        repoFullName: 'acme/a',
+        ref: 'feat',
+        baseSha: 'a0',
+        headSha: 'a1',
+        kind: 'moved',
+        attempts: 0,
+        createdAt: new Date('2026-10-04T12:00:00.000Z'),
+      });
+      const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
+      // A sweep that starts after 2026-10-05 (IST) has ended.
+      const sweepAt = new Date('2026-10-05T19:00:00.000Z');
+      const r = await svc.runFullSweep('t1', INGEST, sweepAt);
+      expect(r.status).toBe('failed');
+      expect(r.reason).toContain(
+        'collector token refused (403/404) for 3 of 3 repos — check token scope, SSO authorization and that these repos still exist',
+      );
+      expect(prisma.githubAuditRun.rows[0]).toMatchObject({
+        trigger: 'full_sweep',
+        mode: 'ingest',
+        status: 'failed',
+      });
+      expect(client.compareAll).not.toHaveBeenCalled();
+      expect(prisma.githubPushRange.rows[0].attempts).toBe(0);
+      // Everything else the gate checks is satisfied (the queued range was
+      // created before the day started), so only the sweep fails it.
+      prisma.githubAuditCheckpoint.rows[0].checkpointAt = new Date(
+        '2026-10-06T04:00:00.000Z',
+      );
+      const c = await svc.coverageForDay(
+        't1',
+        '2026-10-05',
+        INGEST,
+        new Date('2026-10-06T05:00:00.000Z'),
+      );
+      expect(c.ok).toBe(false);
+      expect(c.reasons).toEqual([
+        'no successful full branch sweep has started since 2026-10-05 ended',
+      ]);
+    },
+  );
+
+  it('is partial, not success, when a repo listing fails without throwing', async () => {
+    const { svc, prisma, client } = setup();
+    seedTenant(prisma, 't1', ['acme/a', 'acme/b']);
+    seeded(prisma, 't1', {
+      'acme/a': { feat: 'a0' },
+      'acme/b': { feat: 'b0' },
+    });
+    client.listHeadRefs.mockImplementation(async (repo: string) =>
+      repo === 'acme/a'
+        ? { tips: new Map([['feat', 'a0']]) }
+        : { failure: 'failed' },
+    );
+    const r = await svc.runFullSweep('t1', SHADOW, NOW);
+    expect(r.status).toBe('partial');
+    expect(r.reason).toMatch(/Could not list branches for 1 repo\(s\): acme\/b: failed/);
+    expect(prisma.githubAuditRun.rows[0].status).toBe('partial');
+  });
+
   it('reads and writes only the requested tenant (tenant isolation)', async () => {
     const { svc, prisma, client } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);

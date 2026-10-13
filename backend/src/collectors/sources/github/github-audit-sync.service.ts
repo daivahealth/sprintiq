@@ -245,6 +245,11 @@ function isRefused(
   return seededCount === 0 && refusedCount > 0;
 }
 
+/** The `run.error` wording when `isRefused` fires — shared by seeding and the full sweep. */
+function refusalMessage(refusedCount: number, attempted: number): string {
+  return `collector token refused (403/404) for ${refusedCount} of ${attempted} repos — check token scope, SSO authorization and that these repos still exist`;
+}
+
 /** One commit's outcome inside a push range — the per-SHA evidence shadow-mode acceptance compares with ground truth (spec §9 step 3). */
 export type CommitOutcome = {
   sha: string;
@@ -821,7 +826,7 @@ export class GithubAuditSyncService {
           // actually observed the org, so starting the checkpoint would
           // silently assert coverage it does not have (spec item 1).
           status = 'failed';
-          error = `collector token refused (403/404) for ${seedResult.refusedCount} of ${seedResult.attempted} repos — check token scope, SSO authorization and that these repos still exist`;
+          error = refusalMessage(seedResult.refusedCount, seedResult.attempted);
         } else {
           status = 'partial';
           error =
@@ -972,6 +977,7 @@ export class GithubAuditSyncService {
     const notes: string[] = [];
     const notPlanned: string[] = [];
     const failures: string[] = [];
+    let sweptOk = 0;
     try {
       await forEachBounded(
         [...repos.entries()],
@@ -981,7 +987,10 @@ export class GithubAuditSyncService {
           // recorded push, so `auditDocumentIds` stays empty.
           const planned = await this.planRepo(ctx, repo, connection, []);
           if (planned.ok) {
-            if (!ctx.unseedable.includes(repo)) counters.reposTouched++;
+            if (!ctx.unseedable.includes(repo)) {
+              counters.reposTouched++;
+              sweptOk++;
+            }
           } else if (planned.error === BUDGET_NOT_PLANNED) {
             // Tips are left as they were, so the next sweep still sees the move.
             notPlanned.push(repo);
@@ -990,18 +999,32 @@ export class GithubAuditSyncService {
           }
         },
       );
-      await this.executePending(ctx);
-      if (failures.length > 0) {
-        status = 'partial';
-        notes.push(
-          `Could not list branches for ${failures.length} repo(s): ${failures.slice(0, 5).join('; ')}.`,
-        );
-      }
-      if (notPlanned.length > 0) {
-        status = 'partial';
-        notes.push(
-          `${notPlanned.length} repo(s) not swept because the core rate budget reached the reserve (GITHUB_BACKFILL_RATE_RESERVE): ${nameRepos(notPlanned)}.`,
-        );
+      // The same org-wide refusal guard as seeding (final review, I3): a
+      // token refused (403 or 404) for most repos has not observed the org,
+      // so the sweep must not report `success` — which the digest gate would
+      // otherwise take as evidence the day's pushes were swept. Pending
+      // ranges are not executed under a refused token: they would only burn
+      // attempts toward GITHUB_AUDIT_MAX_RANGE_ATTEMPTS; the audit run
+      // retries them.
+      const attempted = repos.size;
+      const refusedCount = ctx.unseedable.length;
+      if (isRefused(attempted, sweptOk, refusedCount)) {
+        status = 'failed';
+        notes.push(refusalMessage(refusedCount, attempted));
+      } else {
+        await this.executePending(ctx);
+        if (failures.length > 0) {
+          status = 'partial';
+          notes.push(
+            `Could not list branches for ${failures.length} repo(s): ${failures.slice(0, 5).join('; ')}.`,
+          );
+        }
+        if (notPlanned.length > 0) {
+          status = 'partial';
+          notes.push(
+            `${notPlanned.length} repo(s) not swept because the core rate budget reached the reserve (GITHUB_BACKFILL_RATE_RESERVE): ${nameRepos(notPlanned)}.`,
+          );
+        }
       }
     } catch (err) {
       status = 'failed';
