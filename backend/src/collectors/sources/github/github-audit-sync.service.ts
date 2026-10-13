@@ -113,6 +113,12 @@ export interface AuditStatus {
   lastError: string | null;
   pendingRanges: number;
   failedRanges: number;
+  /** The latest full-branch-sweep run for the tenant (any status), or null if none has ever run. */
+  lastFullSweep: {
+    startedAt: Date;
+    finishedAt: Date | null;
+    status: string;
+  } | null;
 }
 
 /**
@@ -364,8 +370,8 @@ export class GithubAuditSyncService {
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
   ): Promise<AuditStatus> {
-    const [config, checkpoint, pendingRanges, failedRanges] = await Promise.all(
-      [
+    const [config, checkpoint, pendingRanges, failedRanges, lastFullSweep] =
+      await Promise.all([
         this.prisma.tenantConfiguration.findUnique({
           where: {
             tenantId_namespace_key: {
@@ -382,8 +388,12 @@ export class GithubAuditSyncService {
         this.prisma.githubPushRange.findMany({
           where: { tenantId, status: 'failed' },
         }),
-      ],
-    );
+        this.prisma.githubAuditRun.findFirst({
+          where: { tenantId, trigger: 'full_sweep' },
+          orderBy: { startedAt: 'desc' },
+          select: { startedAt: true, finishedAt: true, status: true },
+        }),
+      ]);
     const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
     const enabled =
       !!config &&
@@ -405,6 +415,13 @@ export class GithubAuditSyncService {
       lastError: checkpoint?.lastError ?? null,
       pendingRanges: pendingRanges.length,
       failedRanges: failedRanges.length,
+      lastFullSweep: lastFullSweep
+        ? {
+            startedAt: lastFullSweep.startedAt,
+            finishedAt: lastFullSweep.finishedAt,
+            status: lastFullSweep.status,
+          }
+        : null,
     };
   }
 
@@ -416,10 +433,13 @@ export class GithubAuditSyncService {
    *   - the audit log has been read through the day's last instant plus the
    *     overlap the next window re-reads (`checkpointAt`, which only moves
    *     once a window's work is durably queued);
-   *   - nothing queued while the day's pushes could still be planned —
-   *     [day start, day end + overlap + 60 min] — is `pending` or `failed`;
-   *   - when the full sweep is on, a sweep finished successfully after the
-   *     day ended, covering pushes the audit log never records.
+   *   - nothing created at or after day start — no upper bound (controller
+   *     ruling, fix round 1): a late catch-up or a sweep that stops on
+   *     budget can create the day's ranges long after any fixed window, and
+   *     the pusher must still be withheld — is `pending` or `failed`;
+   *   - when the full sweep is on, a sweep STARTED (not finished)
+   *     successfully after the day ended, covering pushes the audit log
+   *     never records.
    * Every failing condition is reported, so the withheld card names them all.
    */
   async coverageForDay(
@@ -457,10 +477,12 @@ export class GithubAuditSyncService {
     const unfinishedWhere = {
       tenantId,
       status: { in: ['pending', 'failed'] },
-      createdAt: {
-        gte: istDayStart(day),
-        lte: new Date(dayEndMs + overlapMs + 60 * 60_000),
-      },
+      // No upper bound (controller ruling, fix round 1): an audit catch-up
+      // after a stall, or a late sweep that plans a missed push and stops on
+      // budget, can create the day's ranges well after any fixed window —
+      // the person who pushed must still be withheld, not silently cleared.
+      // Still a bounded read (count + take:5 below), never the whole queue.
+      createdAt: { gte: istDayStart(day) },
     };
     const [checkpoint, unfinished, shown, sweep] = await Promise.all([
       this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
@@ -477,7 +499,11 @@ export class GithubAuditSyncService {
               tenantId,
               trigger: 'full_sweep',
               status: 'success',
-              finishedAt: { gt: new Date(dayEndMs) },
+              // startedAt, not finishedAt (controller ruling, fix round 1):
+              // a sweep that started before the day ended but finished after
+              // was already running against the old branch tips and cannot
+              // vouch for pushes made during the day.
+              startedAt: { gt: new Date(dayEndMs) },
             },
             select: { id: true },
           })
@@ -505,7 +531,7 @@ export class GithubAuditSyncService {
     }
     if (cfg.fullSweepMinutes > 0 && !sweep) {
       reasons.push(
-        `no successful full branch sweep has finished since ${day} ended`,
+        `no successful full branch sweep has started since ${day} ended`,
       );
     }
     return { applies: true, ok: reasons.length === 0, reasons };

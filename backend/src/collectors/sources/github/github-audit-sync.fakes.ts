@@ -48,9 +48,21 @@ function table(calls: Row[], rows: Row[], uniqueOf: (where: Row) => Row) {
         out = [...out].sort((a, b) => a.createdAt - b.createdAt);
       return take ? out.slice(0, take) : out;
     }),
-    findFirst: jest.fn(async ({ where }: Row = {}) => {
+    findFirst: jest.fn(async ({ where, orderBy }: Row = {}) => {
       calls.push({ where });
-      return rows.find((r) => matches(r, where)) ?? null;
+      let out = rows.filter((r) => matches(r, where));
+      // Only a single date field is ever ordered on here (e.g.
+      // `{ startedAt: 'desc' }`), as Prisma's `orderBy` would be for this use.
+      const entry = orderBy && Object.entries(orderBy)[0];
+      if (entry) {
+        const [field, dir] = entry as [string, 'asc' | 'desc'];
+        out = [...out].sort((a, b) => {
+          const av = a[field] instanceof Date ? a[field].getTime() : a[field];
+          const bv = b[field] instanceof Date ? b[field].getTime() : b[field];
+          return dir === 'desc' ? bv - av : av - bv;
+        });
+      }
+      return out[0] ?? null;
     }),
     count: jest.fn(async ({ where }: Row = {}) => {
       calls.push({ where });

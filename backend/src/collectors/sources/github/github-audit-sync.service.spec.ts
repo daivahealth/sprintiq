@@ -1020,6 +1020,58 @@ describe('GithubAuditSyncService.status', () => {
     expect(status.pendingRanges).toBe(0);
     expect(status.failedRanges).toBe(0);
   });
+
+  it('reports a null lastFullSweep when no full sweep has run', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    const status = await svc.status('t1', readGithubAuditConfig({}), NOW);
+    expect(status.lastFullSweep).toBeNull();
+  });
+
+  it('reports the latest of two full sweeps', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    prisma.githubAuditRun.rows.push(
+      {
+        id: 'sweep-1',
+        tenantId: 't1',
+        trigger: 'full_sweep',
+        status: 'success',
+        startedAt: new Date('2026-10-04T18:50:00.000Z'),
+        finishedAt: new Date('2026-10-04T19:00:00.000Z'),
+      },
+      {
+        id: 'sweep-2',
+        tenantId: 't1',
+        trigger: 'full_sweep',
+        status: 'partial',
+        startedAt: new Date('2026-10-05T18:50:00.000Z'),
+        finishedAt: new Date('2026-10-05T19:00:00.000Z'),
+      },
+    );
+    const status = await svc.status('t1', readGithubAuditConfig({}), NOW);
+    expect(status.lastFullSweep).toEqual({
+      startedAt: new Date('2026-10-05T18:50:00.000Z'),
+      finishedAt: new Date('2026-10-05T19:00:00.000Z'),
+      status: 'partial',
+    });
+  });
+
+  it("ignores another tenant's full sweep (tenant isolation)", async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seedTenant(prisma, 't2', ['other/ehr']);
+    prisma.githubAuditRun.rows.push({
+      id: 'sweep-t2',
+      tenantId: 't2',
+      trigger: 'full_sweep',
+      status: 'success',
+      startedAt: new Date('2026-10-05T18:50:00.000Z'),
+      finishedAt: new Date('2026-10-05T19:00:00.000Z'),
+    });
+    const status = await svc.status('t1', readGithubAuditConfig({}), NOW);
+    expect(status.lastFullSweep).toBeNull();
+  });
 });
 
 describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
@@ -1035,7 +1087,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     GITHUB_AUDIT_FULL_SWEEP_MINUTES: '0',
   });
   const SWEEP_REASON =
-    'no successful full branch sweep has finished since 2026-10-05 ended';
+    'no successful full branch sweep has started since 2026-10-05 ended';
 
   /** A tenant the audit route fully vouches for on DAY. */
   function covered(prisma: ReturnType<typeof fakePrisma>, tenantId: string) {
@@ -1052,6 +1104,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
       tenantId,
       trigger: 'full_sweep',
       status: 'success',
+      startedAt: new Date('2026-10-05T18:50:00.000Z'),
       finishedAt: new Date('2026-10-05T19:00:00.000Z'),
     });
   }
@@ -1149,7 +1202,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     expect((await svc.coverageForDay('t1', DAY, INGEST)).ok).toBe(true);
   });
 
-  it('is not ok with a pending or failed range created in the window; finished ranges and ranges outside it are ignored', async () => {
+  it('is not ok with a pending or failed range created on or after day start; finished ranges and ranges before day start are ignored', async () => {
     const { svc, prisma } = setup();
     covered(prisma, 't1');
     prisma.githubPushRange.rows.push(
@@ -1158,13 +1211,35 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
       range('done', 't1', 'done', DAY_END),
       range('shadowed', 't1', 'shadowed', DAY_END),
       range('before', 't1', 'pending', new Date(DAY_START.getTime() - 1)),
-      range('after', 't1', 'failed', new Date(RANGE_UPPER.getTime() + 1)),
     );
     const c = await svc.coverageForDay('t1', DAY, INGEST);
     expect(c.ok).toBe(false);
     expect(c.reasons).toEqual([
       '2 unfinished range(s): acme/ehr@main, acme/lab@dev',
     ]);
+  });
+
+  it('has no upper bound on the unfinished-range window: a range created well after the old window (day end + 3h) still counts', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    // An audit catch-up after a stall, or a late sweep that plans a missed
+    // push and stops on budget, can create the day's ranges long after the
+    // old fixed upper bound (dayEnd + overlap + 60min) — the pusher must
+    // still be withheld, not silently cleared past that point.
+    const late = new Date(DAY_END.getTime() + 3 * 3_600_000);
+    prisma.githubPushRange.rows.push(range('late', 't1', 'pending', late));
+    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual(['1 unfinished range(s): acme/ehr@main']);
+  });
+
+  it('ignores a range created before day start', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubPushRange.rows.push(
+      range('before', 't1', 'pending', new Date(DAY_START.getTime() - 1)),
+    );
+    expect((await svc.coverageForDay('t1', DAY, INGEST)).ok).toBe(true);
   });
 
   it('names at most 5 unfinished ranges and counts the rest, with bounded reads', async () => {
@@ -1203,9 +1278,16 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it.each([
     ['failed', { status: 'failed' }],
     ['partial', { status: 'partial' }],
-    ['finished at the last instant of the day', { finishedAt: DAY_END }],
+    [
+      'started before the day ended and only finished after',
+      { startedAt: DAY_START, finishedAt: new Date(DAY_END.getTime() + 1) },
+    ],
+    ['started at the last instant of the day', { startedAt: DAY_END }],
     ['an audit run, not a sweep', { trigger: 'audit' }],
-    ['still running', { status: 'running', finishedAt: null }],
+    [
+      'still running',
+      { status: 'running', startedAt: DAY_START, finishedAt: null },
+    ],
   ])(
     'is not ok when the only sweep is %s',
     async (_label: string, patch: Record<string, unknown>) => {
@@ -1217,6 +1299,17 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
       expect(c.reasons).toEqual([SWEEP_REASON]);
     },
   );
+
+  it('is ok when the sweep started just after the day ended', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    Object.assign(prisma.githubAuditRun.rows[0], {
+      startedAt: new Date(DAY_END.getTime() + 1),
+      finishedAt: new Date(DAY_END.getTime() + 2),
+      status: 'success',
+    });
+    expect((await svc.coverageForDay('t1', DAY, INGEST)).ok).toBe(true);
+  });
 
   it('skips the sweep condition when the sweep is disabled (0)', async () => {
     const { svc, prisma } = setup();
