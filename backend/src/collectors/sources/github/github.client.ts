@@ -3,6 +3,16 @@ import { Injectable, Logger } from '@nestjs/common';
 // erased at compile time and never exists at runtime.
 import type { GithubPageRef, GithubSourceClient } from './github-source-client';
 
+/**
+ * `GET /pulls/{n}/commits` limits — GitHub serves at most 250 commits for a
+ * PR, oldest first, 100 per page — so 3 pages exhaust what REST can return.
+ */
+const REST_PR_COMMIT_PAGE_SIZE = 100;
+const REST_PR_COMMIT_CEILING = 250;
+const REST_PR_COMMIT_MAX_PAGES = Math.ceil(
+  REST_PR_COMMIT_CEILING / REST_PR_COMMIT_PAGE_SIZE,
+);
+
 export interface GithubPull {
   number: number;
   title: string;
@@ -184,6 +194,14 @@ export interface GithubPullCommits {
    * subjects keeps working; absent means "none harvested", never "none exist".
    */
   commits?: GithubPullCommitRef[];
+  /**
+   * Requests spent BEYOND the one this PR's commit list normally costs —
+   * the paginated follow-up for a PR larger than one page (§12 #51). Zero or
+   * absent for the ~99% of PRs that fit. The collector charges each one
+   * against the PR enrich budget, so a sweep full of long-lived PRs cannot
+   * spend past its share.
+   */
+  followUpRequests?: number;
   /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
   rateLimitedUntil?: Date;
   rateLimit?: GithubRateLimit;
@@ -387,9 +405,18 @@ export class GithubClient implements GithubSourceClient {
    * (api/README.md §6) — a PR whose key appears only in its commits is
    * otherwise a permanent orphan, dragging `linkage_coverage`.
    *
-   * One page (100) is deliberate: GitHub caps this endpoint at 250 commits
-   * anyway, and a PR needing more than 100 commits to mention its issue key
-   * once is not the case worth a second round-trip.
+   * **Every page, not one** (§12 #51). This endpoint lists a PR's commits
+   * OLDEST-first, so the single `per_page=100` request it used to make kept a
+   * long-lived PR's first 100 commits and silently dropped every commit
+   * pushed after them — on every re-poll. Now that this list is also the
+   * branch-agnostic commit source (not only Jira-key evidence), that is a
+   * collection loss, so it follows `Link: rel="next"` to the end.
+   *
+   * Bounded at 3 pages because GitHub hard-caps this endpoint at 250 commits:
+   * a PR larger than that cannot be completed over REST at all, and says so
+   * in the log by repo. (GraphQL has no such ceiling — `GithubGraphqlClient`.)
+   * Pages beyond the first are reported as `followUpRequests`, which the
+   * collector charges against the PR enrich budget.
    */
   async listPullRequestCommits(
     repoFullName: string,
@@ -399,67 +426,100 @@ export class GithubClient implements GithubSourceClient {
     if (!token) {
       return { messages: [], failed: true };
     }
-    const url = `${this.baseUrl}/repos/${repoFullName}/pulls/${number}/commits?per_page=100`;
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
+
+    const commits: GithubPullCommitRef[] = [];
+    const messages: string[] = [];
+    let rateLimit: GithubRateLimit | undefined;
+    let page = 1;
+    let requests = 0;
+    let hasNext = true;
+    // Everything fetched so far, whatever stopped the walk: a later page's
+    // refusal must never discard the commits already in hand.
+    const partial = (extra: Partial<GithubPullCommits>): GithubPullCommits => ({
+      messages,
+      commits,
+      rateLimit,
+      followUpRequests: Math.max(0, requests - 1),
+      ...extra,
     });
 
-    if (res.status === 403 || res.status === 429) {
-      const resetAt = this.parseResetHeader(
-        res.headers.get('x-ratelimit-reset'),
-      );
-      this.logger.warn(`GitHub rate-limited until ${resetAt.toISOString()}`);
-      return { messages: [], rateLimitedUntil: resetAt };
-    }
-    if (!res.ok) {
-      this.logger.warn(`GitHub PR commits failed (${res.status}): ${url}`);
-      return { messages: [], failed: true };
-    }
+    while (hasNext && page <= REST_PR_COMMIT_MAX_PAGES) {
+      const url = `${this.baseUrl}/repos/${repoFullName}/pulls/${number}/commits?per_page=${REST_PR_COMMIT_PAGE_SIZE}&page=${page}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      requests++;
 
-    const body = (await res.json()) as {
-      sha?: string;
-      commit?: {
-        message?: string;
-        author?: { name?: string; email?: string; date?: string } | null;
-        committer?: { date?: string } | null;
-      };
-      author?: { login?: string } | null;
-    }[];
-    const items = Array.isArray(body) ? body : [];
-    const result: GithubPullCommits = {
-      rateLimit: this.readRateLimit(res),
-      messages: items
-        .map((c) => c.commit?.message)
-        .filter((m): m is string => typeof m === 'string' && m.length > 0),
+      if (res.status === 403 || res.status === 429) {
+        const resetAt = this.parseResetHeader(
+          res.headers.get('x-ratelimit-reset'),
+        );
+        this.logger.warn(`GitHub rate-limited until ${resetAt.toISOString()}`);
+        return partial({ rateLimitedUntil: resetAt });
+      }
+      if (!res.ok) {
+        this.logger.warn(`GitHub PR commits failed (${res.status}): ${url}`);
+        return partial({ failed: true });
+      }
+
+      const body = (await res.json()) as {
+        sha?: string;
+        commit?: {
+          message?: string;
+          author?: { name?: string; email?: string; date?: string } | null;
+          committer?: { date?: string } | null;
+        };
+        author?: { login?: string } | null;
+      }[];
+      const items = Array.isArray(body) ? body : [];
+      rateLimit = this.readRateLimit(res) ?? rateLimit;
+      messages.push(
+        ...items
+          .map((c) => c.commit?.message)
+          .filter((m): m is string => typeof m === 'string' && m.length > 0),
+      );
       // Same response, wider selection: the endpoint has always returned the
       // sha, author and dates alongside the message. Stats are absent here —
       // only `GET /commits/{sha}` carries them under REST — so these land
       // without LOC and are corrected by the commit-stats reconciler.
-      commits: items
-        .filter((c): c is typeof c & { sha: string } => Boolean(c.sha))
-        .map((c) => ({
-          sha: c.sha,
-          message: c.commit?.message ?? '',
-          authorLogin: c.author?.login,
-          authorName: c.commit?.author?.name,
-          authorEmail: c.commit?.author?.email,
-          authoredAt: c.commit?.author?.date,
-          committedAt: c.commit?.committer?.date,
-        })),
-    };
+      commits.push(
+        ...items
+          .filter((c): c is typeof c & { sha: string } => Boolean(c.sha))
+          .map((c) => ({
+            sha: c.sha,
+            message: c.commit?.message ?? '',
+            authorLogin: c.author?.login,
+            authorName: c.commit?.author?.name,
+            authorEmail: c.commit?.author?.email,
+            authoredAt: c.commit?.author?.date,
+            committedAt: c.commit?.committer?.date,
+          })),
+      );
 
-    // Same preemption as everywhere else: don't let the NEXT call hit a hard 403.
-    const remaining = Number(res.headers.get('x-ratelimit-remaining') ?? NaN);
-    if (!Number.isNaN(remaining) && remaining <= 1) {
-      result.rateLimitedUntil = this.parseResetHeader(
-        res.headers.get('x-ratelimit-reset'),
+      // Same preemption as everywhere else: don't let the NEXT call hit a
+      // hard 403. Stops paging too — the rest waits for the next reader.
+      const remaining = Number(res.headers.get('x-ratelimit-remaining') ?? NaN);
+      if (!Number.isNaN(remaining) && remaining <= 1) {
+        return partial({
+          rateLimitedUntil: this.parseResetHeader(
+            res.headers.get('x-ratelimit-reset'),
+          ),
+        });
+      }
+      hasNext = this.hasNextLink(res.headers.get('link'));
+      page++;
+    }
+
+    if (hasNext || commits.length >= REST_PR_COMMIT_CEILING) {
+      this.logger.warn(
+        `${repoFullName} PR #${number}: commit list reached REST's ${REST_PR_COMMIT_CEILING}-commit ceiling — commits past it (the NEWEST, since REST lists oldest-first) cannot be collected over REST.`,
       );
     }
-    return result;
+    return partial({});
   }
 
   /**

@@ -504,7 +504,7 @@ describe('GithubClient', () => {
       expect(result.failed).toBeUndefined();
       const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
       expect(url).toBe(
-        'https://api.github.com/repos/acme/payments/pulls/4521/commits?per_page=100',
+        'https://api.github.com/repos/acme/payments/pulls/4521/commits?per_page=100&page=1',
       );
     });
 
@@ -547,6 +547,125 @@ describe('GithubClient', () => {
       // "asked and this PR genuinely has no messages".
       expect(result.messages).toEqual([]);
       expect(result.failed).toBe(true);
+    });
+
+    /** REST's PR commit list: oldest-first, `per_page` capped, 250 max. */
+    function restCommitPages(total: number) {
+      return jest.fn((url: string) => {
+        const u = new URL(url);
+        const perPage = Number(u.searchParams.get('per_page'));
+        const page = Number(u.searchParams.get('page') ?? 1);
+        const reachable = Math.min(total, 250);
+        const from = (page - 1) * perPage;
+        const to = Math.min(reachable, page * perPage);
+        const hasNext = to < reachable;
+        return Promise.resolve(
+          fakeResponse({
+            headers: {
+              'x-ratelimit-remaining': String(4000 - page),
+              ...(hasNext
+                ? {
+                    link: `<https://api.github.com/x?per_page=${perPage}&page=${page + 1}>; rel="next"`,
+                  }
+                : {}),
+            },
+            body: Array.from({ length: Math.max(0, to - from) }, (_, i) => ({
+              sha: `c${from + i + 1}`,
+              commit: { message: `m${from + i + 1}` },
+            })),
+          }),
+        );
+      });
+    }
+
+    it('pages past the first 100 so commits pushed later are collected', async () => {
+      // Guards: the single `per_page=100` request — GitHub lists PR commits
+      // oldest-first, so on a PR over 100 commits the NEWEST were the ones
+      // dropped, the same loss as GraphQL's `first:` (§12 #51).
+      const fetchMock = restCommitPages(133);
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'athmahealth/cihl-gateway',
+        'tok',
+        77,
+      );
+
+      expect(result.commits).toHaveLength(133);
+      expect(result.commits?.[132].sha).toBe('c133');
+      expect(result.messages).toHaveLength(133);
+      // Charged against the enrich budget like any other extra call.
+      expect(result.followUpRequests).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      // The reserve check reads the NEWEST quota, not the first page's.
+      expect(result.rateLimit?.remaining).toBe(3998);
+    });
+
+    it("stops at REST's 250-commit ceiling and logs it with the repo name", async () => {
+      // Guards: an unbounded loop, and a silent loss — REST cannot return
+      // commits past 250, so a larger PR must be reported, by repo, not
+      // passed off as complete.
+      const warn = jest
+        .spyOn(
+          (client as unknown as { logger: { warn: (m: string) => void } })
+            .logger,
+          'warn',
+        )
+        .mockImplementation(() => undefined);
+      const fetchMock = restCommitPages(422);
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'athmahealth/pe_platform_pkg',
+        'tok',
+        1020,
+      );
+
+      expect(result.commits).toHaveLength(250);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(result.followUpRequests).toBe(2);
+      expect(
+        warn.mock.calls.some((args) =>
+          String(args[0]).includes('athmahealth/pe_platform_pkg PR #1020'),
+        ),
+      ).toBe(true);
+    });
+
+    it('keeps the pages already fetched when a later page is rate-limited', async () => {
+      // Guards: a 403 on page 2 discarding page 1, or being reported as a
+      // complete list.
+      const resetEpoch = Math.floor(Date.now() / 1000) + 90;
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(
+          fakeResponse({
+            headers: {
+              'x-ratelimit-remaining': '10',
+              link: '<https://api.github.com/x?page=2>; rel="next"',
+            },
+            body: Array.from({ length: 100 }, (_, i) => ({
+              sha: `c${i + 1}`,
+              commit: { message: `m${i + 1}` },
+            })),
+          }),
+        )
+        .mockResolvedValueOnce(
+          fakeResponse({
+            ok: false,
+            status: 403,
+            headers: { 'x-ratelimit-reset': String(resetEpoch) },
+          }),
+        );
+      global.fetch = fetchMock as unknown as typeof fetch;
+
+      const result = await client.listPullRequestCommits(
+        'acme/payments',
+        'tok',
+        9,
+      );
+
+      expect(result.commits).toHaveLength(100);
+      expect(result.rateLimitedUntil?.getTime()).toBe(resetEpoch * 1000);
     });
 
     it('returns no messages without calling fetch when no token is configured', async () => {

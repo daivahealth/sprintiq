@@ -268,6 +268,68 @@ describe('GithubCollector.poll', () => {
     expect(cursors.prBackfillDone).toBeUndefined();
   });
 
+  it('charges a PR commit follow-up against the enrich budget, in backfill', async () => {
+    // Guards: the paginated follow-up for PRs larger than one commit page
+    // (§12 #51) being free as far as the budget can tell — an org full of
+    // long-lived PRs would then spend far past the sweep's share and starve
+    // the connections after it. Each extra request costs one unit.
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({ number: i + 1, updated_at: new Date().toISOString() }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestCommits.mockResolvedValue({
+      messages: [],
+      followUpRequests: 3,
+    });
+
+    await collector.poll(baseConnection());
+
+    // Budget 25, each PR costs 1 + 3: enriched while budget > 0 → 7 PRs.
+    expect(client.getPullRequestDetail).toHaveBeenCalledTimes(7);
+    const cursors = connections.setSyncCursors.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(cursors.prPageOffset).toBe(7);
+  });
+
+  it('charges a PR commit follow-up against the enrich budget, in incremental sync', async () => {
+    // Guards: the same uncounted cost on the steady-state path, which is the
+    // one that re-enriches a long-lived PR on every push.
+    const now = Date.now();
+    const pulls = Array.from({ length: 30 }, (_, i) =>
+      pull({
+        number: i + 1,
+        updated_at: new Date(now - i * 1000).toISOString(),
+      }),
+    );
+    client.listPullRequestsPage.mockResolvedValue({
+      items: pulls,
+      hasNextPage: false,
+    });
+    client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
+    client.listPullRequestCommits.mockResolvedValue({
+      messages: [],
+      followUpRequests: 3,
+    });
+
+    await collector.poll(
+      baseConnection({
+        syncCursors: {
+          prBackfillDone: true,
+          prNewestSeenAt: new Date(now - 60 * 60 * 1000).toISOString(),
+          commitsCursor: new Date(now - 60 * 60 * 1000).toISOString(),
+        },
+      }),
+    );
+
+    expect(client.getPullRequestDetail).toHaveBeenCalledTimes(7);
+  });
+
   it('divides the enrich budget across a tenant peers, so every repo advances each sweep', async () => {
     // The per-connection budget was a constant, so it MULTIPLIED by fleet
     // size: 195 repos × 25 PRs × 4 calls ≈ 19,500 requests against a 5,000/hr

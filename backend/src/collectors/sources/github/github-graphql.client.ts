@@ -4,6 +4,7 @@ import {
   GithubCommitDetail,
   GithubPage,
   GithubPull,
+  GithubPullCommitRef,
   GithubPullCommits,
   GithubPullDetail,
   GithubPullReviews,
@@ -29,6 +30,22 @@ const NESTED_REVIEWS = 20;
 
 /** Below these a halved retry is pointless — give up and report `failed`. */
 const MIN_NESTED = 5;
+
+/**
+ * The per-PR commit follow-up, for a PR whose `totalCount` exceeds the nested
+ * page (§12 #51). One page of 100 older commits per request, walking
+ * backwards from the nested page's `startCursor`.
+ *
+ * Capped because the cost lands on the sweep's PR enrich budget, one unit per
+ * request: 5 pages reach 500 + nested commits, enough for every PR measured on
+ * the reference tenant (the largest, `pe_platform_pkg` #1020, has 422).
+ * The walk runs newest-to-oldest, so a PR over the cap loses its OLDEST
+ * commits — which earlier polls of that PR already collected — never its
+ * newest, and the cap is logged by repo.
+ */
+const PR_COMMIT_PAGE_SIZE = 100;
+const PR_COMMIT_FOLLOWUP_MAX_PAGES = 5;
+
 /**
  * Floor for the outer page. Small enough to rescue the heaviest repos
  * (measured: 25 PRs enriched returns in ~1.2s where 100 takes ~3.7s), large
@@ -52,6 +69,12 @@ interface PrefetchedPull {
   commits: GithubPullCommits;
   reviews: GithubPullReviews;
   comments: GithubReviewComments;
+  /**
+   * Set when the nested page held only the newest commits of a larger PR:
+   * where the paginated follow-up resumes. Cleared once the follow-up has run,
+   * so a repeat read is served from the completed list for free.
+   */
+  olderCommitsBefore?: string;
 }
 
 interface PrefetchEntry {
@@ -101,8 +124,12 @@ interface RateLimitField {
  *  - **partial errors** — HTTP 200 with an `errors` array and partial `data`;
  *    a field nulled by an error is indistinguishable from a genuinely absent
  *    one (`erroredPaths`);
- *  - **silent nested truncation** — `commits(first: N)` returns N with
- *    `hasNextPage` and no other signal (`truncated`);
+ *  - **silent nested truncation** — a nested connection returns N with a
+ *    page flag and no other signal. For PR commits it is worse than a
+ *    coverage gap: GitHub lists them oldest-first, so `first: N` silently
+ *    dropped every commit pushed after the Nth (§12 #51). Commits are taken
+ *    `last: N` and the older remainder is paged (`completeCommits`); reviews
+ *    report `truncated`;
  *  - **complexity 502s** — a size problem that must not read as "no data"
  *    (`withComplexityFallback`).
  */
@@ -176,7 +203,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
 
     for (const node of nodes) {
       items.push(this.toPull(node));
-      byNumber.set(String(node.number), this.toPrefetched(node));
+      byNumber.set(String(node.number), this.toPrefetched(node, repoFullName));
     }
     this.storePrefetch(repoFullName, byNumber);
 
@@ -361,13 +388,166 @@ export class GithubGraphqlClient implements GithubSourceClient {
   ): Promise<GithubPullCommits> {
     const hit = this.readPrefetch(repoFullName, number);
     if (hit) {
-      return hit.commits;
+      return this.completeCommits(repoFullName, token, number, hit);
     }
     const single = await this.fetchSinglePull(repoFullName, token, number);
     // A miss that could not be refetched is a failure, never "this PR has no
     // commit messages" — the reconciler would otherwise retire it as a
     // candidate having never actually asked.
-    return single?.commits ?? { messages: [], failed: true };
+    if (!single) {
+      return { messages: [], failed: true };
+    }
+    return this.completeCommits(repoFullName, token, number, single);
+  }
+
+  /**
+   * The PR's whole commit list: the nested page, plus — only for a PR larger
+   * than it — the older remainder, paged on demand (§12 #51).
+   *
+   * On demand rather than inside the page query because the page prefetches
+   * up to 100 PRs and the collector enriches only its budget's worth of them;
+   * paging every large PR on the page would spend on PRs nobody reads.
+   *
+   * A completed list is written back to the prefetch entry, so a second read
+   * of the same PR costs nothing. A refused or rate-limited follow-up is NOT —
+   * the next reader retries it.
+   */
+  private async completeCommits(
+    repoFullName: string,
+    token: string,
+    number: number | string,
+    pulled: PrefetchedPull,
+  ): Promise<GithubPullCommits> {
+    if (!pulled.olderCommitsBefore) {
+      return pulled.commits;
+    }
+    const completed = await this.fetchOlderCommits(
+      repoFullName,
+      token,
+      number,
+      pulled.commits,
+      pulled.olderCommitsBefore,
+    );
+    if (!completed.failed && !completed.rateLimitedUntil) {
+      pulled.commits = { ...completed, followUpRequests: undefined };
+      pulled.olderCommitsBefore = undefined;
+    }
+    return completed;
+  }
+
+  /**
+   * Pages a PR's commits backwards (`last`/`before`) from the nested page's
+   * `startCursor` until the first commit, or the page cap.
+   *
+   * Why GraphQL here and not REST's `pulls/{n}/commits`: it keeps the
+   * follow-up on the same transport, token bucket and `rateLimit` field the
+   * rest of this client accounts with (REST draws on a separate 5,000 bucket
+   * this client never reads); it returns stats inline, so these commits land
+   * complete instead of queueing for the stats reconciler; it can walk
+   * backwards from the newest page it already holds, where REST can only
+   * restart from the oldest; and it is not bound by REST's 250-commit
+   * ceiling. Each page is ~1 point.
+   */
+  private async fetchOlderCommits(
+    repoFullName: string,
+    token: string,
+    number: number | string,
+    nested: GithubPullCommits,
+    startCursor: string,
+  ): Promise<GithubPullCommits> {
+    const [owner, name] = this.splitRepo(repoFullName);
+    let before: string | undefined = startCursor;
+    let older: GithubPullCommitRef[] = [];
+    let requests = 0;
+    let pages = 0;
+    let rateLimit = nested.rateLimit;
+    const finish = (extra: Partial<GithubPullCommits>): GithubPullCommits => ({
+      ...this.mergeCommits(older, nested.commits ?? []),
+      rateLimit,
+      followUpRequests: requests,
+      ...extra,
+    });
+
+    while (before && pages < PR_COMMIT_FOLLOWUP_MAX_PAGES) {
+      const cursor: string = before;
+      const result = await this.withComplexityFallback(
+        (_nested, first) => {
+          // Counted per POST, including complexity retries: the budget pays
+          // for requests made, not pages received.
+          requests++;
+          return this.post<PullCommitsQuery>(token, PULL_COMMITS_QUERY, {
+            owner,
+            name,
+            number: Number(number),
+            last: first,
+            before: cursor,
+          });
+        },
+        `older commits of ${repoFullName} PR #${number}`,
+        PR_COMMIT_PAGE_SIZE,
+      );
+      pages++;
+      const page = result.data?.repository?.pullRequest?.commits;
+      const usable =
+        Boolean(page) &&
+        !result.failed &&
+        !this.isErrored(result, 'repository');
+      if (usable && page) {
+        older = [...this.toCommitRefs(page.nodes ?? []), ...older];
+        before = page.pageInfo?.hasPreviousPage
+          ? (page.pageInfo.startCursor ?? undefined)
+          : undefined;
+        rateLimit = result.rateLimit ?? rateLimit;
+      }
+      if (result.rateLimitedUntil) {
+        // Whatever arrived is kept; the rest waits for the next reader.
+        return finish({ rateLimitedUntil: result.rateLimitedUntil });
+      }
+      if (!usable) {
+        // `failed`, with the newest commits still returned: the collector
+        // emits what it holds, and a reconciler keeps the PR a candidate
+        // rather than stamping it as fully asked.
+        this.logger.warn(
+          `${repoFullName} PR #${number}: GitHub refused the older-commit follow-up — keeping the ${nested.commits?.length ?? 0} newest commits; the rest are not collected this pass.`,
+        );
+        return finish({ failed: true });
+      }
+    }
+
+    if (before) {
+      this.logger.warn(
+        `${repoFullName} PR #${number}: commit follow-up stopped at its ${PR_COMMIT_FOLLOWUP_MAX_PAGES}-page cap — the OLDEST commits beyond it are not collected from this PR (newest are).`,
+      );
+    } else {
+      this.logger.log(
+        `${repoFullName} PR #${number}: paged ${older.length} older commits beyond the nested page (${requests} extra request${requests === 1 ? '' : 's'}).`,
+      );
+    }
+    return finish({});
+  }
+
+  /**
+   * Older-then-nested, de-duplicated by sha. Order is oldest-first overall —
+   * GitHub's own order — so the last entry remains the PR head, which the PR
+   * commit backfill reads as `head_sha`.
+   */
+  private mergeCommits(
+    older: GithubPullCommitRef[],
+    nested: GithubPullCommitRef[],
+  ): Pick<GithubPullCommits, 'messages' | 'commits'> {
+    const seen = new Set<string>();
+    const commits: GithubPullCommitRef[] = [];
+    for (const c of [...older, ...nested]) {
+      if (seen.has(c.sha)) {
+        continue;
+      }
+      seen.add(c.sha);
+      commits.push(c);
+    }
+    return {
+      messages: commits.map((c) => c.message).filter((m) => m.length > 0),
+      commits,
+    };
   }
 
   async listPullRequestReviews(
@@ -554,7 +734,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
     if (result.failed || !node || this.isErrored(result, 'repository')) {
       return undefined;
     }
-    const prefetched = this.toPrefetched(node);
+    const prefetched = this.toPrefetched(node, repoFullName);
     prefetched.detail.rateLimit = result.rateLimit;
     return prefetched;
   }
@@ -607,7 +787,36 @@ export class GithubGraphqlClient implements GithubSourceClient {
     };
   }
 
-  private toPrefetched(node: PullNode): PrefetchedPull {
+  /**
+   * Whole commits, not just subjects: the history walk reads only
+   * `defaultBranchRef`, so for work merged into an integration branch this is
+   * the only place the commit is ever seen. Stats come back inline here, so
+   * unlike REST these land complete.
+   */
+  private toCommitRefs(
+    nodes: ({ commit?: PullCommitNode } | null)[],
+  ): GithubPullCommitRef[] {
+    return nodes
+      .map((c) => c?.commit)
+      .filter((c): c is PullCommitNode => Boolean(c?.oid))
+      .map((c) => ({
+        sha: c.oid as string,
+        message: c.message ?? '',
+        // `author.user.login` is null when the commit email is unverified;
+        // preserved rather than defaulted, so §12 #22's identity resolution
+        // can still recover the person from name/email.
+        authorLogin: c.author?.user?.login,
+        authorName: c.author?.name,
+        authorEmail: c.author?.email,
+        authoredAt: c.authoredDate,
+        committedAt: c.committedDate,
+        additions: c.additions,
+        deletions: c.deletions,
+        filesChanged: c.changedFilesIfAvailable ?? undefined,
+      }));
+  }
+
+  private toPrefetched(node: PullNode, repoFullName: string): PrefetchedPull {
     const detail: GithubPullDetail = {
       additions: node.additions,
       deletions: node.deletions,
@@ -620,29 +829,27 @@ export class GithubGraphqlClient implements GithubSourceClient {
       messages: commitNodes
         .map((c) => c?.commit?.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0),
-      // Whole commits, not just subjects: the history walk reads only
-      // `defaultBranchRef`, so for work merged into an integration branch this
-      // is the only place the commit is ever seen. Stats come back inline
-      // here, so unlike REST these land complete.
-      commits: commitNodes
-        .map((c) => c?.commit)
-        .filter((c): c is PullCommitNode => Boolean(c?.oid))
-        .map((c) => ({
-          sha: c.oid as string,
-          message: c.message ?? '',
-          // `author.user.login` is null when the commit email is unverified;
-          // preserved rather than defaulted, so §12 #22's identity resolution
-          // can still recover the person from name/email.
-          authorLogin: c.author?.user?.login,
-          authorName: c.author?.name,
-          authorEmail: c.author?.email,
-          authoredAt: c.authoredDate,
-          committedAt: c.committedDate,
-          additions: c.additions,
-          deletions: c.deletions,
-          filesChanged: c.changedFilesIfAvailable ?? undefined,
-        })),
+      commits: this.toCommitRefs(commitNodes),
     };
+
+    // The nested page is the NEWEST `last: N`. Anything older is recorded as
+    // a resume point and paged only if this PR is actually enriched — see
+    // `completeCommits`. `totalCount` is checked as well as the page flag so a
+    // count the page under-reports still triggers the follow-up.
+    const pageInfo = node.commits?.pageInfo;
+    const totalCount = node.commits?.totalCount;
+    const hasOlder =
+      Boolean(pageInfo?.hasPreviousPage) ||
+      (typeof totalCount === 'number' && totalCount > commitNodes.length);
+    let olderCommitsBefore: string | undefined;
+    if (hasOlder) {
+      olderCommitsBefore = pageInfo?.startCursor ?? undefined;
+      if (!olderCommitsBefore) {
+        this.logger.warn(
+          `${repoFullName} PR #${node.number}: ${totalCount ?? 'more'} commits but the nested page returned no cursor to page from — only the newest ${commitNodes.length} are collected from this PR.`,
+        );
+      }
+    }
 
     const reviewNodes = (node.reviews?.nodes ?? []).filter(
       (r): r is ReviewNode => Boolean(r),
@@ -689,19 +896,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
       truncated: Boolean(node.reviews?.pageInfo?.hasNextPage),
     };
 
-    if (node.commits?.pageInfo?.hasNextPage) {
-      // Raised from debug: this used to cost only Jira-key coverage (a
-      // truncated list can miss a key, never invent one). Now that commits
-      // are harvested here it also costs COLLECTION — a commit past the
-      // nested page on a non-default branch is seen by nothing else. Measured
-      // at ~1% of PRs on the reference tenant (240 of 22,903 have ≥20
-      // commits), and the ref-aware walk is what closes the remainder.
-      this.logger.warn(
-        `PR #${node.number} commit list truncated at ${commitNodes.length} — commits past that point are not collected from this PR.`,
-      );
-    }
-
-    return { detail, commits, reviews, comments };
+    return { detail, commits, reviews, comments, olderCommitsBefore };
   }
 
   // ------------------------------------------------------------ transport
@@ -928,6 +1123,27 @@ query Pull($owner: String!, $name: String!, $number: Int!) {
  * the detail call, commit messages, the review timeline, and per-review
  * comment counts via `totalCount`.
  */
+/** A PR's commit, as both the page query and the follow-up select it. */
+const PULL_COMMIT_FIELDS = `commit {
+      oid
+      message
+      authoredDate
+      committedDate
+      additions
+      deletions
+      changedFilesIfAvailable
+      author { name email user { login } }
+    }`;
+
+/**
+ * Commits are `last:`, not `first:` — load-bearing (§12 #51). GitHub lists a
+ * PR's commits OLDEST-first, so `first: N` returned the same oldest N on every
+ * re-poll and never a commit pushed after the Nth; `withComplexityFallback`
+ * halving N to 10 or 5 made that bite on ordinary PRs. `last: N` takes the
+ * newest, and since incremental sync re-enriches a PR whenever its
+ * `updated_at` moves, each push is collected on the next poll. `totalCount`
+ * and `startCursor` feed the follow-up that pages the older remainder.
+ */
 const PULL_FIELDS = (nested: number): string => `
   number
   title
@@ -943,18 +1159,10 @@ const PULL_FIELDS = (nested: number): string => `
   baseRefName
   author { login __typename }
   mergedBy { login }
-  commits(first: ${nested}) {
-    pageInfo { hasNextPage }
-    nodes { commit {
-      oid
-      message
-      authoredDate
-      committedDate
-      additions
-      deletions
-      changedFilesIfAvailable
-      author { name email user { login } }
-    } }
+  commits(last: ${nested}) {
+    totalCount
+    pageInfo { hasPreviousPage startCursor }
+    nodes { ${PULL_COMMIT_FIELDS} }
   }
   reviews(first: ${nested}) {
     pageInfo { hasNextPage }
@@ -969,6 +1177,21 @@ const PULL_FIELDS = (nested: number): string => `
     }
   }
 `;
+
+/** The per-PR follow-up: one page of older commits, walking backwards. */
+const PULL_COMMITS_QUERY = `
+query PullCommits($owner: String!, $name: String!, $number: Int!, $last: Int!, $before: String) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(last: $last, before: $before) {
+        totalCount
+        pageInfo { hasPreviousPage startCursor }
+        nodes { ${PULL_COMMIT_FIELDS} }
+      }
+    }
+  }
+}`;
 
 const COMMITS_QUERY = `
 query Commits($owner: String!, $name: String!, $first: Int!, $after: String, $since: GitTimestamp!) {
@@ -1030,6 +1253,13 @@ interface PageInfo {
   endCursor?: string | null;
 }
 
+/** A PR's `commits(last: N)` connection — paged backwards, hence `startCursor`. */
+interface PullCommitConnection {
+  totalCount?: number;
+  pageInfo?: { hasPreviousPage?: boolean; startCursor?: string | null };
+  nodes?: ({ commit?: PullCommitNode } | null)[];
+}
+
 interface ReviewNode {
   id: string;
   databaseId?: number | null;
@@ -1055,10 +1285,7 @@ interface PullNode {
   baseRefName?: string;
   author?: { login?: string; __typename?: string } | null;
   mergedBy?: { login?: string } | null;
-  commits?: {
-    pageInfo?: PageInfo;
-    nodes?: ({ commit?: PullCommitNode } | null)[];
-  } | null;
+  commits?: PullCommitConnection | null;
   reviews?: { pageInfo?: PageInfo; nodes?: (ReviewNode | null)[] } | null;
 }
 
@@ -1113,6 +1340,12 @@ interface PullsQuery {
 
 interface SinglePullQuery {
   repository?: { pullRequest?: PullNode | null } | null;
+}
+
+interface PullCommitsQuery {
+  repository?: {
+    pullRequest?: { commits?: PullCommitConnection | null } | null;
+  } | null;
 }
 
 interface CommitsQuery {
