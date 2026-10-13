@@ -1,3 +1,9 @@
+import { Test } from '@nestjs/testing';
+import { GithubAuditSyncService } from '../collectors/sources/github/github-audit-sync.service';
+import { DeveloperIdentityService } from '../correlation/developer-identity.service';
+import { PrismaService } from '../database/prisma.service';
+import { CodeService } from '../modules/code/code.service';
+import { ConnectionsService } from '../modules/connections/connections.service';
 import {
   IMPLAUSIBLE_FLAGGED_SHARE,
   NoCommitDetectionService,
@@ -299,5 +305,39 @@ describe('NoCommitDetectionService audit-sync coverage gate', () => {
     expect(result.withhold?.outcome).toBe('withheld_stale_data');
     expect(result.withhold?.detail).toMatch(/^Collector pipeline looks broken/);
     expect(audit.coverageForDay).not.toHaveBeenCalled();
+  });
+});
+
+describe('NoCommitDetectionService dependency injection (ethics gate)', () => {
+  // The audit-coverage gate (gate 1b) is the only thing standing between an
+  // un-vouched day and named developers. If the provider ever went missing
+  // from the module graph, an `@Optional()` injection would silently drop the
+  // gate; it must fail the boot instead (final review, I6).
+  const baseProviders = [
+    NoCommitDetectionService,
+    { provide: PrismaService, useValue: {} },
+    { provide: DeveloperIdentityService, useValue: {} },
+    { provide: CodeService, useValue: {} },
+    { provide: ConnectionsService, useValue: {} },
+  ];
+
+  it('fails to resolve when GithubAuditSyncService is not provided', async () => {
+    await expect(
+      Test.createTestingModule({ providers: baseProviders }).compile(),
+    ).rejects.toThrow(/GithubAuditSyncService/);
+  });
+
+  it('injects GithubAuditSyncService when it is provided', async () => {
+    const auditSync = { coverageForDay: jest.fn() };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        ...baseProviders,
+        { provide: GithubAuditSyncService, useValue: auditSync },
+      ],
+    }).compile();
+    const svc = moduleRef.get(NoCommitDetectionService);
+    expect((svc as unknown as { auditSync: unknown }).auditSync).toBe(
+      auditSync,
+    );
   });
 });

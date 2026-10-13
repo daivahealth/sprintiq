@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { GithubAuditSyncService } from '../collectors/sources/github/github-audit-sync.service';
 import {
   isAnonymizedAccount,
@@ -238,9 +238,13 @@ export class NoCommitDetectionService {
     private readonly identities: DeveloperIdentityService,
     private readonly code: CodeService,
     private readonly connections: ConnectionsService,
-    // Optional and last: a positional 4-argument construction (the existing
-    // specs) means "no audit gate", exactly the pre-audit-route behaviour.
-    @Optional() private readonly auditSync?: GithubAuditSyncService,
+    // Required by Nest (no `@Optional()`): the audit-coverage gate (1b) is an
+    // ethics gate, so a module graph missing the provider must fail at boot
+    // rather than silently name people off an un-vouched day (final review,
+    // I6). The TypeScript `?` remains only so a positional 4-argument
+    // construction in unit specs still means "no audit gate", exactly the
+    // pre-audit-route behaviour — Nest itself never constructs it that way.
+    private readonly auditSync?: GithubAuditSyncService,
   ) {}
 
   async detect(
