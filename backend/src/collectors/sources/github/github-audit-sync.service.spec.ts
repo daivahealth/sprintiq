@@ -1,5 +1,8 @@
 import { readGithubAuditConfig } from './github-audit.config';
-import { GithubAuditSyncService } from './github-audit-sync.service';
+import {
+  GithubAuditSyncService,
+  SHADOW_REPLAY_MS,
+} from './github-audit-sync.service';
 import {
   fakeIngestion,
   fakePrisma,
@@ -1102,12 +1105,16 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     prisma.githubAuditRun.rows.push({
       id: `sweep-${tenantId}`,
       tenantId,
+      mode: 'ingest',
       trigger: 'full_sweep',
       status: 'success',
       startedAt: new Date('2026-10-05T18:50:00.000Z'),
       finishedAt: new Date('2026-10-05T19:00:00.000Z'),
     });
   }
+
+  /** "Now" for the digest run reporting DAY: the next IST morning. */
+  const DIGEST_NOW = new Date('2026-10-06T05:00:00.000Z');
 
   const range = (
     id: string,
@@ -1209,14 +1216,56 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
       range('in-1', 't1', 'pending', DAY_START, 'acme/ehr', 'main'),
       range('in-2', 't1', 'failed', RANGE_UPPER, 'acme/lab', 'dev'),
       range('done', 't1', 'done', DAY_END),
-      range('shadowed', 't1', 'shadowed', DAY_END),
       range('before', 't1', 'pending', new Date(DAY_START.getTime() - 1)),
     );
-    const c = await svc.coverageForDay('t1', DAY, INGEST);
+    const c = await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW);
     expect(c.ok).toBe(false);
     expect(c.reasons).toEqual([
       '2 unfinished range(s): acme/ehr@main, acme/lab@dev',
     ]);
+  });
+
+  it('is not ok with a shadowed range from the day still inside the replay window (ingest will replay it)', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubPushRange.rows.push(
+      range('sh', 't1', 'shadowed', DAY_END, 'acme/ehr', 'feat'),
+    );
+    const c = await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual(['1 unfinished range(s): acme/ehr@feat']);
+  });
+
+  it('ignores a shadowed range older than the replay window (ingest will never replay it)', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubPushRange.rows.push(
+      range('sh', 't1', 'shadowed', DAY_END, 'acme/ehr', 'feat'),
+    );
+    // Asked 7 days and a minute after the range was created.
+    const later = new Date(DAY_END.getTime() + SHADOW_REPLAY_MS + 60_000);
+    const c = await svc.coverageForDay('t1', DAY, INGEST, later);
+    expect(c.ok).toBe(true);
+  });
+
+  it('ignores a shadowed range created before day start', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubPushRange.rows.push(
+      range('sh', 't1', 'shadowed', new Date(DAY_START.getTime() - 1)),
+    );
+    expect(
+      (await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW)).ok,
+    ).toBe(true);
+  });
+
+  it('is not ok when the only successful sweep after the day ran in shadow mode', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubAuditRun.rows[0].mode = 'shadow';
+    const c = await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW);
+    expect(c.ok).toBe(false);
+    expect(c.reasons).toEqual([SWEEP_REASON]);
   });
 
   it('has no upper bound on the unfinished-range window: a range created well after the old window (day end + 3h) still counts', async () => {

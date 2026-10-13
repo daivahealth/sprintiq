@@ -436,16 +436,19 @@ export class GithubAuditSyncService {
    *   - nothing created at or after day start — no upper bound (controller
    *     ruling, fix round 1): a late catch-up or a sweep that stops on
    *     budget can create the day's ranges long after any fixed window, and
-   *     the pusher must still be withheld — is `pending` or `failed`;
-   *   - when the full sweep is on, a sweep STARTED (not finished)
-   *     successfully after the day ended, covering pushes the audit log
-   *     never records.
+   *     the pusher must still be withheld — is `pending` or `failed`, and
+   *     nothing `shadowed` from the day is still inside the replay window
+   *     (`executePending` would yet replay it, so its commits are not in);
+   *   - when the full sweep is on, an `ingest`-mode sweep STARTED (not
+   *     finished) successfully after the day ended, covering pushes the
+   *     audit log never records.
    * Every failing condition is reported, so the withheld card names them all.
    */
   async coverageForDay(
     tenantId: string,
     day: string,
     cfg: GithubAuditConfig = readGithubAuditConfig(),
+    now: Date = new Date(),
   ): Promise<AuditDayCoverage> {
     const notApplicable: AuditDayCoverage = {
       applies: false,
@@ -474,15 +477,28 @@ export class GithubAuditSyncService {
     const dayEndMs = istDayEnd(day).getTime();
     const overlapMs = cfg.overlapMinutes * 60_000;
     const mustReach = new Date(dayEndMs + overlapMs);
+    const dayStart = istDayStart(day);
+    // A `shadowed` range younger than the replay window is exactly what
+    // `executePending` will still replay in ingest mode — its commits are not
+    // in yet, so it is unfinished work for the day too (final review, I2).
+    // One older than the window will never be replayed and is ignored.
+    const replayFrom = new Date(
+      Math.max(dayStart.getTime(), now.getTime() - SHADOW_REPLAY_MS),
+    );
     const unfinishedWhere = {
       tenantId,
-      status: { in: ['pending', 'failed'] },
       // No upper bound (controller ruling, fix round 1): an audit catch-up
       // after a stall, or a late sweep that plans a missed push and stops on
       // budget, can create the day's ranges well after any fixed window —
       // the person who pushed must still be withheld, not silently cleared.
       // Still a bounded read (count + take:5 below), never the whole queue.
-      createdAt: { gte: istDayStart(day) },
+      OR: [
+        {
+          status: { in: ['pending', 'failed'] },
+          createdAt: { gte: dayStart },
+        },
+        { status: 'shadowed', createdAt: { gte: replayFrom } },
+      ],
     };
     const [checkpoint, unfinished, shown, sweep] = await Promise.all([
       this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
@@ -499,6 +515,10 @@ export class GithubAuditSyncService {
               tenantId,
               trigger: 'full_sweep',
               status: 'success',
+              // A shadow-mode sweep ingests nothing — its ranges are only
+              // `shadowed` — so it is not evidence the day's commits are in
+              // (final review, I2).
+              mode: 'ingest',
               // startedAt, not finishedAt (controller ruling, fix round 1):
               // a sweep that started before the day ended but finished after
               // was already running against the old branch tips and cannot
