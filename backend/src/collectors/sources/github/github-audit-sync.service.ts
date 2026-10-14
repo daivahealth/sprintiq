@@ -293,6 +293,13 @@ const RETENTION_LOSS_MS = 7 * 86_400_000;
 /** Shadow-mode ranges younger than this are replayed when the mode becomes `ingest`. */
 export const SHADOW_REPLAY_MS = 7 * 86_400_000;
 
+/**
+ * How far back a branch with no common history is read (`listBranchCommits`):
+ * GitHub keeps git events for 7 days, so no push the audit log reported can be
+ * older than this when its range was planned.
+ */
+export const UNRELATED_HISTORY_LOOKBACK_MS = 7 * 86_400_000;
+
 export function emptyCounters(): AuditRunCounters {
   return {
     reposSeeded: 0,
@@ -1945,27 +1952,45 @@ export class GithubAuditSyncService {
     if (!base) {
       return { commits: [], pages: 0, truncated: false, failure: 'failed' };
     }
-    const first = await this.client.compareAll(
+    let result = await this.client.compareAll(
       range.repoFullName,
       token,
       base,
       head,
     );
-    if (first.failure !== 'not_found' || range.kind !== 'moved') {
-      return first;
-    }
-    const marker = await this.prisma.githubRefTip.findUnique({
-      where: {
-        tenantId_repoFullName_ref: {
-          tenantId: ctx.tenantId,
-          repoFullName: range.repoFullName,
-          ref: DEFAULT_BRANCH_MARKER,
+    if (result.failure === 'not_found' && range.kind === 'moved') {
+      const marker = await this.prisma.githubRefTip.findUnique({
+        where: {
+          tenantId_repoFullName_ref: {
+            tenantId: ctx.tenantId,
+            repoFullName: range.repoFullName,
+            ref: DEFAULT_BRANCH_MARKER,
+          },
         },
-      },
-    });
-    return marker
-      ? this.client.compareAll(range.repoFullName, token, marker.sha, head)
-      : first;
+      });
+      if (marker) {
+        result = await this.client.compareAll(
+          range.repoFullName,
+          token,
+          marker.sha,
+          head,
+        );
+      }
+    }
+    if (result.failure === 'no_common_ancestor') {
+      // The head shares no history with the base (an orphan branch, or a
+      // rewritten history), so no comparison can ever succeed. Read the
+      // branch's own commits instead, bounded to the audit log's retention
+      // horizon before the range was planned: enough for any push the audit
+      // log could have reported, without sweeping in an imported old history.
+      return this.client.listBranchCommits(
+        range.repoFullName,
+        token,
+        head,
+        new Date(range.createdAt.getTime() - UNRELATED_HISTORY_LOOKBACK_MS),
+      );
+    }
+    return result;
   }
 }
 

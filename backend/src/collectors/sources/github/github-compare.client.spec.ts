@@ -240,4 +240,92 @@ describe('GithubClient REST additions', () => {
     const r = await client.compareAll('acme/ehr', 'tok', 'a', 'b');
     expect(r).toMatchObject({ failure: 'failed', commits: [] });
   });
+
+  it('compareAll reports no_common_ancestor when GitHub says the histories are unrelated', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      res({
+        status: 404,
+        body: { message: 'No common ancestor between master and 14753b2f.' },
+      }),
+    ) as unknown as typeof fetch;
+    const r = await client.compareAll('acme/icu', 'tok', 'master', '14753b2f');
+    expect(r).toMatchObject({ failure: 'no_common_ancestor', commits: [] });
+  });
+
+  it('compareAll still reports a plain 404 as not_found', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        res({ status: 404, body: { message: 'Not Found' } }),
+      ) as unknown as typeof fetch;
+    const r = await client.compareAll('acme/icu', 'tok', 'gone', 'b');
+    expect(r.failure).toBe('not_found');
+  });
+
+  it('listBranchCommits reads the branch history since a date, page by page via rel="next"', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(
+        res({
+          body: [commit('c1'), commit('c2', 2, 'arun')],
+          headers: {
+            link: '<https://api.github.com/repositories/9/commits?sha=h&page=2>; rel="next"',
+            'x-ratelimit-remaining': '4000',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(res({ body: [commit('c3')] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const r = await client.listBranchCommits(
+      'acme/icu',
+      'tok',
+      '14753b2f',
+      new Date('2026-10-07T00:00:00.000Z'),
+    );
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://api.github.com/repos/acme/icu/commits?sha=14753b2f&since=2026-10-07T00%3A00%3A00.000Z&per_page=100',
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'https://api.github.com/repositories/9/commits?sha=h&page=2',
+    );
+    expect(r.commits.map((c) => c.sha)).toEqual(['c1', 'c2', 'c3']);
+    expect(r.commits[1]).toMatchObject({ authorLogin: 'arun', parentCount: 2 });
+    expect(r).toMatchObject({
+      pages: 2,
+      truncated: false,
+      status: 'unrelated_history',
+    });
+  });
+
+  it('listBranchCommits flags truncation when pages remain at the cap', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      res({
+        body: [commit('c1')],
+        headers: {
+          link: '<https://api.github.com/repositories/9/commits?page=2>; rel="next"',
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const r = await client.listBranchCommits(
+      'acme/icu',
+      'tok',
+      'h',
+      new Date(),
+      1,
+    );
+    expect(r).toMatchObject({ pages: 1, truncated: true });
+  });
+
+  it('listBranchCommits fails without commits when a page errors', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(res({ status: 500 })) as unknown as typeof fetch;
+    const r = await client.listBranchCommits(
+      'acme/icu',
+      'tok',
+      'h',
+      new Date(),
+    );
+    expect(r).toMatchObject({ failure: 'failed', commits: [] });
+  });
 });

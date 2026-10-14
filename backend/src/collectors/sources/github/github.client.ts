@@ -73,8 +73,15 @@ export interface GithubRateLimit {
   resetAt: Date;
 }
 
+/**
+ * `no_common_ancestor`: GitHub's 404 for a comparison between unrelated
+ * histories ("No common ancestor between A and B"). The head exists; it just
+ * shares nothing with the base. Kept distinct from `not_found` so the caller
+ * can read that branch's own history instead of retrying a comparison that can
+ * never succeed.
+ */
 export type GithubCallFailure =
-  'not_found' | 'failed' | 'rate_limited' | 'forbidden';
+  'not_found' | 'failed' | 'rate_limited' | 'forbidden' | 'no_common_ancestor';
 
 export interface GithubHeadRefs {
   tips?: Map<string, string>;
@@ -816,9 +823,22 @@ export class GithubClient implements GithubSourceClient {
       if (!isGithubApiUrl(url)) {
         return { commits: [], pages, truncated: false, failure: 'failed' };
       }
-      const res = await this.restGet(url, token);
+      const res = await this.restGet(url, token, [404]);
       if ('failure' in res) {
         return { commits: [], pages, truncated: false, ...res };
+      }
+      if (res.response.status === 404) {
+        const notFound = (await res.response.json().catch(() => ({}))) as {
+          message?: string;
+        };
+        return {
+          commits: [],
+          pages,
+          truncated: false,
+          failure: /no common ancestor/i.test(notFound.message ?? '')
+            ? 'no_common_ancestor'
+            : 'not_found',
+        };
       }
       const body = (await res.response.json()) as {
         status?: string;
@@ -861,6 +881,73 @@ export class GithubClient implements GithubSourceClient {
   }
 
   /**
+   * `GET /repos/{repo}/commits?sha={head}&since={since}`, consumed to the last
+   * page (`Link rel="next"`, followed verbatim; capped at `maxPages`, then
+   * flagged `truncated`). The fallback for a branch whose history shares no
+   * ancestor with the base a Compare needs (an orphan branch, or a rewritten
+   * history), where every comparison 404s. `since` bounds it (GitHub filters
+   * on commit date), so an imported old history is not swept in wholesale.
+   * All-or-nothing, like `compareAll`.
+   */
+  async listBranchCommits(
+    repoFullName: string,
+    token: string,
+    head: string,
+    since: Date,
+    maxPages = 10,
+  ): Promise<GithubCompareResult> {
+    const commits: GithubCompareCommit[] = [];
+    let url: string | undefined =
+      `${this.baseUrl}/repos/${repoFullName}/commits?sha=${encodeURIComponent(head)}&since=${encodeURIComponent(since.toISOString())}&per_page=100`;
+    let pages = 0;
+    let rateLimit: GithubRateLimit | undefined;
+
+    while (url && pages < maxPages) {
+      if (!isGithubApiUrl(url)) {
+        return { commits: [], pages, truncated: false, failure: 'failed' };
+      }
+      const res = await this.restGet(url, token);
+      if ('failure' in res) {
+        return { commits: [], pages, truncated: false, ...res };
+      }
+      const body = (await res.response.json()) as {
+        sha?: string;
+        commit?: {
+          message?: string;
+          author?: { name?: string; email?: string; date?: string } | null;
+          committer?: { date?: string } | null;
+        };
+        author?: { login?: string } | null;
+        parents?: unknown[];
+      }[];
+      pages++;
+      rateLimit = this.readRateLimit(res.response) ?? rateLimit;
+      for (const c of Array.isArray(body) ? body : []) {
+        if (!c.sha) continue;
+        commits.push({
+          sha: c.sha,
+          message: c.commit?.message ?? '',
+          authorLogin: c.author?.login,
+          authorName: c.commit?.author?.name,
+          authorEmail: c.commit?.author?.email,
+          authoredAt: c.commit?.author?.date,
+          committedAt: c.commit?.committer?.date,
+          parentCount: Array.isArray(c.parents) ? c.parents.length : 0,
+        });
+      }
+      url = nextLinkUrl(res.response.headers.get('link'));
+    }
+
+    return {
+      commits,
+      status: 'unrelated_history',
+      pages,
+      truncated: Boolean(url),
+      rateLimit,
+    };
+  }
+
+  /**
    * One authenticated GET, with 403 split into rate-limit vs permission (spec F8).
    * `passStatuses` lets one caller receive a specific non-2xx response
    * (e.g. `listHeadRefs`'s 409 on an empty repo) instead of `failed`.
@@ -898,7 +985,7 @@ export class GithubClient implements GithubSourceClient {
       this.logger.warn(`GitHub refused (403): ${redactUrl(url)}`);
       return { failure: 'forbidden' };
     }
-    if (response.status === 404) {
+    if (response.status === 404 && !passStatuses.includes(404)) {
       return { failure: 'not_found' };
     }
     if (passStatuses.includes(response.status)) {

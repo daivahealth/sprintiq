@@ -47,6 +47,10 @@ The existing walk and PR harvest are unchanged and keep running.
 - **Webhooks:** deferred (ADR-0008).
 - **Git mirror (Phase 2):** a complete enumeration of refs, but it needs `git`, disk and a fleet clone. Build it if acceptance or operation shows unexplained misses, misses from refs deleted or force-pushed between runs, a retention overrun, or tip-diff `core` spend that threatens the collectors.
 
+## 2026-10-14 update — branches with no common history
+
+Found in the first local test run against live data: three new branches in `athmahealth/icu-app` share no history with `master`, so GitHub answers every Compare with 404 *"No common ancestor between master and …"*. Treated as a plain `not_found`, those ranges would retry until `failed`; their commits would never be collected, and in ingest mode the digest gate would keep withholding their days. **Decision:** the client reports this 404 as `no_common_ancestor`, and the sync then reads the branch's own history (`GET /repos/{repo}/commits?sha={head}&since=…`, followed to its last page and capped at 10, beyond which it is flagged `truncated`), bounded to 7 days before the range was planned. That is GitHub's git-event retention, so no push the audit log reported can be older, and an imported old history is not swept in. It applies to new branches and to a moved branch whose default-branch retry is also unrelated. An ordinary 404 still retries as before.
+
 ## 2026-10-12 update — completeness hardening
 
 Five changes, agreed in conversation against gaps found running the route (plan: [docs/superpowers/plans/2026-10-12-audit-sync-completeness-hardening.md](../superpowers/plans/2026-10-12-audit-sync-completeness-hardening.md)):

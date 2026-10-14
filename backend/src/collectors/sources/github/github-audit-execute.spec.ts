@@ -36,6 +36,7 @@ function setup() {
     listHeadRefs: jest.fn(),
     getDefaultBranch: jest.fn().mockResolvedValue({ name: 'master' }),
     compareAll: jest.fn(),
+    listBranchCommits: jest.fn(),
     getCommitDetail: jest.fn().mockResolvedValue({
       additions: 10,
       deletions: 2,
@@ -569,5 +570,77 @@ describe('executePending', () => {
       prisma.githubPushRange.rows.find((x) => x.id === r2.id),
     ).toMatchObject({ status: 'done', ingested: 1 });
     expect(r.counters.ingested).toBe(1);
+  });
+
+  it('fetches a new branch with no common history from its own commit list, bounded to the last 7 days', async () => {
+    const { prisma, client, svc } = setup();
+    const range = addRange(prisma, { ref: 'RC4-bugs', headSha: '14753b2f' });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'no_common_ancestor',
+    });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('orphan1', 'x')],
+      pages: 1,
+      truncated: false,
+      status: 'unrelated_history',
+    });
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    expect(client.listBranchCommits).toHaveBeenCalledWith(
+      'athmahealth/ehr',
+      'tok:GITHUB_TOKEN',
+      '14753b2f',
+      new Date((range.createdAt as Date).getTime() - 7 * 86_400_000),
+    );
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'done',
+      ingested: 1,
+    });
+    expect(r.counters.ingested).toBe(1);
+  });
+
+  it('uses the commit-list fallback when the default-branch retry of a moved range has no common history either', async () => {
+    const { prisma, client, svc } = setup();
+    addRange(prisma, { kind: 'moved', baseSha: 'gone', baseRef: null });
+    client.compareAll
+      .mockResolvedValueOnce({
+        commits: [],
+        pages: 0,
+        truncated: false,
+        failure: 'not_found',
+      })
+      .mockResolvedValueOnce({
+        commits: [],
+        pages: 0,
+        truncated: false,
+        failure: 'no_common_ancestor',
+      });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('orphan2', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(client.listBranchCommits).toHaveBeenCalledTimes(1);
+    expect(prisma.githubPushRange.rows[0].status).toBe('done');
+  });
+
+  it('does not fall back to the commit list on an ordinary not-found', async () => {
+    const { prisma, client, svc } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'not_found',
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(client.listBranchCommits).not.toHaveBeenCalled();
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+    });
   });
 });
