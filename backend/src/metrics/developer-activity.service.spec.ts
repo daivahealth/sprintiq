@@ -5,6 +5,7 @@ import {
   activeDeveloperSet,
   DEVELOPER_ROLES,
   bucketFor,
+  commitDays,
   isDeveloperRole,
   monthCollected,
   planningGapDevelopers,
@@ -490,5 +491,117 @@ describe('activeDeveloperSet', () => {
       index,
     );
     expect([...set]).toEqual(['alice_athma']);
+  });
+});
+
+describe('commitDays', () => {
+  const index = {
+    byLogin: new Map([
+      ['alice', 'alice'],
+      ['bob', 'bob'],
+    ]),
+    byEmail: new Map<string, string>(),
+    displayNames: new Map([
+      ['alice', 'Alice'],
+      ['bob', 'Bob'],
+    ]),
+  };
+  const at = (iso: string) => new Date(iso);
+  const commit = (
+    login: string | null,
+    committedAt: string,
+    additions: number,
+    deletions: number,
+  ) => ({
+    authorLogin: login,
+    authorEmail: null,
+    committedAt: at(committedAt),
+    authoredAt: at(committedAt),
+    additions,
+    deletions,
+  });
+
+  it('totals changed LOC per IST day alongside the commit count', () => {
+    const days = commitDays(
+      [
+        commit('alice', '2026-10-13T04:00:00Z', 100, 20),
+        commit('bob', '2026-10-13T05:00:00Z', 5, 5),
+        commit('alice', '2026-10-12T04:00:00Z', 1, 0),
+      ],
+      index,
+    );
+    expect(
+      days.map((d) => [
+        d.date,
+        d.totalCommits,
+        d.additions,
+        d.deletions,
+        d.locChanged,
+      ]),
+    ).toEqual([
+      ['2026-10-13', 2, 105, 25, 130],
+      ['2026-10-12', 1, 1, 0, 1],
+    ]);
+  });
+
+  it('buckets by the IST calendar day of the commit time', () => {
+    // 2026-10-12T20:00Z is 01:30 IST on the 13th.
+    const days = commitDays(
+      [commit('alice', '2026-10-12T20:00:00Z', 3, 3)],
+      index,
+    );
+    expect(days[0].date).toBe('2026-10-13');
+  });
+
+  it('counts commits that recorded no line changes, so a partial LOC figure is disclosed', () => {
+    const days = commitDays(
+      [
+        commit('alice', '2026-10-13T04:00:00Z', 0, 0),
+        commit('bob', '2026-10-13T05:00:00Z', 7, 1),
+      ],
+      index,
+    );
+    expect(days[0].commitsWithoutLineChanges).toBe(1);
+    expect(days[0].locChanged).toBe(8);
+  });
+
+  it('includes unattributed commits in the day LOC total, and still counts them as unattributed', () => {
+    const days = commitDays(
+      [
+        commit(null, '2026-10-13T04:00:00Z', 40, 2),
+        commit('bob', '2026-10-13T05:00:00Z', 1, 1),
+      ],
+      index,
+    );
+    expect(days[0]).toMatchObject({
+      totalCommits: 2,
+      unattributedCommits: 1,
+      locChanged: 44,
+    });
+  });
+
+  it('lists contributors alphabetically by commits, never ordered by LOC', () => {
+    const days = commitDays(
+      [
+        commit('bob', '2026-10-13T04:00:00Z', 900, 0),
+        commit('alice', '2026-10-13T05:00:00Z', 1, 0),
+      ],
+      index,
+    );
+    expect(days[0].developers).toEqual([
+      { developer: 'alice', displayName: 'Alice', commits: 1 },
+      { developer: 'bob', displayName: 'Bob', commits: 1 },
+    ]);
+  });
+
+  it('returns days newest first', () => {
+    const days = commitDays(
+      [
+        commit('alice', '2026-10-10T04:00:00Z', 1, 0),
+        commit('alice', '2026-10-13T04:00:00Z', 1, 0),
+      ],
+      index,
+    );
+    expect(days.map((d) => d.date)).toEqual(['2026-10-13', '2026-10-10']);
   });
 });

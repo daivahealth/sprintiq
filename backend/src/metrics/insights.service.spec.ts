@@ -144,6 +144,54 @@ describe('InsightsService committer-date windowing', () => {
       { date: '2026-06-02', commits: 1, locChanged: 4 },
     ]);
   });
+
+  it('developerActivity discloses commits that recorded no line changes', async () => {
+    code.listCommits.mockResolvedValue([
+      commit(),
+      commit({ sha: 'def', additions: 0, deletions: 0 }),
+    ] as never);
+
+    const view = await service.developerActivity(
+      'jdoe',
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.totals).toMatchObject({
+      commits: 2,
+      locChanged: 4,
+      commitsWithoutLineChanges: 1,
+    });
+  });
+
+  it('projectActivity orders projects by changed LOC, then commits, and discloses commits without line changes', async () => {
+    planning.listProjectKeys.mockResolvedValue(['FEW', 'MANY'] as never);
+    correlation.reposLinkedToProjects.mockImplementation((async (
+      _tenant: string,
+      keys: string[],
+    ) => (keys[0] === 'FEW' ? ['acme/few'] : ['acme/many'])) as never);
+    code.listCommits.mockResolvedValue([
+      commit({ repoFullName: 'acme/many', additions: 1, deletions: 0 }),
+      commit({ repoFullName: 'acme/many', additions: 0, deletions: 0 }),
+      commit({ repoFullName: 'acme/many', additions: 1, deletions: 0 }),
+      commit({ repoFullName: 'acme/few', additions: 500, deletions: 20 }),
+    ] as never);
+
+    const view = await service.projectActivity(
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(
+      view.rows.map((r) => [
+        r.projectKey,
+        r.locChanged,
+        r.commits,
+        r.commitsWithoutLineChanges,
+      ]),
+    ).toEqual([
+      ['FEW', 520, 1, 0],
+      ['MANY', 2, 3, 1],
+    ]);
+  });
 });
 
 describe('InsightsService.dailyCommitActivity', () => {

@@ -192,13 +192,11 @@ export interface OverviewView {
    * disagree about the same window.
    */
   activeDevelopers: ActiveDeveloper[];
-  /** Commits per IST day, with that day's contributors for the drill-down. */
-  days: {
-    date: string;
-    totalCommits: number;
-    developers: { developer: string; displayName: string; commits: number }[];
-    unattributedCommits: number;
-  }[];
+  /**
+   * Commits and changed LOC per IST day, with that day's contributors for the
+   * drill-down. See `commitDays`.
+   */
+  days: ActivityDay[];
   attribution: {
     commitsInScope: number;
     commitsUnattributed: number;
@@ -381,12 +379,6 @@ export class DeveloperActivityService {
         this.rolesByDeveloper(tenantId),
       ]);
 
-    interface DayAcc {
-      total: number;
-      unattributed: number;
-      byDeveloper: Map<string, number>;
-    }
-    const byDay = new Map<string, DayAcc>();
     const committers = new Set<string>();
     // Window totals per person, accumulated from the same passes the day
     // buckets already make — the roster costs no extra query.
@@ -404,16 +396,8 @@ export class DeveloperActivityService {
     >();
 
     for (const c of commits) {
-      const day = istDateKey(c.committedAt ?? c.authoredAt);
-      const acc = byDay.get(day) ?? {
-        total: 0,
-        unattributed: 0,
-        byDeveloper: new Map<string, number>(),
-      };
-      acc.total += 1;
       const person = attributeCommit(c, index);
       if (person) {
-        acc.byDeveloper.set(person, (acc.byDeveloper.get(person) ?? 0) + 1);
         commitsByDeveloper.set(
           person,
           (commitsByDeveloper.get(person) ?? 0) + 1,
@@ -426,10 +410,7 @@ export class DeveloperActivityService {
         loc.deletions += c.deletions;
         locByDeveloper.set(person, loc);
         committers.add(person);
-      } else {
-        acc.unattributed += 1;
       }
-      byDay.set(day, acc);
     }
 
     let prsMerged = 0;
@@ -491,22 +472,7 @@ export class DeveloperActivityService {
         index.displayNames,
         roles,
       ),
-      days: [...byDay.entries()]
-        .map(([date, acc]) => ({
-          date,
-          totalCommits: acc.total,
-          developers: [...acc.byDeveloper.entries()]
-            .map(([developer, count]) => ({
-              developer,
-              displayName: index.displayNames.get(developer) ?? developer,
-              commits: count,
-            }))
-            // Alphabetical (CLAUDE.md — no volume ranking). The UI's
-            // "Most commits" toggle is the reader's explicit act, never this.
-            .sort((a, b) => a.displayName.localeCompare(b.displayName)),
-          unattributedCommits: acc.unattributed,
-        }))
-        .sort((a, b) => b.date.localeCompare(a.date)),
+      days: commitDays(commits, index),
       attribution: {
         commitsInScope: attribution.commitsInScope,
         commitsUnattributed: attribution.commitsUnattributed,
@@ -1316,6 +1282,102 @@ export function activeDeveloperRoster(
  * has seen it; only a commit with neither a known login nor a known email is
  * genuinely unattributable.
  */
+/** One IST day of commit activity, as the Overview's daily chart reads it. */
+export interface ActivityDay {
+  date: string;
+  totalCommits: number;
+  /** Team totals for the day: lines added, removed, and their sum. Volume, never productivity. */
+  additions: number;
+  deletions: number;
+  locChanged: number;
+  /**
+   * Commits that recorded no line changes at all — merge commits, or commits
+   * whose line stats have not been collected yet. Disclosed so a reader can
+   * tell when the day's LOC figure is partial; never read as "no work".
+   */
+  commitsWithoutLineChanges: number;
+  developers: { developer: string; displayName: string; commits: number }[];
+  unattributedCommits: number;
+}
+
+/**
+ * Buckets commits into IST days with commit counts, changed-LOC totals and the
+ * day's contributors. Unattributed commits count toward the day's totals
+ * (the code changed regardless of who it is credited to) and are disclosed
+ * separately.
+ *
+ * Contributors carry commit counts only and are alphabetical (CLAUDE.md — no
+ * volume ranking); per-person LOC is deliberately not part of the day
+ * drill-down. Days are newest first.
+ */
+export function commitDays(
+  commits: {
+    authorLogin: string | null;
+    authorEmail: string | null;
+    committedAt: Date | null;
+    authoredAt: Date;
+    additions: number;
+    deletions: number;
+  }[],
+  index: {
+    byLogin: Map<string, string>;
+    byEmail: Map<string, string>;
+    displayNames: Map<string, string>;
+  },
+): ActivityDay[] {
+  interface DayAcc {
+    total: number;
+    additions: number;
+    deletions: number;
+    withoutLineChanges: number;
+    unattributed: number;
+    byDeveloper: Map<string, number>;
+  }
+  const byDay = new Map<string, DayAcc>();
+  for (const c of commits) {
+    const day = istDateKey(c.committedAt ?? c.authoredAt);
+    const acc = byDay.get(day) ?? {
+      total: 0,
+      additions: 0,
+      deletions: 0,
+      withoutLineChanges: 0,
+      unattributed: 0,
+      byDeveloper: new Map<string, number>(),
+    };
+    acc.total += 1;
+    acc.additions += c.additions;
+    acc.deletions += c.deletions;
+    if (c.additions === 0 && c.deletions === 0) {
+      acc.withoutLineChanges += 1;
+    }
+    const person = attributeCommit(c, index);
+    if (person) {
+      acc.byDeveloper.set(person, (acc.byDeveloper.get(person) ?? 0) + 1);
+    } else {
+      acc.unattributed += 1;
+    }
+    byDay.set(day, acc);
+  }
+  return [...byDay.entries()]
+    .map(([date, acc]) => ({
+      date,
+      totalCommits: acc.total,
+      additions: acc.additions,
+      deletions: acc.deletions,
+      locChanged: acc.additions + acc.deletions,
+      commitsWithoutLineChanges: acc.withoutLineChanges,
+      developers: [...acc.byDeveloper.entries()]
+        .map(([developer, count]) => ({
+          developer,
+          displayName: index.displayNames.get(developer) ?? developer,
+          commits: count,
+        }))
+        .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+      unattributedCommits: acc.unattributed,
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
 export function attributeCommit(
   commit: { authorLogin: string | null; authorEmail: string | null },
   index: { byLogin: Map<string, string>; byEmail: Map<string, string> },

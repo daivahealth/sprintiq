@@ -363,6 +363,12 @@ export interface ProjectActivityRow {
    * without this the row silently reports more work than people to do it.
    */
   unattributedCommits: number;
+  /**
+   * Commits in this row that recorded no line changes — merge commits, or
+   * commits whose line stats are not collected yet. Disclosed so a reader can
+   * tell when `locChanged` is partial.
+   */
+  commitsWithoutLineChanges: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
 }
@@ -430,6 +436,12 @@ export interface DeveloperActivityView {
     /** PRs authored in the window that were merged — the Delivery Explorer denominator. */
     prsMerged: number;
     activeRepos: number;
+    /**
+     * Commits that recorded no line changes (merges, or stats not collected
+     * yet). Disclosed beside the LOC chart so a partial figure is never
+     * mistaken for a quiet day.
+     */
+    commitsWithoutLineChanges: number;
   };
   identity: DeveloperIdentityNote;
   activeProjects: string[]; // via repo→project graph mapping
@@ -1323,6 +1335,7 @@ export class InsightsService {
       repoCommits: Map<string, number>;
       contributors: Set<string>;
       unattributed: number;
+      withoutLineChanges: number;
       byDay: Map<string, { commits: number; locChanged: number }>;
     }
     const acc = new Map<string, Acc>();
@@ -1336,6 +1349,7 @@ export class InsightsService {
           repoCommits: new Map(),
           contributors: new Set(),
           unattributed: 0,
+          withoutLineChanges: 0,
           byDay: new Map(),
         } as Acc);
       acc.set(key, cur);
@@ -1352,6 +1366,9 @@ export class InsightsService {
         a.commits += 1;
         a.additions += c.additions;
         a.deletions += c.deletions;
+        if (c.additions === 0 && c.deletions === 0) {
+          a.withoutLineChanges += 1;
+        }
         a.repoCommits.set(
           c.repoFullName,
           (a.repoCommits.get(c.repoFullName) ?? 0) + 1,
@@ -1381,6 +1398,7 @@ export class InsightsService {
           null,
         contributors: a.contributors.size,
         unattributedCommits: a.unattributed,
+        commitsWithoutLineChanges: a.withoutLineChanges,
         dailySeries: [...a.byDay.entries()]
           .map(([date, d]) => ({
             date,
@@ -1389,7 +1407,9 @@ export class InsightsService {
           }))
           .sort((x, y) => x.date.localeCompare(y.date)),
       }))
-      .sort((x, y) => y.commits - x.commits || y.locChanged - x.locChanged);
+      // Ordered by changed LOC (the board's headline), then commits. Projects
+      // are codebases, not people, so volume ordering ranks nobody.
+      .sort((x, y) => y.locChanged - x.locChanged || y.commits - x.commits);
 
     return { rows, attribution, truncated };
   }
@@ -1512,11 +1532,15 @@ export class InsightsService {
     let additions = 0;
     let deletions = 0;
     let filesChanged = 0;
+    let withoutLineChanges = 0;
     for (const c of commits) {
       const committedAt = c.committedAt ?? c.authoredAt;
       additions += c.additions;
       deletions += c.deletions;
       filesChanged += c.filesChanged;
+      if (c.additions === 0 && c.deletions === 0) {
+        withoutLineChanges += 1;
+      }
       const r = byRepo.get(c.repoFullName) ?? {
         commits: 0,
         loc: 0,
@@ -1558,6 +1582,7 @@ export class InsightsService {
         // them reading as a contradiction (DASHBOARDS.md §3).
         prsMerged: prs.filter((pr) => pr.mergedAt).length,
         activeRepos: byRepo.size,
+        commitsWithoutLineChanges: withoutLineChanges,
       },
       identity: {
         logins: aliases.logins,
