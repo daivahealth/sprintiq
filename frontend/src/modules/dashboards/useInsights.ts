@@ -247,6 +247,12 @@ export interface ProjectActivityRow {
    * "this API can't tell us", which must render as unknown — never as zero.
    */
   unattributedCommits?: number;
+  /**
+   * Commits that recorded no line changes (merges, or line stats not collected
+   * yet) — discloses when `locChanged` is partial. Optional for the same
+   * reason as `unattributedCommits`; absent means unknown, never zero.
+   */
+  commitsWithoutLineChanges?: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
 }
@@ -277,6 +283,8 @@ export interface DeveloperActivityView {
     /** Of those, the ones merged — what Delivery Explorer counts. Optional: see `identity`. */
     prsMerged?: number;
     activeRepos: number;
+    /** Commits with no recorded line changes. Optional: an older API omits it — unknown, never zero. */
+    commitsWithoutLineChanges?: number;
   };
   /**
    * The source identities these figures were gathered under. Optional for the
@@ -833,6 +841,15 @@ export interface JiraAssigneeCoverage {
 export interface ActivityDay {
   date: string;
   totalCommits: number;
+  /**
+   * Team changed LOC for the day (additions + deletions) and its parts, plus
+   * how many commits recorded no line changes. Optional: an API deployed before
+   * these fields existed omits them, and the chart then falls back to commits.
+   */
+  locChanged?: number;
+  additions?: number;
+  deletions?: number;
+  commitsWithoutLineChanges?: number;
   developers: { developer: string; displayName: string; commits: number }[];
   unattributedCommits: number;
 }

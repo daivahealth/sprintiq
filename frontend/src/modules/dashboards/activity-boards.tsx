@@ -14,11 +14,22 @@ import { type ActivityWindow, useProjectActivity } from './useInsights';
 import { ProjectActivityChart } from './ProjectActivityChart';
 import { ErrorCard, LoadingCard } from './widgets';
 
-/** Most-active projects: commits + LOC across all repos mapped to each project. */
+/**
+ * Most-active projects by changed LOC (then commits), across all repos mapped
+ * to each project. Projects are codebases, not people, so ordering by volume
+ * ranks nobody; LOC is still change volume, never productivity.
+ */
 export function ProjectActivityBoard() {
   const [window, setWindow] = useState<ActivityWindow>('week');
   const query = useProjectActivity(window);
-  const rows = query.data?.rows ?? [];
+  // Ordered here too, so an API that still sorts by commits shows the same table.
+  const rows = [...(query.data?.rows ?? [])].sort(
+    (a, b) => b.locChanged - a.locChanged || b.commits - a.commits,
+  );
+  const withoutLines = rows.reduce(
+    (n, r) => n + (r.commitsWithoutLineChanges ?? 0),
+    0,
+  );
   const attribution = query.data?.attribution;
 
   return (
@@ -28,8 +39,8 @@ export function ProjectActivityBoard() {
           Project Activity
         </h2>
         <p className="text-sm text-fg-subtle">
-          Most-active projects by commits and changed LOC, aggregated across
-          every repo mapped to the project (delivery graph).
+          Most-active projects by changed lines of code, then commits,
+          aggregated across every repo mapped to the project (delivery graph).
         </p>
       </div>
 
@@ -47,7 +58,7 @@ export function ProjectActivityBoard() {
         <Card className="space-y-5">
           <div>
             <h4 className="mb-2 text-sm font-medium text-fg-muted">
-              Activity timeline (commits per day by project)
+              Activity timeline (changed lines of code per day by project)
             </h4>
             <ProjectActivityChart rows={rows} windowDays={WINDOW_DAYS[window]} />
           </div>
@@ -58,8 +69,9 @@ export function ProjectActivityBoard() {
                 <thead>
                   <TableHeadRow>
                     <th className="py-2 pr-4 font-medium">Project</th>
-                    <th className="py-2 pr-4 font-medium">Commits</th>
+                    <th className="py-2 pr-4 font-medium">Changed LOC</th>
                     <th className="py-2 pr-4 font-medium">+ / −</th>
+                    <th className="py-2 pr-4 font-medium">Commits</th>
                     <th className="py-2 pr-4 font-medium">Active repos</th>
                     <th className="py-2 pr-4 font-medium">Top repo</th>
                     <th className="py-2 font-medium">Contributors</th>
@@ -75,11 +87,14 @@ export function ProjectActivityBoard() {
                         )}{' '}
                         {r.projectKey}
                       </td>
-                      <td className="py-2.5 pr-4 tabular-nums">{r.commits}</td>
+                      <td className="py-2.5 pr-4 tabular-nums font-medium text-fg-secondary">
+                        {r.locChanged.toLocaleString()}
+                      </td>
                       <td className="py-2.5 pr-4 tabular-nums">
                         <span className="text-success-fg">+{r.additions}</span>{' '}
                         / <span className="text-danger-fg">−{r.deletions}</span>
                       </td>
+                      <td className="py-2.5 pr-4 tabular-nums">{r.commits}</td>
                       <td className="py-2.5 pr-4 tabular-nums">
                         {r.activeRepos}
                       </td>
@@ -132,6 +147,16 @@ export function ProjectActivityBoard() {
           )}
 
           <ProvenanceNote>
+            Changed LOC is lines added plus lines removed — change volume, not
+            productivity.
+            {withoutLines > 0 && (
+              <>
+                {' '}
+                {withoutLines} commit{withoutLines === 1 ? '' : 's'} in this
+                window recorded no line changes (merge commits, or line stats not
+                collected yet), so line totals may be partial.
+              </>
+            )}{' '}
             Repos linked to no project are reported under “(unlinked repos)”.
             Computed {timeAgo(query.data.computedAt)}.
           </ProvenanceNote>
