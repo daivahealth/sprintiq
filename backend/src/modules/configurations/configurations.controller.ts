@@ -22,6 +22,8 @@ import { ConnectionsService } from '../connections/connections.service';
 import { GithubCommitMessageReconcilerService } from '../../collectors/sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from '../../collectors/sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
+import { GithubCopilotUsageSyncService } from '../../collectors/sources/github/github-copilot-usage-sync.service';
+import { readGithubCopilotConfig } from '../../collectors/sources/github/github-copilot.config';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../../collectors/sources/github/github-review-reconciler.service';
@@ -114,6 +116,7 @@ export class ConfigurationsController {
     private readonly identities: DeveloperIdentityService,
     private readonly connections: ConnectionsService,
     private readonly progress: CollectionProgressService,
+    private readonly copilotSync: GithubCopilotUsageSyncService,
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
@@ -326,6 +329,38 @@ export class ConfigurationsController {
       this.prCommitBackfill.countRemaining(user.tenantId),
     ]);
     return { uncollectedMergedHeads, prsAwaitingHarvest };
+  }
+
+  /**
+   * Runs the Copilot usage-metrics sync (ADR-0012) for this tenant now,
+   * instead of waiting for the daily 04:30 UTC cron. Still honours the
+   * deployment switch: `GITHUB_COPILOT_USAGE_SYNC=off` means this deployment
+   * has not agreed to spend that token, whoever is asking.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/copilot-sync')
+  async runCopilotSync(@CurrentUser() user: AuthUser) {
+    if (!readGithubCopilotConfig().syncEnabled) {
+      throw new BadRequestException(
+        'Copilot usage sync is off for this deployment — set GITHUB_COPILOT_USAGE_SYNC=on first.',
+      );
+    }
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'collector.copilot_usage_sync.requested',
+      targetType: 'tenant_configuration',
+      targetId: 'github',
+    });
+    return this.copilotSync.syncTenant(user.tenantId);
+  }
+
+  /** Where the Copilot sync has got to, and how its last run ended. */
+  @Roles(Role.ADMIN)
+  @Get('github/copilot-sync/status')
+  async copilotSyncStatus(@CurrentUser() user: AuthUser) {
+    return this.copilotSync.status(user.tenantId);
   }
 
   /**

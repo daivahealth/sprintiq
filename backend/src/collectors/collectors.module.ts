@@ -6,6 +6,9 @@ import { IngestionService } from './ingestion/ingestion.service';
 import { CollectionProgressService } from './scheduler/collection-progress.service';
 import { BackfillSchedulerService } from './scheduler/backfill-scheduler.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
+import { GithubCopilotSchedulerService } from './scheduler/github-copilot-scheduler.service';
+import { GithubCopilotMetricsClient } from './sources/github/github-copilot-metrics.client';
+import { GithubCopilotUsageSyncService } from './sources/github/github-copilot-usage-sync.service';
 import { GithubCommitMessageReconcilerService } from './sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from './sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from './sources/github/github-commit-reconciler.service';
@@ -67,6 +70,9 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubCommitReconcilerService,
     GithubPrReconcilerService,
     GithubReviewReconcilerService,
+    GithubCopilotMetricsClient,
+    GithubCopilotUsageSyncService,
+    GithubCopilotSchedulerService,
     JiraClient,
     JiraCollector,
     JiraSprintReconcilerService,
@@ -85,6 +91,8 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubCommitReconcilerService,
     GithubPrReconcilerService,
     GithubReviewReconcilerService,
+    GithubCopilotUsageSyncService,
+    GithubCopilotSchedulerService,
     JiraSprintReconcilerService,
     JiraStoryDateReconcilerService,
     JiraAssigneeEmailReconcilerService,

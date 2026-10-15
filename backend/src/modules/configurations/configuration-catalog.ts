@@ -68,6 +68,15 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         required: true,
       },
       {
+        // Its own ref, never the collector token: Copilot usage metrics need
+        // org-level access the repo collector doesn't (ADR-0012).
+        key: 'copilotMetricsTokenRef',
+        label: 'Copilot metrics token secret ref',
+        kind: 'secret-ref',
+        helper:
+          'Optional. Enables the per-developer Copilot column. An org owner\'s classic PAT with read:org, or a fine-grained token with the organization permission "View organization Copilot metrics" — SSO-authorized for the org, with the "Copilot usage metrics" policy enabled. Seat status needs the org-owner PAT. Also needs GITHUB_COPILOT_USAGE_SYNC=on. Env var name only.',
+      },
+      {
         // Kept, but honestly labelled. Collection is poll-only (api/README.md
         // §12 #2): the receiver exists and verifies signatures, but cannot be
         // reached from a real provider, so a value here changes nothing today.

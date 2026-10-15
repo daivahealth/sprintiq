@@ -16,7 +16,11 @@ import {
   type MatchSuggestion,
 } from '../correlation/developer-identity.util';
 import { PrismaService } from '../database/prisma.service';
-import { CodeService } from '../modules/code/code.service';
+import {
+  CodeService,
+  CopilotCoverage,
+  CopilotUsageRow,
+} from '../modules/code/code.service';
 
 /**
  * Read models for the Engineering Activity section (DASHBOARDS.md §4.4).
@@ -172,6 +176,39 @@ export interface ActiveDeveloper {
    * null is nobody having decided at all. Never collapse them.
    */
   role: DeveloperRoleValue | null;
+  /**
+   * Copilot usage in the window (ADR-0012), or `null` when the tenant has
+   * never collected a Copilot report — then the column isn't shown at all.
+   * Context beside the person, never an ordering and never part of any grade.
+   */
+  copilot: DeveloperCopilot | null;
+}
+
+/**
+ * One person's Copilot usage over the window, from GitHub's usage-metrics
+ * reports (ADR-0012).
+ *
+ * - `active` — at least one day GitHub reported Copilot activity for them.
+ * - `seat_unused` — holds a seat, no activity reported in the window.
+ * - `no_seat` — no seat in the latest snapshot and no activity reported.
+ * - `no_activity` — no activity reported, and seats aren't known.
+ *
+ * None of these means "didn't use AI": GitHub doesn't count Copilot on
+ * github.com or mobile, or an IDE with telemetry off.
+ */
+export interface DeveloperCopilot {
+  status: 'active' | 'seat_unused' | 'no_seat' | 'no_activity';
+  /** Distinct UTC report days with any reported activity. */
+  activeDays: number;
+  /** `loc_added_sum` over the window — lines Copilot added. Volume, never a score. */
+  linesAdded: number;
+}
+
+/** The Copilot inputs the roster needs, already keyed by canonical developer. */
+export interface CopilotLookup {
+  usage: ReadonlyMap<string, { activeDays: number; linesAdded: number }>;
+  /** Developers holding a seat; `null` when no seat snapshot was ever taken. */
+  seatHolders: ReadonlySet<string> | null;
 }
 
 export interface OverviewView {
@@ -192,6 +229,13 @@ export interface OverviewView {
    * disagree about the same window.
    */
   activeDevelopers: ActiveDeveloper[];
+  /**
+   * Freshness for the roster's Copilot column. `collected: false` means no
+   * report has ever been collected for this tenant (the column is hidden).
+   * GitHub publishes a day's report ~2 days after it closes, so
+   * `coveredThrough` normally trails the window's end.
+   */
+  copilot: CopilotCoverage;
   /** Commits per IST day, with that day's contributors for the drill-down. */
   days: {
     date: string;
@@ -360,26 +404,43 @@ export class DeveloperActivityService {
     windowDays: number,
   ): Promise<OverviewView> {
     const tenantId = this.tenantContext.requireTenantId();
-    const [{ commits, truncated }, index, attribution, assignees, prs, roles] =
-      await Promise.all([
-        this.code.listCommitsPage(tenantId, {
-          ...(repos.length > 0 ? { repos } : {}),
-          from,
-          to,
-        }),
-        this.identities.attributionIndex(tenantId),
-        this.identities.attributionCoverage(tenantId, from, to, repos),
-        this.identities.jiraAssigneeIndex(tenantId),
-        this.prisma.pullRequest.findMany({
-          where: {
-            tenantId,
-            ...(repos.length > 0 ? { repoFullName: { in: repos } } : {}),
-            openedAt: { gte: from, lte: to },
-          },
-          select: { authorLogin: true, mergedAt: true },
-        }),
-        this.rolesByDeveloper(tenantId),
-      ]);
+    // Copilot reports are per UTC day; the window is IST days. A report day is
+    // in the window when its date is — a day's edge hours can land one side or
+    // the other, which the column's caption says.
+    const fromDay = istDateKey(from);
+    const toDay = istDateKey(to);
+    const [
+      { commits, truncated },
+      index,
+      attribution,
+      assignees,
+      prs,
+      roles,
+      copilotRows,
+      copilotSeats,
+      copilotCoverage,
+    ] = await Promise.all([
+      this.code.listCommitsPage(tenantId, {
+        ...(repos.length > 0 ? { repos } : {}),
+        from,
+        to,
+      }),
+      this.identities.attributionIndex(tenantId),
+      this.identities.attributionCoverage(tenantId, from, to, repos),
+      this.identities.jiraAssigneeIndex(tenantId),
+      this.prisma.pullRequest.findMany({
+        where: {
+          tenantId,
+          ...(repos.length > 0 ? { repoFullName: { in: repos } } : {}),
+          openedAt: { gte: from, lte: to },
+        },
+        select: { authorLogin: true, mergedAt: true },
+      }),
+      this.rolesByDeveloper(tenantId),
+      this.code.copilotUsageRows(tenantId, fromDay, toDay),
+      this.code.copilotSeatLogins(tenantId),
+      this.code.copilotCoverage(tenantId, fromDay, toDay),
+    ]);
 
     interface DayAcc {
       total: number;
@@ -451,6 +512,16 @@ export class DeveloperActivityService {
     // One definition, shared with the daily digest — see `activeDeveloperSet`.
     const withSignal = activeDeveloperSet(commits, prs, index);
 
+    // People only, for the tile and the roster alike — bots, anonymized
+    // accounts and admin exclusions are not developers (DASHBOARDS.md §4.4.7),
+    // and applying the filter to one and not the other would make the list
+    // and the number above it disagree. `activeDeveloperSet` itself is left
+    // whole: the digest shares it and applies its own suppressions.
+    const isPerson = (developer: string) =>
+      !isBotDeveloper(developer) &&
+      !isAnonymizedAccount(developer) &&
+      !index.excluded.has(developer);
+
     // Same definition the Watchlist reports, via the same function — these two
     // numbers are the same claim on two pages and disagreed on real data while
     // they were computed separately (see `planningGapDevelopers`).
@@ -478,7 +549,7 @@ export class DeveloperActivityService {
     return {
       totals: {
         commits: commits.length,
-        developersWithSignal: withSignal.size,
+        developersWithSignal: [...withSignal].filter(isPerson).length,
         developersKnown: index.displayNames.size,
         prsOpened: prs.length,
         prsMerged,
@@ -490,7 +561,11 @@ export class DeveloperActivityService {
         prsByDeveloper,
         index.displayNames,
         roles,
-      ),
+        copilotCoverage.collected
+          ? copilotLookup(copilotRows, copilotSeats, index.byLogin)
+          : null,
+      ).filter((row) => isPerson(row.developer)),
+      copilot: copilotCoverage,
       days: [...byDay.entries()]
         .map(([date, acc]) => ({
           date,
@@ -1278,7 +1353,10 @@ export function activeDeveloperRoster(
   prsByDeveloper: ReadonlyMap<string, { opened: number; merged: number }>,
   displayNames: ReadonlyMap<string, string>,
   rolesByDeveloper: ReadonlyMap<string, DeveloperRoleValue> = new Map(),
+  copilot: CopilotLookup | null = null,
 ): ActiveDeveloper[] {
+  // Copilot never changes who is on the roster or where: membership is the
+  // delivery-signal definition above, and the order stays alphabetical.
   const everyone = new Set([
     ...commitsByDeveloper.keys(),
     ...prsByDeveloper.keys(),
@@ -1306,9 +1384,73 @@ export function activeDeveloperRoster(
         // `?? null`, never `?? 'OTH'`. An unclassified developer is not one
         // somebody has decided is "other".
         role: rolesByDeveloper.get(developer) ?? null,
+        copilot: copilot ? copilotCell(developer, copilot) : null,
       };
     })
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
+/**
+ * Copilot report rows and seat logins, re-keyed by canonical developer with
+ * the same login rule PRs use (`byLogin`, else the login itself). A person
+ * under two logins gets the union of their days and the sum of their lines.
+ * Logins are matched case-insensitively as a fallback: GitHub logins are, and
+ * the report and the commit API needn't agree on case.
+ */
+export function copilotLookup(
+  rows: readonly CopilotUsageRow[],
+  seatLogins: readonly string[] | null,
+  byLogin: ReadonlyMap<string, string>,
+): CopilotLookup {
+  const byLower = new Map<string, string>();
+  for (const [login, developer] of byLogin) {
+    byLower.set(login.toLowerCase(), developer);
+  }
+  const resolve = (login: string) =>
+    byLogin.get(login) ?? byLower.get(login.toLowerCase()) ?? login;
+
+  const acc = new Map<string, { days: Set<string>; linesAdded: number }>();
+  for (const row of rows) {
+    const developer = resolve(row.login);
+    const entry = acc.get(developer) ?? { days: new Set(), linesAdded: 0 };
+    if (row.interactions + row.generations + row.acceptances > 0) {
+      entry.days.add(row.day);
+    }
+    entry.linesAdded += row.locAdded;
+    acc.set(developer, entry);
+  }
+  const usage = new Map<string, { activeDays: number; linesAdded: number }>();
+  for (const [developer, entry] of acc) {
+    usage.set(developer, {
+      activeDays: entry.days.size,
+      linesAdded: entry.linesAdded,
+    });
+  }
+  return {
+    usage,
+    seatHolders: seatLogins ? new Set(seatLogins.map(resolve)) : null,
+  };
+}
+
+/** One developer's Copilot cell — see `DeveloperCopilot` for what each status claims. */
+export function copilotCell(
+  developer: string,
+  lookup: CopilotLookup,
+): DeveloperCopilot {
+  const usage = lookup.usage.get(developer);
+  const activeDays = usage?.activeDays ?? 0;
+  const linesAdded = usage?.linesAdded ?? 0;
+  if (activeDays > 0) {
+    return { status: 'active', activeDays, linesAdded };
+  }
+  if (!lookup.seatHolders) {
+    return { status: 'no_activity', activeDays, linesAdded };
+  }
+  return {
+    status: lookup.seatHolders.has(developer) ? 'seat_unused' : 'no_seat',
+    activeDays,
+    linesAdded,
+  };
 }
 
 /**
