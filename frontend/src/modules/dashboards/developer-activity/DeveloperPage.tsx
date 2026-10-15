@@ -1,15 +1,16 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Badge,
   Card,
   ProvenanceNote,
+  SegmentedControl,
   TableBodyRow,
   TableHeadRow,
 } from '../../../components/ui';
 import { SearchSelect } from '../../../components/search-select';
 import { timeAgo } from '../../../lib/utils';
-import { CommitChart } from '../CommitChart';
+import { CommitChart, type DailyMetric } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
 import { BarList, ErrorCard, LoadingCard, Stat, TypeBadge } from '../widgets';
 import { CurrentLensNote } from './CurrentLensNote';
@@ -42,6 +43,10 @@ export function DeveloperPage() {
   const developers = catalog.data?.items ?? [];
   const query = useDeveloperActivity(developer, range);
   const d = query.data;
+  // Changed LOC leads, commits one click away — the product decision recorded
+  // in ADR-0011, under its conditions: the caveat below the chart, the
+  // missing-stats disclosure, and no comparison with anyone else on this page.
+  const [chartMetric, setChartMetric] = useState<DailyMetric>('loc');
 
   const setDeveloper = (login: string | null) => {
     const next = new URLSearchParams(params);
@@ -175,15 +180,42 @@ export function DeveloperPage() {
               </p>
             )}
 
-            <div>
-              <h4 className="mb-2 text-sm font-medium text-fg-muted">
-                Commits per day
-              </h4>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h4 className="text-sm font-medium text-fg-muted">
+                  {chartMetric === 'loc'
+                    ? 'Lines of code changed per day'
+                    : 'Commits per day'}
+                </h4>
+                <SegmentedControl
+                  label="Chart metric"
+                  value={chartMetric}
+                  onChange={setChartMetric}
+                  options={[
+                    { value: 'loc', label: 'Lines of code' },
+                    { value: 'commits', label: 'Commits' },
+                  ]}
+                />
+              </div>
               <CommitChart
                 series={d.dailySeries}
                 windowDays={rangeDays(range)}
                 endKey={rangeEndKey(range)}
+                metric={chartMetric}
               />
+              <ProvenanceNote>
+                Changed LOC is volume, not productivity — a large number is a
+                large diff, nothing more.
+                {(d.totals.commitsWithoutLineChanges ?? 0) > 0 && (
+                  <>
+                    {' '}
+                    {d.totals.commitsWithoutLineChanges} of {d.totals.commits}{' '}
+                    commits in this window recorded no line changes (line stats not
+                    collected yet, or commits that change no lines), so line
+                    totals may be partial.
+                  </>
+                )}
+              </ProvenanceNote>
             </div>
           </Card>
 

@@ -26,6 +26,7 @@ import {
 } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
 import { CurrentLensNote } from './CurrentLensNote';
+import { hasDailyLoc, timelineMetric, timelineValue } from './timeline-metric';
 import {
   EmptyWindowNote,
   formatDayKey,
@@ -425,7 +426,8 @@ function ActiveDevelopers({
  * productivity score.
  */
 function MonthlyTrend() {
-  const [metric, setMetric] = useState<TrendMetric>('commits');
+  // Changed LOC leads (team totals only — see above); commits stay one click away.
+  const [metric, setMetric] = useState<TrendMetric>('loc');
   const query = useMonthlyTrend();
 
   if (query.isLoading) return <LoadingCard />;
@@ -449,8 +451,8 @@ function MonthlyTrend() {
           value={metric}
           onChange={setMetric}
           options={[
-            { value: 'commits', label: 'Commits' },
             { value: 'loc', label: 'Lines of code' },
+            { value: 'commits', label: 'Commits' },
           ]}
         />
       </div>
@@ -494,7 +496,13 @@ function formatMonthBoundary(iso: string | null): string {
 }
 
 /**
- * Commits per day, where each bar opens that day's contributors.
+ * Team changed LOC per day by default, with a Lines of code / Commits toggle
+ * like the 12-month trend's (commits only, and no toggle, on an API that
+ * predates the per-day LOC fields). Each bar opens that day's contributors.
+ *
+ * The bars are TEAM totals. The drill-down still lists people by commits only
+ * and alphabetically: per-person LOC in a day list would turn line counts into
+ * a per-person measure, which this board does not do (CLAUDE.md).
  *
  * This one widget replaces two. The board this section replaced rendered a
  * commit chart AND a separate text log of who committed on each day — the same
@@ -517,11 +525,29 @@ function CommitTimeline({
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const [sort, setSort] = useState<'name' | 'commits'>('name');
+  // Changed LOC leads, as on the 12-month trend; commits stay one click away.
+  // Like the sort, never persisted.
+  const [requested, setRequested] = useState<TrendMetric>('loc');
+  const locAvailable = hasDailyLoc(days);
+  const metric = timelineMetric(days, requested);
+  const byLoc = metric === 'loc';
+  const value = (d: ActivityDay) => timelineValue(d, metric);
+  const withoutLines = byLoc
+    ? days.reduce((n, d) => n + (d.commitsWithoutLineChanges ?? 0), 0)
+    : 0;
+  const header = (
+    <Header
+      sort={sort}
+      setSort={setSort}
+      metric={metric}
+      setMetric={locAvailable ? setRequested : undefined}
+    />
+  );
 
   if (days.length === 0) {
     return (
       <Card className="space-y-4">
-        <Header sort={sort} setSort={setSort} />
+        {header}
         {emptyState}
       </Card>
     );
@@ -529,7 +555,7 @@ function CommitTimeline({
 
   // Oldest → newest for the chart; the API returns newest-first for the list.
   const chronological = [...days].sort((a, b) => a.date.localeCompare(b.date));
-  const max = Math.max(1, ...chronological.map((d) => d.totalCommits));
+  const max = Math.max(1, ...chronological.map(value));
   const openDay = days.find((d) => d.date === open);
   const developers = openDay
     ? sort === 'commits'
@@ -543,7 +569,7 @@ function CommitTimeline({
 
   return (
     <Card className="space-y-4">
-      <Header sort={sort} setSort={setSort} />
+      {header}
 
       {/* `items-stretch`, never `items-end`. Each bar's height is a PERCENTAGE
           of its button, and a percentage height resolves to `auto` — zero —
@@ -557,7 +583,7 @@ function CommitTimeline({
       <div
         className="flex h-40 items-stretch gap-1 overflow-x-auto"
         role="list"
-        aria-label="Commits per day"
+        aria-label={byLoc ? 'Changed lines of code per day' : 'Commits per day'}
       >
         {chronological.map((day) => {
           const isOpen = day.date === open;
@@ -567,7 +593,13 @@ function CommitTimeline({
               type="button"
               role="listitem"
               onClick={() => setOpen(isOpen ? null : day.date)}
-              title={`${formatDayKey(day.date)} — ${day.totalCommits} commits`}
+              title={
+                locAvailable
+                  ? byLoc
+                    ? `${formatDayKey(day.date)} — ${(day.locChanged ?? 0).toLocaleString()} lines changed · ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'}`
+                    : `${formatDayKey(day.date)} — ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'} · ${(day.locChanged ?? 0).toLocaleString()} lines changed`
+                  : `${formatDayKey(day.date)} — ${day.totalCommits} commits`
+              }
               aria-expanded={isOpen}
               // `h-full` belt-and-braces: it pins the height definite even if
               // the row's alignment is changed again later, so the bars cannot
@@ -582,7 +614,7 @@ function CommitTimeline({
                   so the same quantity is the same colour on both. */}
               <span
                 className={
-                  day.totalCommits === 0
+                  value(day) === 0
                     ? // A day with no commits is a flat floor, not a sliver of
                       // colour that reads as a very small amount of work.
                       'w-full rounded-sm bg-chart-empty transition'
@@ -591,7 +623,7 @@ function CommitTimeline({
                       : 'w-full rounded-sm bg-chart-1/80 transition group-hover:bg-chart-1'
                 }
                 style={{
-                  height: `${Math.max(2, (day.totalCommits / max) * 100)}%`,
+                  height: `${Math.max(2, (value(day) / max) * 100)}%`,
                 }}
               />
             </button>
@@ -606,6 +638,13 @@ function CommitTimeline({
               {formatDayKey(openDay.date)}
             </span>
             <span className="text-xs tabular-nums text-fg-subtle">
+              {locAvailable && (
+                <>
+                  {(openDay.locChanged ?? 0).toLocaleString()} lines changed (+
+                  {(openDay.additions ?? 0).toLocaleString()} −
+                  {(openDay.deletions ?? 0).toLocaleString()}) ·{' '}
+                </>
+              )}
               {openDay.totalCommits} commit
               {openDay.totalCommits === 1 ? '' : 's'} ·{' '}
               {openDay.developers.length} developer
@@ -637,6 +676,21 @@ function CommitTimeline({
           Select a day to see who committed.
         </p>
       )}
+
+      {byLoc && (
+        <ProvenanceNote>
+          Bars are team totals of changed lines (added + removed) — volume, not
+          productivity. Contributors are listed by commits, never by lines.
+          {withoutLines > 0 && (
+            <>
+              {' '}
+              {withoutLines} commit{withoutLines === 1 ? '' : 's'} in this
+              window recorded no line changes (line stats not collected yet, or
+              commits that change no lines), so line totals may be partial.
+            </>
+          )}
+        </ProvenanceNote>
+      )}
     </Card>
   );
 }
@@ -644,27 +698,49 @@ function CommitTimeline({
 function Header({
   sort,
   setSort,
+  metric,
+  setMetric,
 }: {
   sort: 'name' | 'commits';
   setSort: (s: 'name' | 'commits') => void;
+  metric: TrendMetric;
+  /** Absent when the API sends no per-day LOC: there is nothing to toggle to. */
+  setMetric?: (m: TrendMetric) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h3 className="font-semibold text-fg">Commits over time</h3>
+        <h3 className="font-semibold text-fg">
+          {metric === 'loc'
+            ? 'Lines of code changed over time'
+            : 'Commits over time'}
+        </h3>
         <p className="text-xs text-fg-subtle">
           One bar per IST day — select one to see that day’s contributors
         </p>
       </div>
-      <SegmentedControl
-        label="Sort"
-        value={sort}
-        onChange={setSort}
-        options={[
-          { value: 'name', label: 'A–Z' },
-          { value: 'commits', label: 'Most commits' },
-        ]}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        {setMetric && (
+          <SegmentedControl
+            label="Metric"
+            value={metric}
+            onChange={setMetric}
+            options={[
+              { value: 'loc', label: 'Lines of code' },
+              { value: 'commits', label: 'Commits' },
+            ]}
+          />
+        )}
+        <SegmentedControl
+          label="Sort"
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: 'name', label: 'A–Z' },
+            { value: 'commits', label: 'Most commits' },
+          ]}
+        />
+      </div>
     </div>
   );
 }

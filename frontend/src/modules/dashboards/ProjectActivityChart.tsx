@@ -1,16 +1,17 @@
-import { cn, dayLabelStride, istDayAxis } from '../../lib/utils';
+import { cn, dayLabelStride, formatCompact, istDayAxis } from '../../lib/utils';
+import { trendTicks } from './monthly-trend';
 import type { ProjectActivityRow } from './useInsights';
 
 /**
- * Multi-project commit timeline (dependency-free SVG): one line per project
- * across the FULL window — zero-commit days included — so projects are
- * comparable at a glance. Mirrors CommitChart's style/conventions but plots
- * several series instead of one, since this compares projects rather than
- * showing one developer's day-by-day detail.
+ * Multi-project changed-LOC timeline (dependency-free SVG): one line per
+ * project across the FULL window — empty days included — so projects are
+ * comparable at a glance. The plotted projects are the top six by changed LOC;
+ * projects are codebases, not people, so volume ordering ranks nobody. LOC is
+ * change volume, never productivity. Tooltips carry commits too.
  */
 const W = 720;
 const H = 200;
-const PAD = { top: 12, right: 8, bottom: 26, left: 30 };
+const PAD = { top: 12, right: 8, bottom: 26, left: 40 };
 const MAX_SERIES = 6;
 const COLORS = [
   'stroke-chart-1',
@@ -45,7 +46,12 @@ export function ProjectActivityChart({
   rows: ProjectActivityRow[];
   windowDays: number;
 }) {
-  const series = rows.slice(0, MAX_SERIES).filter((r) => r.commits > 0);
+  // Ordered here as well as by the API, so an older backend that still sorts
+  // by commits renders the same chart.
+  const active = rows
+    .filter((r) => r.commits > 0)
+    .sort((a, b) => b.locChanged - a.locChanged || b.commits - a.commits);
+  const series = active.slice(0, MAX_SERIES);
 
   if (series.length === 0) {
     return (
@@ -57,21 +63,32 @@ export function ProjectActivityChart({
 
   const days = istDayAxis(windowDays);
   const perProjectDays = series.map((r) => fillWindow(r.dailySeries, days));
-  const maxCommits = Math.max(
-    1,
-    ...perProjectDays.flatMap((d) => d.map((p) => p.commits)),
+  const maxLoc = Math.max(
+    0,
+    ...perProjectDays.flatMap((d) => d.map((p) => p.locChanged)),
   );
+
+  if (maxLoc === 0) {
+    return (
+      <p className="py-6 text-center text-sm text-fg-faint">
+        Commits in this window recorded no line changes (line stats not collected
+        yet, or commits that change no lines).
+      </p>
+    );
+  }
+
+  const yTicks = trendTicks(maxLoc);
+  const top = yTicks[yTicks.length - 1] || 1;
 
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
   const step = days.length > 1 ? plotW / (days.length - 1) : 0;
 
-  const y = (v: number) => PAD.top + plotH - (v / maxCommits) * plotH;
+  const y = (v: number) => PAD.top + plotH - (v / top) * plotH;
   const x = (i: number) => PAD.left + i * step;
 
   // Thinned only when the labels would actually collide — see dayLabelStride.
   const labelEvery = dayLabelStride(days.length);
-  const yTicks = commitTicks(maxCommits);
 
   return (
     <div>
@@ -79,7 +96,7 @@ export function ProjectActivityChart({
         viewBox={`0 0 ${W} ${H}`}
         className="w-full"
         role="img"
-        aria-label="Commits per day by project"
+        aria-label="Changed lines of code per day by project"
       >
         {yTicks.map((t) => (
           <g key={t}>
@@ -97,14 +114,14 @@ export function ProjectActivityChart({
               textAnchor="end"
               className="fill-chart-axis text-[10px]"
             >
-              {t}
+              {formatCompact(t)}
             </text>
           </g>
         ))}
 
         {perProjectDays.map((points, seriesIdx) => {
           const line = points
-            .map((p, i) => `${x(i).toFixed(1)},${y(p.commits).toFixed(1)}`)
+            .map((p, i) => `${x(i).toFixed(1)},${y(p.locChanged).toFixed(1)}`)
             .join(' ');
           return (
             <g key={series[seriesIdx].projectKey}>
@@ -122,13 +139,14 @@ export function ProjectActivityChart({
                   <circle
                     key={p.date}
                     cx={x(i)}
-                    cy={y(p.commits)}
+                    cy={y(p.locChanged)}
                     r={2.25}
                     className={DOT_COLORS[seriesIdx % DOT_COLORS.length]}
                   >
                     <title>
-                      {series[seriesIdx].projectKey} · {p.date} · {p.commits}{' '}
-                      commit{p.commits === 1 ? '' : 's'} · {p.locChanged} LOC
+                      {series[seriesIdx].projectKey} · {p.date} ·{' '}
+                      {p.locChanged.toLocaleString('en-US')} lines changed ·{' '}
+                      {p.commits} commit{p.commits === 1 ? '' : 's'}
                     </title>
                   </circle>
                 ) : null,
@@ -175,15 +193,3 @@ function fillWindow(
   return days.map((date) => byDate.get(date) ?? { date, commits: 0, locChanged: 0 });
 }
 
-/** 3–4 clean integer ticks for the commits axis. */
-function commitTicks(max: number): number[] {
-  if (max <= 3) {
-    return Array.from({ length: max + 1 }, (_, i) => i);
-  }
-  const stepSize = Math.ceil(max / 3);
-  const ticks: number[] = [];
-  for (let t = 0; t <= max; t += stepSize) {
-    ticks.push(t);
-  }
-  return ticks;
-}
