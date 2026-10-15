@@ -9,6 +9,10 @@ export const EventTypes = {
   CODE_PR_MERGED: 'code.pull_request.merged',
   CODE_PR_CLOSED: 'code.pull_request.closed',
   CODE_COMMIT_PUSHED: 'code.commit.pushed',
+  // Copilot usage metrics (ADR-0012), from GitHub's org usage-metrics reports.
+  CODE_COPILOT_USAGE_REPORTED: 'code.copilot.usage.reported',
+  CODE_COPILOT_REPORT_DAY_COLLECTED: 'code.copilot.report_day.collected',
+  CODE_COPILOT_SEATS_OBSERVED: 'code.copilot.seats.observed',
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
   PLANNING_VERSION_UPSERTED: 'planning.version.upserted',

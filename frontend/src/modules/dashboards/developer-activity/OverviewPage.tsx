@@ -23,8 +23,14 @@ import {
   useSetDeveloperRole,
   type ActiveDeveloper,
   type ActivityDay,
+  type CopilotCoverage,
 } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
+import {
+  copilotCaption,
+  copilotCellText,
+  showCopilotColumn,
+} from './copilot-column';
 import { CurrentLensNote } from './CurrentLensNote';
 import {
   EmptyWindowNote,
@@ -123,7 +129,11 @@ export function OverviewPage() {
           first invites totting them up into the total yourself — which is both
           wrong (unattributed commits are in the total and on nobody's row) and
           the arithmetic a ranking is made of. */}
-      <ActiveDevelopers developers={d.activeDevelopers} range={range} />
+      <ActiveDevelopers
+        developers={d.activeDevelopers}
+        copilot={d.copilot}
+        range={range}
+      />
 
       <CommitTimeline
         days={d.days}
@@ -293,11 +303,14 @@ function RoleCell({ dev }: { dev: ActiveDeveloper }) {
 
 function ActiveDevelopers({
   developers,
+  copilot,
   range,
 }: {
   developers: ActiveDeveloper[];
+  copilot?: CopilotCoverage;
   range: ActivityRange;
 }) {
+  const withCopilot = showCopilotColumn(copilot);
   const [sort, setSort] = useState<'name' | 'commits'>('name');
 
   // Nothing to show is the empty-window case, which CommitTimeline already
@@ -344,7 +357,12 @@ function ActiveDevelopers({
               <th className="py-2 pr-4">Commits</th>
               <th className="py-2 pr-4">Changed LOC</th>
               <th className="py-2 pr-4">PRs opened</th>
-              <th className="py-2">PRs merged</th>
+              <th className={withCopilot ? 'py-2 pr-4' : 'py-2'}>
+                PRs merged
+              </th>
+              {/* Deliberately not a sort option (ADR-0012): Copilot use is
+                  context beside a person, never an order to read them in. */}
+              {withCopilot && <th className="py-2">Copilot</th>}
             </TableHeadRow>
           </thead>
           <tbody>
@@ -391,9 +409,12 @@ function ActiveDevelopers({
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.prsOpened}
                 </td>
-                <td className="py-2.5 tabular-nums text-fg-muted">
+                <td
+                  className={`${withCopilot ? 'py-2.5 pr-4' : 'py-2.5'} tabular-nums text-fg-muted`}
+                >
                   {dev.prsMerged}
                 </td>
+                {withCopilot && <CopilotCell dev={dev} />}
               </TableBodyRow>
             ))}
           </tbody>
@@ -406,7 +427,25 @@ function ActiveDevelopers({
         attributed to a known developer only — see data health below for what
         that leaves out.
       </ProvenanceNote>
+      {withCopilot && copilot && (
+        <ProvenanceNote>{copilotCaption(copilot)}</ProvenanceNote>
+      )}
     </Card>
+  );
+}
+
+function CopilotCell({ dev }: { dev: ActiveDeveloper }) {
+  const text = copilotCellText(dev.copilot);
+  const muted = dev.copilot?.status !== 'active';
+  return (
+    <td className="py-2.5 tabular-nums text-fg-muted">
+      <span className={muted ? 'text-fg-faint' : undefined}>
+        {text.primary}
+      </span>
+      {text.secondary && (
+        <span className="ml-2 text-xs text-fg-subtle">{text.secondary}</span>
+      )}
+    </td>
   );
 }
 

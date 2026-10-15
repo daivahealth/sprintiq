@@ -3,6 +3,9 @@ import {
   WATCHLIST_QUIET_WITHIN_WORKING_DAYS,
   activeDeveloperRoster,
   activeDeveloperSet,
+  copilotCell,
+  copilotLookup,
+  DeveloperActivityService,
   DEVELOPER_ROLES,
   bucketFor,
   isDeveloperRole,
@@ -70,6 +73,8 @@ describe('activeDeveloperRoster', () => {
       prsOpened: 5,
       prsMerged: 2,
       role: null,
+      // No Copilot report collected → the column has nothing to say.
+      copilot: null,
     });
   });
 
@@ -490,5 +495,213 @@ describe('activeDeveloperSet', () => {
       index,
     );
     expect([...set]).toEqual(['alice_athma']);
+  });
+});
+
+describe('Copilot column (ADR-0012)', () => {
+  const names = new Map([
+    ['dev-a', 'Zara Ahmed'],
+    ['dev-b', 'Amit Bose'],
+    ['dev-c', 'Chitra Das'],
+  ]);
+  const row = (login: string, day: string, locAdded = 0, interactions = 1) => ({
+    login,
+    day,
+    interactions,
+    generations: 0,
+    acceptances: 0,
+    locAdded,
+  });
+
+  it("merges a developer's logins: union of days, sum of lines", () => {
+    const lookup = copilotLookup(
+      [
+        row('asha', '2026-10-10', 100),
+        row('Asha-Work', '2026-10-10', 20), // same day, second login
+        row('Asha-Work', '2026-10-11', 5),
+      ],
+      null,
+      new Map([
+        ['asha', 'dev-a'],
+        ['asha-work', 'dev-a'],
+      ]),
+    );
+    expect(copilotCell('dev-a', lookup)).toEqual({
+      status: 'active',
+      activeDays: 2,
+      linesAdded: 125,
+    });
+  });
+
+  it('counts a day with no activity at all as not active', () => {
+    const lookup = copilotLookup(
+      [row('asha', '2026-10-10', 0, 0)],
+      null,
+      new Map([['asha', 'dev-a']]),
+    );
+    expect(copilotCell('dev-a', lookup).activeDays).toBe(0);
+  });
+
+  it('tells "seat, not used" from "no seat", and both from "seats unknown"', () => {
+    const byLogin = new Map([
+      ['asha', 'dev-a'],
+      ['bose', 'dev-b'],
+    ]);
+    const withSeats = copilotLookup([], ['asha'], byLogin);
+    expect(copilotCell('dev-a', withSeats).status).toBe('seat_unused');
+    expect(copilotCell('dev-b', withSeats).status).toBe('no_seat');
+    const noSeats = copilotLookup([], null, byLogin);
+    expect(copilotCell('dev-a', noSeats).status).toBe('no_activity');
+  });
+
+  it('never reorders the roster, however much Copilot someone used', () => {
+    const roster = activeDeveloperRoster(
+      new Map([
+        ['dev-a', 1],
+        ['dev-b', 1],
+        ['dev-c', 1],
+      ]),
+      new Map(),
+      new Map(),
+      names,
+      new Map(),
+      copilotLookup(
+        [row('zara', '2026-10-10', 99_999)],
+        null,
+        new Map([['zara', 'dev-a']]),
+      ),
+    );
+    expect(roster.map((r) => r.displayName)).toEqual([
+      'Amit Bose',
+      'Chitra Das',
+      'Zara Ahmed',
+    ]);
+    expect(roster[2].copilot).toEqual({
+      status: 'active',
+      activeDays: 1,
+      linesAdded: 99_999,
+    });
+    expect(roster[0].copilot?.status).toBe('no_activity');
+  });
+
+  it('never adds anyone to the roster: Copilot-only users are not delivery signal', () => {
+    const roster = activeDeveloperRoster(
+      new Map([['dev-a', 1]]),
+      new Map(),
+      new Map(),
+      names,
+      new Map(),
+      copilotLookup(
+        [row('bose', '2026-10-10', 10)],
+        null,
+        new Map([['bose', 'dev-b']]),
+      ),
+    );
+    expect(roster.map((r) => r.developer)).toEqual(['dev-a']);
+  });
+});
+
+describe('DeveloperActivityService.overview — people and the Copilot column', () => {
+  function service(copilotCollected: boolean) {
+    const commit = (login: string) => ({
+      authorLogin: login,
+      authorEmail: null,
+      committedAt: new Date('2026-10-10T06:00:00Z'),
+      authoredAt: new Date('2026-10-10T06:00:00Z'),
+      additions: 1,
+      deletions: 0,
+    });
+    const code = {
+      listCommitsPage: jest.fn().mockResolvedValue({
+        commits: [
+          commit('asha'),
+          commit('Copilot'),
+          commit('dependabot[bot]'),
+          commit('gone'),
+        ],
+        truncated: false,
+      }),
+      copilotUsageRows: jest.fn().mockResolvedValue([
+        {
+          login: 'asha',
+          day: '2026-10-10',
+          interactions: 3,
+          generations: 0,
+          acceptances: 0,
+          locAdded: 40,
+        },
+      ]),
+      copilotSeatLogins: jest.fn().mockResolvedValue(['asha']),
+      copilotCoverage: jest.fn().mockResolvedValue({
+        collected: copilotCollected,
+        coveredThrough: copilotCollected ? '2026-10-12' : null,
+        reportDaysInWindow: copilotCollected ? 3 : 0,
+      }),
+    };
+    const identities = {
+      attributionIndex: jest.fn().mockResolvedValue({
+        byLogin: new Map([
+          ['asha', 'asha'],
+          ['gone', 'gone'],
+        ]),
+        byEmail: new Map(),
+        displayNames: new Map([['asha', 'Asha Rao']]),
+        excluded: new Set(['gone']),
+      }),
+      attributionCoverage: jest.fn().mockResolvedValue({
+        commitsInScope: 4,
+        commitsUnattributed: 0,
+        coveragePct: 100,
+        unattributedIdentities: 0,
+      }),
+      jiraAssigneeIndex: jest.fn().mockResolvedValue({
+        byDeveloper: new Map(),
+        assignees: { matched: 0 },
+      }),
+      bridgeCoverage: jest.fn().mockReturnValue({}),
+    };
+    const prisma = {
+      pullRequest: { findMany: jest.fn().mockResolvedValue([]) },
+      developerRole: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const tenantContext = { requireTenantId: () => 'tenant-a' };
+    return new DeveloperActivityService(
+      tenantContext as never,
+      prisma as never,
+      code as never,
+      identities as never,
+    );
+  }
+
+  const from = new Date('2026-10-01T00:00:00+05:30');
+  const to = new Date('2026-10-14T23:59:59+05:30');
+
+  it('lists people only, and the tile counts exactly the list', async () => {
+    const view = await service(true).overview([], from, to, 14);
+    // Copilot (the agent), a [bot] and an admin-excluded account are not people.
+    expect(view.activeDevelopers.map((d) => d.developer)).toEqual(['asha']);
+    expect(view.totals.developersWithSignal).toBe(view.activeDevelopers.length);
+    // …but their commits still count as work.
+    expect(view.totals.commits).toBe(4);
+  });
+
+  it('attaches the Copilot cell and the freshness when reports were collected', async () => {
+    const view = await service(true).overview([], from, to, 14);
+    expect(view.activeDevelopers[0].copilot).toEqual({
+      status: 'active',
+      activeDays: 1,
+      linesAdded: 40,
+    });
+    expect(view.copilot).toEqual({
+      collected: true,
+      coveredThrough: '2026-10-12',
+      reportDaysInWindow: 3,
+    });
+  });
+
+  it('leaves the cell null when no report was ever collected', async () => {
+    const view = await service(false).overview([], from, to, 14);
+    expect(view.activeDevelopers[0].copilot).toBeNull();
+    expect(view.copilot.collected).toBe(false);
   });
 });
