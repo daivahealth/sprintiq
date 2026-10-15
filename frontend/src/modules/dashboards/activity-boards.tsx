@@ -11,6 +11,7 @@ import {
 import { timeAgo } from '../../lib/utils';
 import { WINDOW_DAYS, WindowToggle, windowFrom } from './activity-window';
 import { type ActivityWindow, useProjectActivity } from './useInsights';
+import { mergeExclusionNote } from './merge-commits';
 import { ProjectActivityChart } from './ProjectActivityChart';
 import { ErrorCard, LoadingCard } from './widgets';
 
@@ -28,6 +29,10 @@ export function ProjectActivityBoard() {
   );
   const withoutLines = rows.reduce(
     (n, r) => n + (r.commitsWithoutLineChanges ?? 0),
+    0,
+  );
+  const mergesExcluded = rows.reduce(
+    (n, r) => n + (r.mergeCommitsExcluded ?? 0),
     0,
   );
   const attribution = query.data?.attribution;
@@ -156,6 +161,9 @@ export function ProjectActivityBoard() {
                 window recorded no line changes (line stats not collected yet, or
                 commits that change no lines), so line totals may be partial.
               </>
+            )}
+            {mergeExclusionNote(mergesExcluded) && (
+              <> {mergeExclusionNote(mergesExcluded)}</>
             )}{' '}
             Repos linked to no project are reported under “(unlinked repos)”.
             Computed {timeAgo(query.data.computedAt)}.

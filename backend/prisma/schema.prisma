@@ -646,6 +646,12 @@ model Commit {
   additions    Int      @default(0)
   deletions    Int      @default(0)
   filesChanged Int      @default(0)
+  /// Number of parent commits: 1 for an ordinary commit, 2+ for a merge, 0 for
+  /// a root commit. Null = not yet known (collected before this existed and not
+  /// yet backfilled). A merge commit's stats are its diff against the first
+  /// parent, so its lines are the merged branch's lines a second time — LOC and
+  /// authorship counts exclude parentCount > 1 (METRICS.md §0).
+  parentCount  Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

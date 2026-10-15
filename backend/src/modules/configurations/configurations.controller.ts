@@ -243,6 +243,25 @@ export class ConfigurationsController {
     return this.progress.getBacklog(user.tenantId);
   }
 
+  /**
+   * One-off maintenance: fills `parentCount` on commits collected before it
+   * existed, so merge commits can be excluded from LOC and authorship counts
+   * (METRICS.md §0). Batched per repo (one GraphQL query per 100 SHAs on the
+   * GraphQL transport). Resumable by cursor: pass the returned `nextCursor` as
+   * `?after=` and re-run until `done`.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/reconcile-commit-parents')
+  async reconcileCommitParents(
+    @CurrentUser() user: AuthUser,
+    @Query('after') after?: string,
+  ) {
+    return this.commitReconciler.reconcileParentCounts(
+      user.tenantId,
+      after || undefined,
+    );
+  }
+
   @Roles(Role.ADMIN)
   @Post('github/reconcile-commit-stats')
   async reconcileCommitStats(@CurrentUser() user: AuthUser) {

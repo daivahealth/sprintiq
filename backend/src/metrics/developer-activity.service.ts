@@ -17,6 +17,11 @@ import {
 } from '../correlation/developer-identity.util';
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
+import {
+  isMergeCommit,
+  MERGE_COMMIT,
+  NOT_A_MERGE_COMMIT,
+} from './merge-commits';
 
 /**
  * Read models for the Engineering Activity section (DASHBOARDS.md §4.4).
@@ -167,6 +172,12 @@ export interface ActiveDeveloper {
   prsOpened: number;
   prsMerged: number;
   /**
+   * Merge commits they made in the window — NOT in `commits` or the LOC
+   * fields (METRICS.md §0), disclosed so a merge-only contributor's row of
+   * zeros reads as "merged, wrote nothing new" rather than as absent data.
+   */
+  mergeCommits: number;
+  /**
    * The admin-stated DEV/QA/OTH classification, or `null` when nobody has made
    * one. `null` is NOT `OTH`: `OTH` is a person deciding "none of these", and
    * null is nobody having decided at all. Never collapse them.
@@ -176,7 +187,10 @@ export interface ActiveDeveloper {
 
 export interface OverviewView {
   totals: {
+    /** Authored commits — merge commits excluded (METRICS.md §0). */
     commits: number;
+    /** Merge commits in the window, left out of `commits` and every LOC figure. */
+    mergeCommitsExcluded: number;
     /** Developers with any tracked signal in the window. */
     developersWithSignal: number;
     /** Developers known to the tenant at all — the honest denominator. */
@@ -265,6 +279,8 @@ export interface TrendMonth {
   deletions: number;
   /** Additions + deletions — the same "changed LOC" every other board reports. */
   locChanged: number;
+  /** Merge commits in the month, left out of `commits` and the LOC fields. */
+  mergeCommitsExcluded: number;
   /**
    * Whether collection had reached this month at all.
    *
@@ -395,8 +411,24 @@ export class DeveloperActivityService {
       { opened: number; merged: number }
     >();
 
+    // Merge commits count toward the signal sets (`committers`, and
+    // `activeDeveloperSet` below, shared with the digest) but not toward any
+    // commit count or LOC figure (METRICS.md §0, `merge-commits.ts`).
+    const mergesByDeveloper = new Map<string, number>();
+    let mergeCommitsExcluded = 0;
     for (const c of commits) {
       const person = attributeCommit(c, index);
+      if (isMergeCommit(c)) {
+        mergeCommitsExcluded += 1;
+        if (person) {
+          mergesByDeveloper.set(
+            person,
+            (mergesByDeveloper.get(person) ?? 0) + 1,
+          );
+          committers.add(person);
+        }
+        continue;
+      }
       if (person) {
         commitsByDeveloper.set(
           person,
@@ -458,7 +490,8 @@ export class DeveloperActivityService {
 
     return {
       totals: {
-        commits: commits.length,
+        commits: commits.length - mergeCommitsExcluded,
+        mergeCommitsExcluded,
         developersWithSignal: withSignal.size,
         developersKnown: index.displayNames.size,
         prsOpened: prs.length,
@@ -471,6 +504,7 @@ export class DeveloperActivityService {
         prsByDeveloper,
         index.displayNames,
         roles,
+        mergesByDeveloper,
       ),
       days: commitDays(commits, index),
       attribution: {
@@ -512,25 +546,36 @@ export class DeveloperActivityService {
     const tenantId = this.tenantContext.requireTenantId();
     const months = lastIstMonths(TREND_MONTHS, now);
 
-    const buckets = await Promise.all(
-      months.map((month) =>
-        this.prisma.commit.aggregate({
-          where: {
-            tenantId,
-            ...(repos.length > 0 ? { repoFullName: { in: repos } } : {}),
-            // By committer date, matching `listCommitsPage` — the two diverge
-            // on a rebase, and a trend bucketed differently from the day series
-            // above it would disagree with it about the same month.
-            committedAt: {
-              gte: istMonthStart(month),
-              lte: istMonthEnd(month),
-            },
-          },
-          _count: { _all: true },
-          _sum: { additions: true, deletions: true },
-        }),
+    const monthWhere = (month: string) => ({
+      tenantId,
+      ...(repos.length > 0 ? { repoFullName: { in: repos } } : {}),
+      // By committer date, matching `listCommitsPage` — the two diverge
+      // on a rebase, and a trend bucketed differently from the day series
+      // above it would disagree with it about the same month.
+      committedAt: {
+        gte: istMonthStart(month),
+        lte: istMonthEnd(month),
+      },
+    });
+    const [buckets, merges] = await Promise.all([
+      Promise.all(
+        months.map((month) =>
+          this.prisma.commit.aggregate({
+            // Merge commits out of both the count and the sums (METRICS.md §0).
+            where: { AND: [monthWhere(month), NOT_A_MERGE_COMMIT] },
+            _count: { _all: true },
+            _sum: { additions: true, deletions: true },
+          }),
+        ),
       ),
-    );
+      Promise.all(
+        months.map((month) =>
+          this.prisma.commit.count({
+            where: { AND: [monthWhere(month), MERGE_COMMIT] },
+          }),
+        ),
+      ),
+    ]);
 
     return {
       months: months.map((month, i) => {
@@ -542,6 +587,7 @@ export class DeveloperActivityService {
           additions,
           deletions,
           locChanged: additions + deletions,
+          mergeCommitsExcluded: merges[i],
           collected: monthCollected(month, collectedBackTo),
         };
       }),
@@ -1244,10 +1290,15 @@ export function activeDeveloperRoster(
   prsByDeveloper: ReadonlyMap<string, { opened: number; merged: number }>,
   displayNames: ReadonlyMap<string, string>,
   rolesByDeveloper: ReadonlyMap<string, DeveloperRoleValue> = new Map(),
+  mergesByDeveloper: ReadonlyMap<string, number> = new Map(),
 ): ActiveDeveloper[] {
+  // Merge-only contributors belong on the roster too: their merges are a
+  // signal (`activeDeveloperSet` counts them), so leaving them off would make
+  // the list shorter than the tile it explains.
   const everyone = new Set([
     ...commitsByDeveloper.keys(),
     ...prsByDeveloper.keys(),
+    ...mergesByDeveloper.keys(),
   ]);
   // Sorted alphabetically, and never by `locChanged`. LOC is the most misread
   // number on this page: ordering by it would make the roster a leaderboard by
@@ -1269,6 +1320,7 @@ export function activeDeveloperRoster(
         locChanged: additions + deletions,
         prsOpened: prs?.opened ?? 0,
         prsMerged: prs?.merged ?? 0,
+        mergeCommits: mergesByDeveloper.get(developer) ?? 0,
         // `?? null`, never `?? 'OTH'`. An unclassified developer is not one
         // somebody has decided is "other".
         role: rolesByDeveloper.get(developer) ?? null,
@@ -1296,6 +1348,11 @@ export interface ActivityDay {
    * tell when the day's LOC figure is partial; never read as "no work".
    */
   commitsWithoutLineChanges: number;
+  /**
+   * Merge commits that day, left out of `totalCommits`, the LOC fields and
+   * the contributor counts (METRICS.md §0) — disclosed, never silently dropped.
+   */
+  mergeCommitsExcluded: number;
   developers: { developer: string; displayName: string; commits: number }[];
   unattributedCommits: number;
 }
@@ -1318,6 +1375,7 @@ export function commitDays(
     authoredAt: Date;
     additions: number;
     deletions: number;
+    parentCount?: number | null;
   }[],
   index: {
     byLogin: Map<string, string>;
@@ -1330,6 +1388,7 @@ export function commitDays(
     additions: number;
     deletions: number;
     withoutLineChanges: number;
+    merges: number;
     unattributed: number;
     byDeveloper: Map<string, number>;
   }
@@ -1341,9 +1400,15 @@ export function commitDays(
       additions: 0,
       deletions: 0,
       withoutLineChanges: 0,
+      merges: 0,
       unattributed: 0,
       byDeveloper: new Map<string, number>(),
     };
+    byDay.set(day, acc);
+    if (isMergeCommit(c)) {
+      acc.merges += 1;
+      continue;
+    }
     acc.total += 1;
     acc.additions += c.additions;
     acc.deletions += c.deletions;
@@ -1366,6 +1431,7 @@ export function commitDays(
       deletions: acc.deletions,
       locChanged: acc.additions + acc.deletions,
       commitsWithoutLineChanges: acc.withoutLineChanges,
+      mergeCommitsExcluded: acc.merges,
       developers: [...acc.byDeveloper.entries()]
         .map(([developer, count]) => ({
           developer,
