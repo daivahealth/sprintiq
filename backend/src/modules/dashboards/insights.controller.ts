@@ -49,8 +49,17 @@ export const DASHBOARD_REGISTRY: {
     path: string;
     description: string;
   }[];
+  /**
+   * `'later'` puts the entry in the sidebar's collapsed **Later** group
+   * instead of the main list (decided 2026-10-15): the primary nav is cut to
+   * the boards in active use, and everything else stays one click away rather
+   * than being removed. Absent means primary. Omitted from the payload when
+   * absent, so a frontend that predates it renders every entry flat, as before.
+   */
+  group?: 'later';
 }[] = [
-  // First in the nav (moved 2026-09-04). This array's order IS the sidebar
+  // First in the nav (moved 2026-09-04); Sprint Health follows it, then the
+  // Later group (2026-10-15). This array's order IS the sidebar
   // order — `/assignments` filters by role and hands it over unchanged — so
   // position here is a product decision, not a listing detail.
   //
@@ -97,18 +106,26 @@ export const DASHBOARD_REGISTRY: {
     ],
   },
   {
-    key: 'delivery',
-    title: 'Delivery Explorer',
-    path: '/',
-    description: 'Any metric × scope × grouping over the delivery graph.',
-    roles: ALL_ROLES,
-  },
-  {
     key: 'sprint-health',
     title: 'Sprint Health',
     path: '/sprint-health',
     description: 'Committed vs completed, linkage coverage, by-type progress.',
     roles: ALL_ROLES,
+  },
+  // ── Later (2026-10-15) ──────────────────────────────────────────────────
+  // Everything below sits in the sidebar's collapsed Later group. The boards
+  // still work and keep their routes; they are just not the primary nav.
+  //
+  // Delivery Explorer was the `/` landing page until this change. It moved to
+  // `/delivery-explorer` so `/` can land on Engineering Activity, the first
+  // primary entry. Its `key` is unchanged — keys are role-assignment ids.
+  {
+    key: 'delivery',
+    title: 'Delivery Explorer',
+    path: '/delivery-explorer',
+    description: 'Any metric × scope × grouping over the delivery graph.',
+    roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'sprint-risk',
@@ -116,6 +133,7 @@ export const DASHBOARD_REGISTRY: {
     path: '/sprint-risk',
     description: 'Open items without code, open bugs, unestimated work.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'velocity',
@@ -123,6 +141,7 @@ export const DASHBOARD_REGISTRY: {
     path: '/velocity',
     description: 'Completed vs committed points per closed sprint.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'forecast',
@@ -130,6 +149,7 @@ export const DASHBOARD_REGISTRY: {
     path: '/forecast',
     description: 'Average velocity vs remaining backlog → projected finish.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'productivity',
@@ -137,6 +157,7 @@ export const DASHBOARD_REGISTRY: {
     path: '/productivity',
     description: 'Weekly throughput: items, points, merged PRs, changed LOC.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'efficiency',
@@ -144,6 +165,7 @@ export const DASHBOARD_REGISTRY: {
     path: '/efficiency',
     description: 'PR + story cycle times and Jira↔GitHub traceability.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'flow',
@@ -152,6 +174,7 @@ export const DASHBOARD_REGISTRY: {
     description:
       'Cycle time, WIP and ageing from the status-transition timeline.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'project-activity',
@@ -160,6 +183,7 @@ export const DASHBOARD_REGISTRY: {
     description:
       'Most-active projects (commits + LOC across mapped repos) by day/week/month.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   {
     key: 'top-repos',
@@ -167,6 +191,7 @@ export const DASHBOARD_REGISTRY: {
     path: '/top-repos',
     description: 'Repositories ranked by commit/LOC volume.',
     roles: ALL_ROLES,
+    group: 'later',
   },
   // Team Capacity was retired into Engineering Activity §Watchlist (2026-08-25).
   // It answered "who has no PR activity in this window" — the same question,
@@ -175,6 +200,26 @@ export const DASHBOARD_REGISTRY: {
   // question is the duplication this section was reorganised to remove; the
   // frontend redirects `/team-capacity` so existing links keep working.
 ];
+
+/**
+ * The registry entries a user with `userRoles` may see, in sidebar order.
+ *
+ * `children` and `group` are omitted rather than sent empty, so a frontend
+ * deployed before either existed sees exactly the payload it saw before.
+ */
+export function dashboardAssignments(userRoles: readonly string[]) {
+  const roles = new Set(userRoles);
+  return DASHBOARD_REGISTRY.filter((d) =>
+    d.roles.some((r) => roles.has(r)),
+  ).map(({ key, title, path, description, children, group }) => ({
+    key,
+    title,
+    path,
+    description,
+    ...(children ? { children } : {}),
+    ...(group ? { group } : {}),
+  }));
+}
 
 /** BC-13 insight endpoints backing the common dashboards. JWT + tenant-scoped. */
 @Controller('dashboards')
@@ -193,20 +238,7 @@ export class InsightsController {
   /** Dashboards visible to the current user's roles (role-based assignment). */
   @Get('assignments')
   assignments(@CurrentUser() user: AuthUser) {
-    const roles = new Set(user.roles);
-    return {
-      dashboards: DASHBOARD_REGISTRY.filter((d) =>
-        d.roles.some((r) => roles.has(r)),
-      ).map(({ key, title, path, description, children }) => ({
-        key,
-        title,
-        path,
-        description,
-        // Omitted rather than sent empty, so a frontend deployed before this
-        // change sees exactly the payload it saw yesterday.
-        ...(children ? { children } : {}),
-      })),
-    };
+    return { dashboards: dashboardAssignments(user.roles) };
   }
 
   /** Work-item detailing: story/bug/subtask/epic rows + linked PRs. */

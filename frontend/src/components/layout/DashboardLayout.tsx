@@ -1,13 +1,16 @@
-import { useEffect, type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useMe } from "../../lib/api/useMe";
 import { useAuthStore } from "../../lib/stores/auth-store";
+import { cn } from "../../lib/utils";
 import {
   useAssignments,
   type DashboardAssignment,
 } from "../../modules/dashboards/useInsights";
 import { ThemeToggle } from "../theme-toggle";
 import { NavItem, Spinner } from "../ui";
+import { isInGroup, splitNav } from "./nav-groups";
 
 /**
  * One nav entry, plus its subsections when it has any.
@@ -52,6 +55,45 @@ function NavSection({ item }: { item: DashboardAssignment }) {
   );
 }
 
+/**
+ * The boards that are not the primary nav (decided 2026-10-15), behind one
+ * disclosure at the foot of the sidebar.
+ *
+ * Closed by default, and open whenever the current page is one of its boards —
+ * otherwise a reader who followed a link to one would have no visible "you are
+ * here". The reader's own click wins either way.
+ */
+function LaterGroup({ items }: { items: DashboardAssignment[] }) {
+  const { pathname } = useLocation();
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const open = expanded ?? isInGroup(items, pathname);
+
+  return (
+    <div className="pt-3">
+      <button
+        type="button"
+        onClick={() => setExpanded(!open)}
+        aria-expanded={open}
+        aria-controls="nav-later"
+        className="flex w-full items-center justify-between rounded-sm px-3 py-2 text-xs font-semibold uppercase tracking-wide text-fg-faint transition hover:bg-subtle"
+      >
+        Later
+        <ChevronDown
+          className={cn("h-4 w-4 transition", open ? "rotate-180" : "")}
+          aria-hidden
+        />
+      </button>
+      {open && (
+        <div id="nav-later" className="mt-1 space-y-1">
+          {items.map((item) => (
+            <NavSection key={item.key} item={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DashboardLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
@@ -63,7 +105,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const me = useMe();
   // Role-assigned dashboards drive the nav (no persona pages).
   const assignments = useAssignments();
-  const nav = assignments.data?.dashboards ?? [];
+  const { primary, later } = splitNav(assignments.data?.dashboards ?? []);
   const isAdmin = user?.roles.includes("admin") ?? false;
   useEffect(() => {
     if (me.data) {
@@ -102,7 +144,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
           {tenant?.name ?? "—"}
         </p>
         <nav className="space-y-1">
-          {nav.map((item) => (
+          {primary.map((item) => (
             <NavSection key={item.key} item={item} />
           ))}
           {assignments.isLoading && (
@@ -110,8 +152,8 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
           )}
           {isAdmin && (
             <>
-              <NavItem to="/admin/users">Users & Roles</NavItem>
               <NavItem to="/admin/configuration">Configuration</NavItem>
+              <NavItem to="/admin/users">Users & Roles</NavItem>
               <NavItem
                 to="/admin/tracked-developers"
                 title="Who the daily no-activity digest reports on"
@@ -126,6 +168,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
               </NavItem>
             </>
           )}
+          {later.length > 0 && <LaterGroup items={later} />}
         </nav>
         <p className="mt-auto px-2 text-xs text-fg-faint">
           Engineering Intelligence
