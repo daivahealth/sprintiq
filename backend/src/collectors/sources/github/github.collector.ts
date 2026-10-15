@@ -26,6 +26,7 @@ import {
   GithubPullReviews,
   GithubReviewComments,
 } from './github.client';
+import { buildCommitEnvelope } from './github-commit-envelope';
 import {
   GITHUB_SOURCE_CLIENT,
   GithubPageRef,
@@ -1075,21 +1076,13 @@ export class GithubCollector extends BaseSourceCollector {
     repoFullName: string,
     payload: CodeCommitPayload,
   ): CanonicalEnvelope {
-    return {
-      schemaVersion: '1.0',
-      eventId: newId(),
-      // Deterministic so a webhook push and a backfilled pull converge on one row.
-      idempotencyKey: `github:${repoFullName}:commit:${payload.sha}`,
-      sourceSystem: 'github',
+    return buildCommitEnvelope({
       connectionId: connection.id,
-      collectionMode: mode,
-      eventType: EventTypes.CODE_COMMIT_PUSHED,
-      occurredAt: payload.authoredAt,
+      mode,
+      repoFullName,
+      payload,
       collectedAt: this.nowIso(),
-      externalRefs: { repo: repoFullName, sha: payload.sha },
-      actor: { sourceLogin: payload.authorLogin },
-      data: payload as unknown as Record<string, unknown>,
-    };
+    });
   }
 
   private prEnvelope(

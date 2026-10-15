@@ -11,6 +11,7 @@ import {
 } from 'class-validator';
 import { AppRole } from './app-role';
 import { isValidTriStateFlagValue } from './env-flags';
+import { readGithubAuditConfig } from '../collectors/sources/github/github-audit.config';
 
 /**
  * class-validator decorator for a tri-state deployment flag env var: valid
@@ -85,6 +86,16 @@ class EnvironmentVariables {
 }
 
 export function validateEnv(config: Record<string, unknown>) {
+  // Parsed by the same function the sync uses, so boot and runtime can never
+  // disagree about what a value means.
+  try {
+    readGithubAuditConfig(config as NodeJS.ProcessEnv);
+  } catch (err) {
+    throw new Error(
+      `Environment validation failed:\n  - ${(err as Error).message}`,
+    );
+  }
+
   const validated = plainToInstance(EnvironmentVariables, config, {
     enableImplicitConversion: true,
   });

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Connection } from '@prisma/client';
+import { forEachBounded } from '../../common/concurrency';
 import { newId } from '../../common/id';
 import { IST_TIMEZONE } from '../../common/time';
 import { TenantContextService } from '../../common/tenancy/tenant-context.service';
@@ -177,7 +178,7 @@ export class CollectorSchedulerService {
     }
 
     try {
-      await this.forEachBounded(due, SWEEP_CONCURRENCY, async (connection) => {
+      await forEachBounded(due, SWEEP_CONCURRENCY, async (connection) => {
         await this.syncOne(connection, {
           peersDue: dueByCredential.get(credentialKey(connection)) ?? 1,
         });
@@ -195,53 +196,6 @@ export class CollectorSchedulerService {
         where: { sourceSystem },
         data: { finishedAt: new Date() },
       });
-    }
-  }
-
-  /**
-   * Runs `fn` over `items` with at most `limit` in flight.
-   *
-   * A serial sweep of 195 connections runs for tens of minutes, so wall-clock —
-   * not the API budget — became what bounded how often any one connection was
-   * reached. Overlapping a few is safe *because* spend is now governed by the
-   * shared per-sweep budget rather than by how many run at once; doing this
-   * before that change would simply have hit the rate limit faster.
-   *
-   * `allSettled`, not `all`: `all` rejects on the first failure while the other
-   * workers are still running, so the caller's `finally` would stamp the sweep
-   * finished with connections still mid-flight. Every worker is drained first,
-   * then the first real error is rethrown so it still propagates.
-   */
-  private async forEachBounded<T>(
-    items: T[],
-    limit: number,
-    fn: (item: T) => Promise<void>,
-  ): Promise<void> {
-    let next = 0;
-    let firstError: unknown;
-    // Safe without a lock: the read-and-increment is synchronous, and JS runs
-    // it to completion before any other worker resumes.
-    const worker = async (): Promise<void> => {
-      while (next < items.length) {
-        try {
-          await fn(items[next++]);
-        } catch (err) {
-          // Caught per ITEM, not per worker. Letting it escape the loop would
-          // stop this worker consuming at all, so a handful of transient DB
-          // errors would silently abandon every remaining connection while the
-          // caller's `finally` still stamped the sweep finished. One bad item
-          // must cost one item.
-          firstError ??= err;
-        }
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(limit, items.length) }, worker),
-    );
-    // Every worker has drained before this point, so the caller's `finally`
-    // can close the sweep out knowing nothing is still in flight.
-    if (firstError !== undefined) {
-      throw firstError;
     }
   }
 

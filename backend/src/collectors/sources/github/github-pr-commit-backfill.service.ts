@@ -1,11 +1,10 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CodeCommitPayload } from '../../../common/events/contracts';
-import { EventTypes } from '../../../common/events/event-types';
-import { newId } from '../../../common/id';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { CanonicalEnvelope } from '../../ingestion/canonical-envelope';
 import { IngestionService } from '../../ingestion/ingestion.service';
+import { buildCommitEnvelope } from './github-commit-envelope';
 import { evaluateBudget } from './github-rate-budget';
 import {
   GITHUB_SOURCE_CLIENT,
@@ -272,20 +271,12 @@ export class GithubPrCommitBackfillService {
       deletions: commit.deletions,
       filesChanged: commit.filesChanged,
     };
-    return {
-      schemaVersion: '1.0',
-      eventId: newId(),
-      idempotencyKey: `github:${repoFullName}:commit:${commit.sha}`,
-      sourceSystem: 'github',
+    return buildCommitEnvelope({
       connectionId,
-      collectionMode: 'backfill',
-      eventType: EventTypes.CODE_COMMIT_PUSHED,
-      occurredAt: authoredAt,
-      collectedAt: new Date().toISOString(),
-      externalRefs: { repo: repoFullName, sha: commit.sha },
-      actor: { sourceLogin: commit.authorLogin },
-      data: payload as unknown as Record<string, unknown>,
-    };
+      mode: 'backfill',
+      repoFullName,
+      payload,
+    });
   }
 }
 
