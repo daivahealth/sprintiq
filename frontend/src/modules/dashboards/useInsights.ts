@@ -248,8 +248,8 @@ export interface ProjectActivityRow {
    */
   unattributedCommits?: number;
   /**
-   * Commits that recorded no line changes (merges, or line stats not collected
-   * yet) — discloses when `locChanged` is partial. Optional for the same
+   * Commits that recorded no line changes (line stats not collected
+   * yet, or commits that change no lines) — discloses when `locChanged` is partial. Optional for the same
    * reason as `unattributedCommits`; absent means unknown, never zero.
    */
   commitsWithoutLineChanges?: number;

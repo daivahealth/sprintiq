@@ -71,8 +71,8 @@ export function ProjectActivityChart({
   if (maxLoc === 0) {
     return (
       <p className="py-6 text-center text-sm text-fg-faint">
-        Commits in this window recorded no line changes (merge commits, or line
-        stats not collected yet).
+        Commits in this window recorded no line changes (line stats not collected
+        yet, or commits that change no lines).
       </p>
     );
   }

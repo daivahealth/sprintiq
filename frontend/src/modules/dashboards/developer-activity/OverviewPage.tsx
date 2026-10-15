@@ -26,6 +26,7 @@ import {
 } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
 import { CurrentLensNote } from './CurrentLensNote';
+import { hasDailyLoc, timelineMetric, timelineValue } from './timeline-metric';
 import {
   EmptyWindowNote,
   formatDayKey,
@@ -495,8 +496,9 @@ function formatMonthBoundary(iso: string | null): string {
 }
 
 /**
- * Team changed LOC per day (commits on an API that predates the per-day LOC
- * fields), where each bar opens that day's contributors.
+ * Team changed LOC per day by default, with a Lines of code / Commits toggle
+ * like the 12-month trend's (commits only, and no toggle, on an API that
+ * predates the per-day LOC fields). Each bar opens that day's contributors.
  *
  * The bars are TEAM totals. The drill-down still lists people by commits only
  * and alphabetically: per-person LOC in a day list would turn line counts into
@@ -523,20 +525,29 @@ function CommitTimeline({
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const [sort, setSort] = useState<'name' | 'commits'>('name');
-  // Every day must carry the field: a mixed response would draw some bars in
-  // lines and some in commits on one axis.
-  const byLoc =
-    days.length > 0 && days.every((d) => typeof d.locChanged === 'number');
-  const value = (d: ActivityDay) =>
-    byLoc ? (d.locChanged ?? 0) : d.totalCommits;
+  // Changed LOC leads, as on the 12-month trend; commits stay one click away.
+  // Like the sort, never persisted.
+  const [requested, setRequested] = useState<TrendMetric>('loc');
+  const locAvailable = hasDailyLoc(days);
+  const metric = timelineMetric(days, requested);
+  const byLoc = metric === 'loc';
+  const value = (d: ActivityDay) => timelineValue(d, metric);
   const withoutLines = byLoc
     ? days.reduce((n, d) => n + (d.commitsWithoutLineChanges ?? 0), 0)
     : 0;
+  const header = (
+    <Header
+      sort={sort}
+      setSort={setSort}
+      metric={metric}
+      setMetric={locAvailable ? setRequested : undefined}
+    />
+  );
 
   if (days.length === 0) {
     return (
       <Card className="space-y-4">
-        <Header sort={sort} setSort={setSort} byLoc={false} />
+        {header}
         {emptyState}
       </Card>
     );
@@ -558,7 +569,7 @@ function CommitTimeline({
 
   return (
     <Card className="space-y-4">
-      <Header sort={sort} setSort={setSort} byLoc={byLoc} />
+      {header}
 
       {/* `items-stretch`, never `items-end`. Each bar's height is a PERCENTAGE
           of its button, and a percentage height resolves to `auto` — zero —
@@ -583,8 +594,10 @@ function CommitTimeline({
               role="listitem"
               onClick={() => setOpen(isOpen ? null : day.date)}
               title={
-                byLoc
-                  ? `${formatDayKey(day.date)} — ${(day.locChanged ?? 0).toLocaleString()} lines changed · ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'}`
+                locAvailable
+                  ? byLoc
+                    ? `${formatDayKey(day.date)} — ${(day.locChanged ?? 0).toLocaleString()} lines changed · ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'}`
+                    : `${formatDayKey(day.date)} — ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'} · ${(day.locChanged ?? 0).toLocaleString()} lines changed`
                   : `${formatDayKey(day.date)} — ${day.totalCommits} commits`
               }
               aria-expanded={isOpen}
@@ -625,7 +638,7 @@ function CommitTimeline({
               {formatDayKey(openDay.date)}
             </span>
             <span className="text-xs tabular-nums text-fg-subtle">
-              {byLoc && (
+              {locAvailable && (
                 <>
                   {(openDay.locChanged ?? 0).toLocaleString()} lines changed (+
                   {(openDay.additions ?? 0).toLocaleString()} −
@@ -672,8 +685,8 @@ function CommitTimeline({
             <>
               {' '}
               {withoutLines} commit{withoutLines === 1 ? '' : 's'} in this
-              window recorded no line changes (merge commits, or line stats not
-              collected yet), so line totals may be partial.
+              window recorded no line changes (line stats not collected yet, or
+              commits that change no lines), so line totals may be partial.
             </>
           )}
         </ProvenanceNote>
@@ -685,31 +698,49 @@ function CommitTimeline({
 function Header({
   sort,
   setSort,
-  byLoc,
+  metric,
+  setMetric,
 }: {
   sort: 'name' | 'commits';
   setSort: (s: 'name' | 'commits') => void;
-  byLoc: boolean;
+  metric: TrendMetric;
+  /** Absent when the API sends no per-day LOC: there is nothing to toggle to. */
+  setMetric?: (m: TrendMetric) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <h3 className="font-semibold text-fg">
-          {byLoc ? 'Lines of code changed over time' : 'Commits over time'}
+          {metric === 'loc'
+            ? 'Lines of code changed over time'
+            : 'Commits over time'}
         </h3>
         <p className="text-xs text-fg-subtle">
           One bar per IST day — select one to see that day’s contributors
         </p>
       </div>
-      <SegmentedControl
-        label="Sort"
-        value={sort}
-        onChange={setSort}
-        options={[
-          { value: 'name', label: 'A–Z' },
-          { value: 'commits', label: 'Most commits' },
-        ]}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        {setMetric && (
+          <SegmentedControl
+            label="Metric"
+            value={metric}
+            onChange={setMetric}
+            options={[
+              { value: 'loc', label: 'Lines of code' },
+              { value: 'commits', label: 'Commits' },
+            ]}
+          />
+        )}
+        <SegmentedControl
+          label="Sort"
+          value={sort}
+          onChange={setSort}
+          options={[
+            { value: 'name', label: 'A–Z' },
+            { value: 'commits', label: 'Most commits' },
+          ]}
+        />
+      </div>
     </div>
   );
 }

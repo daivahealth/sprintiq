@@ -57,8 +57,8 @@ export function CommitChart({
     return (
       <p className="py-6 text-center text-sm text-fg-faint">
         The {totalCommits} commit{totalCommits === 1 ? '' : 's'} in this window
-        recorded no line changes (merge commits, or line stats not collected
-        yet). Switch to Commits to see them.
+        recorded no line changes (line stats not collected yet, or commits
+        that change no lines). Switch to Commits to see them.
       </p>
     );
   }

@@ -153,8 +153,8 @@ export function ProjectActivityBoard() {
               <>
                 {' '}
                 {withoutLines} commit{withoutLines === 1 ? '' : 's'} in this
-                window recorded no line changes (merge commits, or line stats not
-                collected yet), so line totals may be partial.
+                window recorded no line changes (line stats not collected yet, or
+                commits that change no lines), so line totals may be partial.
               </>
             )}{' '}
             Repos linked to no project are reported under “(unlinked repos)”.

@@ -1291,8 +1291,8 @@ export interface ActivityDay {
   deletions: number;
   locChanged: number;
   /**
-   * Commits that recorded no line changes at all — merge commits, or commits
-   * whose line stats have not been collected yet. Disclosed so a reader can
+   * Commits that recorded no line changes at all — commits whose line stats
+   * have not been collected yet, or that change no lines. Disclosed so a reader can
    * tell when the day's LOC figure is partial; never read as "no work".
    */
   commitsWithoutLineChanges: number;

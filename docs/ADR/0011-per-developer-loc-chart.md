@@ -24,7 +24,7 @@ The Developer page's daily chart gains a **Lines of code | Commits** toggle, wit
 This is a third, independent exception to the ethics rule. It inherits nothing from the 2026-09-07 or 2026-09-18 decisions, and it is conditioned like them:
 
 1. **The rule ships with the figure.** Directly under the chart, the page states that changed LOC is volume, not productivity, and that a large number is a large diff, nothing more.
-2. **A partial figure is disclosed.** When some of the developer's commits in the window recorded no line changes (merge commits, or commits whose line stats are not collected yet), the page says how many. A chart with commits but no line changes says so instead of drawing an empty axis.
+2. **A partial figure is disclosed.** When some of the developer's commits in the window recorded no line changes (commits whose line stats are not collected yet, or that change no lines), the page says how many. A chart with commits but no line changes says so instead of drawing an empty axis.
 3. **No comparison with anyone else.** The Developer page shows no rank, percentile, team average or other developer's figure next to the chart.
 
 ## Consequences
@@ -34,6 +34,7 @@ This is a third, independent exception to the ethics rule. It inherits nothing f
   - the Overview roster still never sorts by LOC;
   - the daily timeline's drill-down still lists contributors by commits, alphabetically.
   Each of those would need its own decision.
+- **Merge commits inflate LOC until they are excluded.** This decision assumed a merge commit records no line changes. Measured on 2026-10-15, 98% of merge commits carry line counts: GitHub reports a merge commit's diff against its first parent, so a merged branch's lines are counted twice, and they are credited to whoever merged it. On 2026-10-14 merges were 51,197 of the 125,644 changed lines (41%). METRICS.md §0 already requires merge commits to be excluded from authorship churn. Until that lands (api/README.md §12 row 12), any per-person LOC figure on this page can include lines the person merged rather than wrote.
 - Line stats are only as complete as collection. Commits ingested without stats show 0 lines until the commit-stats reconciler fills them, which is why condition 2 exists.
 
 ## Alternatives considered

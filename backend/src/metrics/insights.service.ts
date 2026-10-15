@@ -364,8 +364,8 @@ export interface ProjectActivityRow {
    */
   unattributedCommits: number;
   /**
-   * Commits in this row that recorded no line changes — merge commits, or
-   * commits whose line stats are not collected yet. Disclosed so a reader can
+   * Commits in this row that recorded no line changes — commits whose line
+   * stats are not collected yet, or that change no lines. Disclosed so a reader can
    * tell when `locChanged` is partial.
    */
   commitsWithoutLineChanges: number;
@@ -437,8 +437,8 @@ export interface DeveloperActivityView {
     prsMerged: number;
     activeRepos: number;
     /**
-     * Commits that recorded no line changes (merges, or stats not collected
-     * yet). Disclosed beside the LOC chart so a partial figure is never
+     * Commits that recorded no line changes (stats not collected yet,
+     * or no lines changed). Disclosed beside the LOC chart so a partial figure is never
      * mistaken for a quiet day.
      */
     commitsWithoutLineChanges: number;
