@@ -233,6 +233,16 @@ An unrecognised value (e.g. `DIGEST_CRON_ENABLED=flase`) fails `validateEnv` at 
 
 ---
 
+### 6.6 Merge-commit parent-count backfill (one-off, 2026-10-15)
+
+Migration `20261015130000_add_commit_parent_count` adds `code_commit.parentCount`. New commits carry it from collection; history needs one backfill, after which merge commits drop out of every commit-based count and LOC figure (METRICS.md §0):
+
+1. Apply the migration (on the host: `npx prisma migrate deploy` by hand — it does not self-apply; see §3.1).
+2. Deploy the backend, then call `POST /api/admin/configurations/github/reconcile-commit-parents` as an admin, passing each response's `nextCursor` back as `?after=` until `done: true` (api/README.md §9). On the GraphQL transport each 5,000-commit pass costs about 50 GraphQL points; the reference tenant took 15 passes.
+3. Expect activity LOC to fall sharply (43% on the reference tenant) the moment the backfill lands. That is the correction, not a regression — every view states how many merges it left out.
+
+Until the backfill finishes, un-backfilled commits count as ordinary commits, so figures move gradually toward the corrected value; nothing is ever over-excluded.
+
 ## 7. Data, backup & retention
 
 - **PostgreSQL:** automated backups + PITR; the **raw-event store is the replay source of truth** — protect it (it lets you recompute graph/metrics after logic changes). Retention/archival policy configurable per tenant (compliance).

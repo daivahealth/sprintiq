@@ -14,6 +14,8 @@ export interface TrendMonth {
   additions: number;
   deletions: number;
   locChanged: number;
+  /** Merge commits left out of the month's figures (METRICS.md §0). Optional: an older API omits it. */
+  mergeCommitsExcluded?: number;
   collected: boolean;
 }
 

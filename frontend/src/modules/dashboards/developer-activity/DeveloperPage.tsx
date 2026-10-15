@@ -13,6 +13,7 @@ import { timeAgo } from '../../../lib/utils';
 import { CommitChart, type DailyMetric } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
 import { BarList, ErrorCard, LoadingCard, Stat, TypeBadge } from '../widgets';
+import { mergeExclusionNote } from '../merge-commits';
 import { CurrentLensNote } from './CurrentLensNote';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
@@ -215,6 +216,9 @@ export function DeveloperPage() {
                     totals may be partial.
                   </>
                 )}
+                {mergeExclusionNote(d.totals.mergeCommitsExcluded) && (
+                  <> {mergeExclusionNote(d.totals.mergeCommitsExcluded)}</>
+                )}
               </ProvenanceNote>
             </div>
           </Card>
@@ -252,10 +256,22 @@ export function DeveloperPage() {
                   <span className="min-w-0 flex-1 truncate text-fg-secondary">
                     {c.message}
                   </span>
-                  <span className="shrink-0 tabular-nums text-xs">
-                    <span className="text-success-fg">+{c.additions}</span>{' '}
-                    <span className="text-danger-fg">−{c.deletions}</span>
-                  </span>
+                  {/* A merge stays in the list — it happened — but its lines
+                      are the merged branch's again and are in no total above,
+                      so they are not shown as this person's. */}
+                  {c.isMerge ? (
+                    <span
+                      className="shrink-0 text-xs text-fg-faint"
+                      title="Merge commit — its lines are the merged branch's, not counted in any total"
+                    >
+                      merge
+                    </span>
+                  ) : (
+                    <span className="shrink-0 tabular-nums text-xs">
+                      <span className="text-success-fg">+{c.additions}</span>{' '}
+                      <span className="text-danger-fg">−{c.deletions}</span>
+                    </span>
+                  )}
                   <span
                     className="w-20 shrink-0 text-right text-xs text-fg-faint"
                     title={`Authored ${timeAgo(c.authoredAt)}`}
