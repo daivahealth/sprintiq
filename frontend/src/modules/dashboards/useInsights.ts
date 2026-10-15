@@ -23,6 +23,11 @@ export interface DashboardAssignment {
     path: string;
     description: string;
   }[];
+  /**
+   * `'later'` puts the entry in the sidebar's collapsed Later group. Optional:
+   * an API that predates it sends none, and every entry is then primary.
+   */
+  group?: 'later';
 }
 
 export interface LinkedPr {
