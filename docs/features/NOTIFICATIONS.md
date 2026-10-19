@@ -14,6 +14,8 @@ This is an attributed, individual-naming feature, which CLAUDE.md's "Metrics are
 
 ---
 
+**The same list in the app (2026-10-19, [ADR-0009](../ADR/0009-attributed-commit-digest.md) amendment).** Admins see the list for any working day on the Engineering Activity Watchlist (DASHBOARDS.md §4.4.2). It is the digest's own `detect`, not a second implementation: one rule, one rule sentence (`common/digest-rule.ts`), two surfaces. It reads only, writes no run row, posts nothing, and audit-logs every view. When the day's Teams card was sent, it also lists who that card named but who has since shown work for the day (a push after the 10:30 IST read).
+
 ## 2. The rule
 
 **Roster minus the active set for the reported day, in one sentence.** Everything else in this document is that subtraction plus the guards that stop it naming someone unfairly.

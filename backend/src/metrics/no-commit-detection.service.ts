@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { DIGEST_RULE_TEXT } from '../common/digest-rule';
 import { GithubAuditSyncService } from '../collectors/sources/github/github-audit-sync.service';
 import {
   isAnonymizedAccount,
@@ -78,6 +79,39 @@ export type DigestOutcome =
 export interface NamedDeveloper {
   developer: string;
   displayName: string;
+}
+
+/**
+ * The previous-working-day list as the admin-only Watchlist view shows it
+ * (ADR-0009, 2026-10-19 amendment). Computed by the same `detect` the Teams
+ * digest uses, so the two can never disagree about a day.
+ */
+export interface PreviousDayView {
+  day: string;
+  /** `named` (people listed), `all_clear`, or `withheld` (see `withheld`). */
+  outcome: 'named' | 'all_clear' | 'withheld';
+  /** Why names are withheld, as the digest would record it. Null otherwise. */
+  withheld: { outcome: DigestOutcome; detail: string } | null;
+  ruleText: string;
+  rosterCount: number;
+  /** Empty whenever `withheld` is set — the same invariant as the digest. */
+  flagged: NamedDeveloper[];
+  unresolved: { developer: string; addedAs: string }[];
+  incomplete: NamedDeveloper[];
+  unattributedCommits: number;
+  /** The Teams run for this day, if one happened. */
+  lastDigestRun: {
+    outcome: string;
+    deliveredAt: Date | null;
+    flaggedCount: number;
+  } | null;
+  /**
+   * Named on that day's Teams card but no longer on the list now — usually
+   * because they pushed that day's work after the digest ran (it reads at
+   * 10:30 IST). Shown so the card's mistake is visible where admins look,
+   * without posting a second message to the channel.
+   */
+  namedThenNowActive: NamedDeveloper[];
 }
 
 export interface RosterEvaluation {
@@ -246,6 +280,58 @@ export class NoCommitDetectionService {
     // pre-audit-route behaviour — Nest itself never constructs it that way.
     private readonly auditSync?: GithubAuditSyncService,
   ) {}
+
+  /**
+   * The admin-only Watchlist view of one day's list (ADR-0009, 2026-10-19
+   * amendment). Read-only: it runs the digest's own `detect` and reads the
+   * day's run row, and writes nothing — not a run row, not a message.
+   */
+  async previousDayView(
+    tenantId: string,
+    day: string,
+  ): Promise<PreviousDayView> {
+    const [detected, run] = await Promise.all([
+      this.detect(tenantId, day),
+      this.prisma.noCommitDigestRun.findUnique({
+        where: { tenantId_reportedDay: { tenantId, reportedDay: day } },
+        select: {
+          outcome: true,
+          deliveredAt: true,
+          flaggedCount: true,
+          flagged: true,
+        },
+      }),
+    ]);
+    const { evaluation, withhold } = detected;
+    const flagged = withhold ? [] : evaluation.flagged;
+    const nowFlagged = new Set(flagged.map((f) => f.developer));
+    const namedThen = Array.isArray(run?.flagged)
+      ? (run.flagged as unknown as NamedDeveloper[])
+      : [];
+    return {
+      day,
+      outcome: withhold ? 'withheld' : flagged.length ? 'named' : 'all_clear',
+      withheld: withhold,
+      ruleText: DIGEST_RULE_TEXT,
+      rosterCount: detected.rosterCount,
+      flagged,
+      unresolved: evaluation.unresolved,
+      incomplete: evaluation.incomplete,
+      unattributedCommits: detected.unattributedCommits,
+      lastDigestRun: run
+        ? {
+            outcome: run.outcome,
+            deliveredAt: run.deliveredAt,
+            flaggedCount: run.flaggedCount,
+          }
+        : null,
+      // Only meaningful when today's evaluation itself is not withheld: a
+      // withheld recomputation has no list to compare against.
+      namedThenNowActive: withhold
+        ? []
+        : namedThen.filter((n) => !nowFlagged.has(n.developer)),
+    };
+  }
 
   async detect(
     tenantId: string,

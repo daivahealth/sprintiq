@@ -104,7 +104,8 @@ The tracked-roster inactivity digest to Microsoft Teams (BC-15, [features/NOTIFI
 
 - **`{GET,PUT,DELETE} /dashboards/tracked-developers[/{developer}]`** — admin-only, audited by the global mutating-request interceptor, same pattern as watchlist exclusions and developer roles above. `DELETE` deactivates rather than deletes, for the same accountability reason: a roster with no record of who removed an entry, and when, is unauditable.
 - **`POST /admin/notifications/no-commit-digest/run`** — admin-only. Triggers detection (and, unless `dryRun`, delivery) for the caller's own tenant only; the tenant is taken from the JWT, never a request field.
-- Both routes are guarded server-side by `@Roles(Role.ADMIN)`, the same enforcement point as every other admin-only route in this document — no client-side gate is trusted.
+- **`GET /dashboards/developer-activity/watchlist/previous-day`** (2026-10-19) — admin-only. The digest's list for one day, in the app (ADR-0009 amendment). Read-only, and every view is audit-logged (`dashboards.watchlist.previous_day.view`), since unlike the routes above it is a read that names people.
+- All three routes are guarded server-side by `@Roles(Role.ADMIN)`, the same enforcement point as every other admin-only route in this document — no client-side gate is trusted.
 
 ---
 

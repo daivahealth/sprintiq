@@ -14,7 +14,9 @@ import {
   type WatchlistView,
 } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
+import { useAuthStore } from '../../../lib/stores/auth-store';
 import { CurrentLensNote } from './CurrentLensNote';
+import { PreviousDayCard } from './PreviousDayCard';
 import { useSectionRange } from './window';
 
 /**
@@ -56,6 +58,9 @@ export function WatchlistPage() {
   const { range } = useSectionRange();
   const query = useWatchlist(range);
   const d = query.data;
+  // The previous-day list names people; it is for admins only (ADR-0009,
+  // 2026-10-19 amendment). The API refuses non-admins as well.
+  const isAdmin = useAuthStore((s) => s.user?.roles.includes('admin')) ?? false;
 
   if (query.isLoading) return <LoadingCard />;
   if (query.isError) return <ErrorCard error={query.error} />;
@@ -74,6 +79,8 @@ export function WatchlistPage() {
         design, support and review outside GitHub all leave nothing here. Share
         individual cases only with the person’s manager, in conversation.
       </div>
+
+      {isAdmin && <PreviousDayCard />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <BucketColumn

@@ -4,7 +4,9 @@ import { DeveloperIdentityService } from '../correlation/developer-identity.serv
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
 import { ConnectionsService } from '../modules/connections/connections.service';
+import { DIGEST_RULE_TEXT } from '../common/digest-rule';
 import {
+  DigestDetection,
   IMPLAUSIBLE_FLAGGED_SHARE,
   NoCommitDetectionService,
   evaluateRoster,
@@ -339,5 +341,143 @@ describe('NoCommitDetectionService dependency injection (ethics gate)', () => {
     expect((svc as unknown as { auditSync: unknown }).auditSync).toBe(
       auditSync,
     );
+  });
+});
+
+describe('NoCommitDetectionService.previousDayView (admin Watchlist view)', () => {
+  const alice = { developer: 'alice', displayName: 'Alice' };
+  const bob = { developer: 'bob', displayName: 'Bob' };
+
+  function setup(
+    detection: Partial<DigestDetection>,
+    run: Record<string, unknown> | null,
+  ) {
+    const prisma = {
+      noCommitDigestRun: { findUnique: jest.fn().mockResolvedValue(run) },
+    };
+    const svc = new NoCommitDetectionService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    jest.spyOn(svc, 'detect').mockResolvedValue({
+      reportedDay: '2026-10-16',
+      rosterCount: 66,
+      evaluation: {
+        flagged: [],
+        unresolved: [],
+        incomplete: [],
+        suppressed: [],
+      },
+      withhold: null,
+      unattributedCommits: 0,
+      ...detection,
+    } as DigestDetection);
+    return { svc, prisma };
+  }
+
+  it('lists the flagged people with the digest rule text, and reads only', async () => {
+    const { svc, prisma } = setup(
+      {
+        evaluation: {
+          flagged: [alice],
+          unresolved: [{ developer: 'x', addedAs: 'x' }],
+          incomplete: [bob],
+          suppressed: [],
+        },
+      },
+      null,
+    );
+    const view = await svc.previousDayView('t1', '2026-10-16');
+    expect(svc.detect).toHaveBeenCalledWith('t1', '2026-10-16');
+    expect(prisma.noCommitDigestRun.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          tenantId_reportedDay: { tenantId: 't1', reportedDay: '2026-10-16' },
+        },
+      }),
+    );
+    expect(view).toMatchObject({
+      day: '2026-10-16',
+      outcome: 'named',
+      flagged: [alice],
+      unresolved: [{ developer: 'x', addedAs: 'x' }],
+      incomplete: [bob],
+      rosterCount: 66,
+      lastDigestRun: null,
+      namedThenNowActive: [],
+    });
+    expect(view.ruleText).toBe(DIGEST_RULE_TEXT);
+  });
+
+  it('names no one when the gates withhold, and says why', async () => {
+    const { svc } = setup(
+      {
+        evaluation: {
+          flagged: [alice],
+          unresolved: [],
+          incomplete: [],
+          suppressed: [],
+        },
+        withhold: {
+          outcome: 'withheld_stale_data',
+          detail: 'audit log behind',
+        },
+      },
+      null,
+    );
+    const view = await svc.previousDayView('t1', '2026-10-16');
+    expect(view.outcome).toBe('withheld');
+    expect(view.flagged).toEqual([]);
+    expect(view.withheld).toEqual({
+      outcome: 'withheld_stale_data',
+      detail: 'audit log behind',
+    });
+  });
+
+  it('reports the all-clear when the roster had nobody to name', async () => {
+    const { svc } = setup({}, null);
+    expect((await svc.previousDayView('t1', '2026-10-16')).outcome).toBe(
+      'all_clear',
+    );
+  });
+
+  it('shows who the Teams card named but who has since shown work (late pushes)', async () => {
+    const { svc } = setup(
+      {
+        evaluation: {
+          flagged: [alice],
+          unresolved: [],
+          incomplete: [],
+          suppressed: [],
+        },
+      },
+      {
+        outcome: 'sent',
+        deliveredAt: new Date('2026-10-17T05:00:00Z'),
+        flaggedCount: 2,
+        flagged: [alice, bob],
+      },
+    );
+    const view = await svc.previousDayView('t1', '2026-10-16');
+    expect(view.lastDigestRun).toEqual({
+      outcome: 'sent',
+      deliveredAt: new Date('2026-10-17T05:00:00Z'),
+      flaggedCount: 2,
+    });
+    expect(view.namedThenNowActive).toEqual([bob]);
+  });
+
+  it("does not claim anyone became active while today's evaluation is withheld", async () => {
+    const { svc } = setup(
+      {
+        withhold: { outcome: 'withheld_truncated_read', detail: 'read cap' },
+      },
+      { outcome: 'sent', deliveredAt: null, flaggedCount: 1, flagged: [bob] },
+    );
+    expect(
+      (await svc.previousDayView('t1', '2026-10-16')).namedThenNowActive,
+    ).toEqual([]);
   });
 });
