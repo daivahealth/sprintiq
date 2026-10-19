@@ -164,8 +164,7 @@ export class GithubCommitReconcilerService {
           select: { secretRef: true },
         });
         token = connection
-          ? ((await this.secrets.resolve(tenantId, connection.secretRef)) ??
-            '')
+          ? ((await this.secrets.resolve(tenantId, connection.secretRef)) ?? '')
           : '';
         tokenCache.set(connectionId, token);
       }
