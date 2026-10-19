@@ -272,12 +272,20 @@ model GithubPushRange {
   headSha          String?
   kind             String // moved | new_ref | deleted
   auditDocumentIds Json
-  status           String   @default("pending") // pending | shadowed | done | failed
+  status           String   @default("pending") // pending | shadowed | done | failed | dismissed
   attempts         Int      @default(0)
   commitsFound     Int      @default(0)
   alreadyPresent   Int      @default(0)
   ingested         Int      @default(0)
   truncated        Boolean  @default(false)
+  /// When the last failed attempt ran — the retry backoff is measured from it.
+  lastAttemptAt    DateTime?
+  /// An admin's decision that this range will never complete and must stop
+  /// holding back the digest (status `dismissed`). Who and why are kept,
+  /// because a dismissed range is a gap someone chose to accept.
+  dismissedAt       DateTime?
+  dismissedByUserId String?
+  dismissedReason   String?
   /// Per-commit evidence for the commits processed so far:
   /// [{ sha, outcome: ingested | alreadyPresent | wouldIngest }].
   commitOutcomes   Json?

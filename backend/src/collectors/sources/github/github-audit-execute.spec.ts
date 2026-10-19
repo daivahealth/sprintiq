@@ -318,7 +318,7 @@ describe('executePending', () => {
     expect(prisma.githubPushRange.rows[0].status).toBe('done');
   });
 
-  it('a failed Compare stays pending with attempts+1, and becomes failed at the cap', async () => {
+  it('a failed Compare stays pending with attempts+1, and becomes failed only once the cap AND the give-up age are reached', async () => {
     const { prisma, client, svc } = setup();
     addRange(prisma, { attempts: 3 });
     client.compareAll.mockResolvedValue({
@@ -330,18 +330,46 @@ describe('executePending', () => {
     const cfg = readGithubAuditConfig({
       GITHUB_AUDIT_SYNC_MODE: 'ingest',
       GITHUB_AUDIT_MAX_RANGE_ATTEMPTS: '5',
+      GITHUB_AUDIT_RANGE_GIVEUP_HOURS: '1',
     });
     await svc.runTenant('t1', cfg, NOW);
     expect(prisma.githubPushRange.rows[0]).toMatchObject({
       status: 'pending',
       attempts: 4,
+      lastAttemptAt: NOW,
     });
-    const r = await svc.runTenant('t1', cfg, new Date(NOW.getTime() + 300_000));
+    // The cap is reached, but the range is only minutes old: one GitHub
+    // outage must not fail it for good. It stays pending.
+    const later = new Date(NOW.getTime() + 41 * 60_000);
+    await svc.runTenant('t1', cfg, later);
     expect(prisma.githubPushRange.rows[0]).toMatchObject({
-      status: 'failed',
+      status: 'pending',
       attempts: 5,
     });
+    // Past the give-up age, the next failure gives up.
+    const muchLater = new Date(NOW.getTime() + 2 * 3_600_000);
+    const r = await svc.runTenant('t1', cfg, muchLater);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      status: 'failed',
+      attempts: 6,
+    });
     expect(r.counters.failedRanges).toBe(1);
+  });
+
+  it('backs off a failing range: it is not retried until its backoff has passed', async () => {
+    const { prisma, client, svc } = setup();
+    // Failed twice: the backoff is 2 × the 5-minute interval = 10 minutes.
+    addRange(prisma, { attempts: 2, lastAttemptAt: NOW });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'failed',
+    });
+    await svc.runTenant('t1', INGEST, new Date(NOW.getTime() + 5 * 60_000));
+    expect(client.compareAll).not.toHaveBeenCalled();
+    await svc.runTenant('t1', INGEST, new Date(NOW.getTime() + 11 * 60_000));
+    expect(client.compareAll).toHaveBeenCalledTimes(1);
   });
 
   it('a rate limit stops the run without burning an attempt', async () => {
@@ -390,7 +418,7 @@ describe('executePending', () => {
     expect(r.status).toBe('success'); // discovery succeeded; the range is queued for retry
   });
 
-  it('marks truncated Compares and still ingests what was returned', async () => {
+  it('re-reads a truncated Compare through the branch history and collects all of it', async () => {
     const { prisma, client, svc } = setup();
     addRange(prisma);
     client.compareAll.mockResolvedValue({
@@ -399,12 +427,110 @@ describe('executePending', () => {
       truncated: true,
       totalCommits: 400,
     });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('fff', 'x'), commit('ggg', 'y')],
+      pages: 4,
+      truncated: false,
+    });
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    expect(client.listBranchCommits).toHaveBeenCalledWith(
+      'athmahealth/ehr',
+      'tok:GITHUB_TOKEN',
+      '50b124b05b',
+      expect.any(Date),
+      30,
+    );
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      truncated: false,
+      status: 'done',
+      commitsFound: 2,
+    });
+    expect(r.counters).toMatchObject({ truncatedRanges: 0, comparePages: 7 });
+  });
+
+  it('keeps a range truncated when even the branch re-read cannot read it whole', async () => {
+    const { prisma, client, svc } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('fff', 'x')],
+      pages: 3,
+      truncated: true,
+      totalCommits: 4000,
+    });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('fff', 'x')],
+      pages: 30,
+      truncated: true,
+    });
     const r = await svc.runTenant('t1', INGEST, NOW);
     expect(prisma.githubPushRange.rows[0]).toMatchObject({
       truncated: true,
       status: 'done',
     });
-    expect(r.counters).toMatchObject({ truncatedRanges: 1, comparePages: 3 });
+    expect(r.counters.truncatedRanges).toBe(1);
+  });
+
+  it('falls back to the Compare result when the branch re-read itself fails', async () => {
+    const { prisma, client, svc } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('fff', 'x')],
+      pages: 3,
+      truncated: true,
+      totalCommits: 400,
+    });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'failed',
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      truncated: true,
+      status: 'done',
+    });
+  });
+
+  describe('admin retry and dismiss', () => {
+    it('retries a failed range with fresh attempts, for its own tenant only', async () => {
+      const { prisma, svc } = setup();
+      addRange(prisma, { id: 'f1', status: 'failed', attempts: 9 });
+      addRange(prisma, { id: 'f2', tenantId: 't2', status: 'failed' });
+      expect(await svc.retryRange('t1', 'f1')).toBe(true);
+      expect(prisma.githubPushRange.rows[0]).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        lastAttemptAt: null,
+      });
+      expect(await svc.retryRange('t1', 'f2')).toBe(false);
+      expect(prisma.githubPushRange.rows[1].status).toBe('failed');
+    });
+
+    it('will not "retry" a range that is already done and complete', async () => {
+      const { prisma, svc } = setup();
+      addRange(prisma, { id: 'd1', status: 'done', truncated: false });
+      expect(await svc.retryRange('t1', 'd1')).toBe(false);
+    });
+
+    it('dismisses a failed or truncated range with who and why', async () => {
+      const { prisma, svc } = setup();
+      addRange(prisma, { id: 'f1', status: 'failed' });
+      addRange(prisma, { id: 't1r', status: 'done', truncated: true });
+      expect(
+        await svc.dismissRange('t1', 'f1', 'u1', 'branch deleted', NOW),
+      ).toBe(true);
+      expect(
+        await svc.dismissRange('t1', 't1r', 'u1', 'imported history', NOW),
+      ).toBe(true);
+      expect(prisma.githubPushRange.rows[0]).toMatchObject({
+        status: 'dismissed',
+        dismissedByUserId: 'u1',
+        dismissedReason: 'branch deleted',
+        dismissedAt: NOW,
+      });
+      expect(prisma.githubPushRange.rows[1].status).toBe('dismissed');
+    });
   });
 
   it("executes an aged pending range but ignores an aged shadowed range and other tenants' ranges", async () => {

@@ -10,6 +10,7 @@ import { GithubAuditLogClient } from './sources/github/github-audit-log.client';
 import { GithubAuditReportService } from './sources/github/github-audit-report.service';
 import { GithubAuditSyncService } from './sources/github/github-audit-sync.service';
 import { GithubAuditSchedulerService } from './scheduler/github-audit-scheduler.service';
+import { GithubOrgSyncSchedulerService } from './scheduler/github-org-sync-scheduler.service';
 import { GithubCommitMessageReconcilerService } from './sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from './sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from './sources/github/github-commit-reconciler.service';
@@ -70,6 +71,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubAuditSyncService,
     GithubAuditReportService,
     GithubAuditSchedulerService,
+    GithubOrgSyncSchedulerService,
     GithubCommitMessageReconcilerService,
     GithubPrCommitBackfillService,
     GithubCommitReconcilerService,

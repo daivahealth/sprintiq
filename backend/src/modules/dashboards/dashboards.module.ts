@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CollectorsModule } from '../../collectors/collectors.module';
 import { CorrelationModule } from '../../correlation/correlation.module';
 import { MetricsModule } from '../../metrics/metrics.module';
 import { CodeModule } from '../code/code.module';
@@ -23,6 +24,8 @@ import { WatchlistExclusionsController } from './watchlist-exclusions.controller
     // Read-only: the freshness endpoint reports collector/connection state.
     // BC-13 never calls a source API itself (api/README.md §0).
     ConnectionsModule,
+    // Read-only audit-route lag for the freshness endpoint (2026-10-19).
+    CollectorsModule,
   ],
   controllers: [
     DashboardsController,

@@ -4,6 +4,7 @@ import {
   freshnessHeadline,
   type FreshnessHeadline,
 } from './freshness-headline';
+import { auditLagWarning } from './audit-lag';
 import { useFreshness } from './useInsights';
 
 /**
@@ -107,9 +108,13 @@ export function FreshnessNote({
     lastSyncAt,
   });
 
+  // Branch-only commits arrive through the audit-log route; when it lags,
+  // they are missing from this board too (2026-10-19).
+  const auditLag = auditLagWarning(data.auditRoute, windowTo);
+
   const tone = hasProblem
     ? 'bad'
-    : windowStartsBeforeData || behind || backfillAffectsThisBoard
+    : windowStartsBeforeData || behind || backfillAffectsThisBoard || auditLag
       ? 'warn'
       : 'good';
 
@@ -122,6 +127,8 @@ export function FreshnessNote({
       {/* The one that matters for a windowed board: the range on screen
           extends past where collection has reached, so these numbers are
           genuinely short and by how much is stated. */}
+      {auditLag && <span className="text-warning-fg">— {auditLag}</span>}
+
       {windowStartsBeforeData && collectedBackTo && (
         <span className="text-warning-fg">
           — history only goes back to{' '}

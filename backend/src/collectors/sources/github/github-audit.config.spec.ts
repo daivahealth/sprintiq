@@ -20,7 +20,34 @@ describe('readGithubAuditConfig', () => {
       lagWarnMinutes: 30,
       fullSweepMinutes: 60,
       newRepoMaxBranches: 50,
+      rangeGiveUpHours: 24,
+      orgSyncHours: 24,
     });
+  });
+
+  it('accepts the allowed org-sync cadences and rejects others', () => {
+    for (const h of [0, 6, 12, 24]) {
+      expect(
+        readGithubAuditConfig({ GITHUB_ORG_SYNC_HOURS: String(h) })
+          .orgSyncHours,
+      ).toBe(h);
+    }
+    expect(() => readGithubAuditConfig({ GITHUB_ORG_SYNC_HOURS: '7' })).toThrow(
+      /GITHUB_ORG_SYNC_HOURS/,
+    );
+  });
+
+  it('bounds the range give-up window to 1–168 hours', () => {
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_RANGE_GIVEUP_HOURS: '1' })
+        .rangeGiveUpHours,
+    ).toBe(1);
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_RANGE_GIVEUP_HOURS: '0' }),
+    ).toThrow(/GITHUB_AUDIT_RANGE_GIVEUP_HOURS/);
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_RANGE_GIVEUP_HOURS: '169' }),
+    ).toThrow(/GITHUB_AUDIT_RANGE_GIVEUP_HOURS/);
   });
 
   it.each([5, 10, 15, 20, 30, 60])('accepts a %i-minute interval', (n) => {
