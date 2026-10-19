@@ -19,7 +19,9 @@ The Developer page's daily chart gains a **Lines of code | Commits** toggle, wit
 
 - In LOC mode, each bar is that developer's changed lines for the day (additions + deletions, the sum, never a net), on an absolute axis labelled in lines.
 - In Commits mode, each bar is that developer's commits for the day. The relative-scale overlay is removed because the toggle makes it redundant.
-- Each bar's tooltip carries both quantities, whichever metric is drawn.
+- Each day's tooltip carries both quantities, whichever metric is drawn.
+
+*Amended 2026-10-19:* the chart is drawn as a line rather than bars, one point per day, as the Overview's daily chart and the 12-month trend are. The decision and its conditions are unchanged; "bar" above reads as "that day's point".
 
 This is a third, independent exception to the ethics rule. It inherits nothing from the 2026-09-07 or 2026-09-18 decisions, and it is conditioned like them:
 
