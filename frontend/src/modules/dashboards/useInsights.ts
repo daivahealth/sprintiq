@@ -294,6 +294,8 @@ export interface DeveloperActivityView {
     commitsWithoutLineChanges?: number;
     /** Merge commits left out of `commits` and every LOC figure (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
     mergeCommitsExcluded?: number;
+    /** Extra copies of commits held by more than one repository, counted once (METRICS.md §0). Optional: an older API omits it. */
+    sharedCommitsCollapsed?: number;
   };
   /**
    * The source identities these figures were gathered under. Optional for the
@@ -908,6 +910,8 @@ export interface DeveloperOverviewView {
     commits: number;
     /** Merge commits left out of `commits` and every LOC figure. Optional: an older API omits it — unknown, never zero. */
     mergeCommitsExcluded?: number;
+    /** Extra copies of commits held by more than one repository, counted once (METRICS.md §0). Optional: an older API omits it. */
+    sharedCommitsCollapsed?: number;
     developersWithSignal: number;
     developersKnown: number;
     prsOpened: number;
