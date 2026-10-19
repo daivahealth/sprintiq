@@ -16,6 +16,7 @@ import {
   UNCLASSIFIED_LABEL,
   type DeveloperRoleValue,
 } from '../developer-role';
+import { CommitChart } from '../CommitChart';
 import { MonthlyTrendChart, type TrendMetric } from '../MonthlyTrendChart';
 import {
   useDeveloperOverview,
@@ -27,10 +28,12 @@ import {
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
 import { mergeExclusionNote } from '../merge-commits';
 import { CurrentLensNote } from './CurrentLensNote';
-import { hasDailyLoc, timelineMetric, timelineValue } from './timeline-metric';
+import { hasDailyLoc, timelineMetric } from './timeline-metric';
 import {
   EmptyWindowNote,
   formatDayKey,
+  rangeDays,
+  rangeEndKey,
   rangeParams,
   useSectionRange,
   type ActivityRange,
@@ -526,9 +529,11 @@ function formatMonthBoundary(iso: string | null): string {
 /**
  * Team changed LOC per day by default, with a Lines of code / Commits toggle
  * like the 12-month trend's (commits only, and no toggle, on an API that
- * predates the per-day LOC fields). Each bar opens that day's contributors.
+ * predates the per-day LOC fields). Drawn as a line since 2026-10-19 (the
+ * shared `CommitChart`, as on the Developer page); clicking a day opens that
+ * day's contributors.
  *
- * The bars are TEAM totals. The drill-down still lists people by commits only
+ * The line is TEAM totals. The drill-down still lists people by commits only
  * and alphabetically: per-person LOC in a day list would turn line counts into
  * a per-person measure, which this board does not do (CLAUDE.md).
  *
@@ -559,7 +564,6 @@ function CommitTimeline({
   const locAvailable = hasDailyLoc(days);
   const metric = timelineMetric(days, requested);
   const byLoc = metric === 'loc';
-  const value = (d: ActivityDay) => timelineValue(d, metric);
   const withoutLines = byLoc
     ? days.reduce((n, d) => n + (d.commitsWithoutLineChanges ?? 0), 0)
     : 0;
@@ -586,9 +590,6 @@ function CommitTimeline({
     );
   }
 
-  // Oldest → newest for the chart; the API returns newest-first for the list.
-  const chronological = [...days].sort((a, b) => a.date.localeCompare(b.date));
-  const max = Math.max(1, ...chronological.map(value));
   const openDay = days.find((d) => d.date === open);
   const developers = openDay
     ? sort === 'commits'
@@ -604,65 +605,18 @@ function CommitTimeline({
     <Card className="space-y-4">
       {header}
 
-      {/* `items-stretch`, never `items-end`. Each bar's height is a PERCENTAGE
-          of its button, and a percentage height resolves to `auto` — zero —
-          whenever the parent's own height is indefinite. Under `items-end` the
-          buttons are not stretched, so their height came from their content,
-          which is the bar itself: a circular dependency that resolved to a
-          160px-tall row of nothing. The bars had never rendered in any theme,
-          which is why the widget read as an unfinished placeholder.
-          Stretching gives each button the row's definite `h-40`, and the
-          button's own `justify-end` still sits the bar on the baseline. */}
-      <div
-        className="flex h-40 items-stretch gap-1 overflow-x-auto"
-        role="list"
-        aria-label={byLoc ? 'Changed lines of code per day' : 'Commits per day'}
-      >
-        {chronological.map((day) => {
-          const isOpen = day.date === open;
-          return (
-            <button
-              key={day.date}
-              type="button"
-              role="listitem"
-              onClick={() => setOpen(isOpen ? null : day.date)}
-              title={
-                locAvailable
-                  ? byLoc
-                    ? `${formatDayKey(day.date)} — ${(day.locChanged ?? 0).toLocaleString()} lines changed · ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'}`
-                    : `${formatDayKey(day.date)} — ${day.totalCommits} commit${day.totalCommits === 1 ? '' : 's'} · ${(day.locChanged ?? 0).toLocaleString()} lines changed`
-                  : `${formatDayKey(day.date)} — ${day.totalCommits} commits`
-              }
-              aria-expanded={isOpen}
-              // `h-full` belt-and-braces: it pins the height definite even if
-              // the row's alignment is changed again later, so the bars cannot
-              // silently collapse a second time.
-              className="group flex h-full min-w-[10px] flex-1 flex-col justify-end gap-1"
-            >
-              {/* Full-opacity chart token, not brand at 30%. At 30% alpha
-                  over the dark surface the bars sat within a few points of the
-                  background: the widget rendered a populated week and read as
-                  an empty placeholder, which is exactly how it was reported.
-                  `chart-1` is also what the 12-month chart draws commits in,
-                  so the same quantity is the same colour on both. */}
-              <span
-                className={
-                  value(day) === 0
-                    ? // A day with no commits is a flat floor, not a sliver of
-                      // colour that reads as a very small amount of work.
-                      'w-full rounded-sm bg-chart-empty transition'
-                    : isOpen
-                      ? 'w-full rounded-sm bg-chart-1 ring-2 ring-brand-muted transition'
-                      : 'w-full rounded-sm bg-chart-1/80 transition group-hover:bg-chart-1'
-                }
-                style={{
-                  height: `${Math.max(2, (value(day) / max) * 100)}%`,
-                }}
-              />
-            </button>
-          );
-        })}
-      </div>
+      <CommitChart
+        series={days.map((d) => ({
+          date: d.date,
+          commits: d.totalCommits,
+          locChanged: d.locChanged ?? 0,
+        }))}
+        windowDays={rangeDays(range)}
+        endKey={rangeEndKey(range)}
+        metric={metric}
+        selectedDate={open}
+        onSelectDay={(date) => setOpen(open === date ? null : date)}
+      />
 
       {openDay ? (
         <div className="rounded-md border border-border bg-subtle p-3">
