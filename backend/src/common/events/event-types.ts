@@ -10,6 +10,8 @@ export const EventTypes = {
   CODE_PR_CLOSED: 'code.pull_request.closed',
   CODE_COMMIT_PUSHED: 'code.commit.pushed',
   CODE_PUSH_OBSERVED: 'code.push.observed',
+  /** A commit was found on a branch (branch tracking, ingest mode only). */
+  CODE_COMMIT_BRANCH_OBSERVED: 'code.commit.branch_observed',
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
   PLANNING_VERSION_UPSERTED: 'planning.version.upserted',

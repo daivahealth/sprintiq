@@ -4,6 +4,7 @@ import type { Scope } from '../../lib/scope';
 import { rangeParams, type ActivityRange } from './activity-range';
 import type { DeveloperRoleValue } from './developer-role';
 import type { TrendMonth } from './monthly-trend';
+import type { DeveloperBranchRow } from './developer-activity/BranchesSection';
 import type { AuditRouteFreshness } from './audit-lag';
 
 // ---- Response types (mirror backend insights.service.ts) -------------------
@@ -315,6 +316,9 @@ export interface DeveloperActivityView {
     lastCommitAt: string;
   }[];
   dailySeries: { date: string; commits: number; locChanged: number }[];
+  /** Branches this person committed to in the window, merged or not (branch tracking). Optional: an older API omits it. */
+  branches?: DeveloperBranchRow[];
+  branchesTotal?: number;
   recentCommits: {
     sha: string;
     repo: string;

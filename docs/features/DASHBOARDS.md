@@ -238,6 +238,8 @@ The one page in the platform that names individuals for attention, so its framin
 
 #### 4.4.3 Developer — one person, evidence-first
 
+**Branches** (2026-10-19, branch tracking, ADR-0010): a table of every branch this person committed to in the window, merged or not. Each row shows the branch, its repo, a pull-request badge (merged, open, closed, or no PR), commits, changed lines and the last commit, ordered by last activity, never by volume, and capped at 50 with the total stated. It answers "where has this work been happening", including branches that never got a PR, which is work the regular collector used to miss. A commit on several branches appears on each, so the rows do not add up to the totals; the note under the table says so, and that this is activity, not a ranking. Merge commits are not counted. Empty means no branch names were recorded, which happens until the audit-log route runs in ingest mode, and the empty state says so. An API that predates the field shows "not available", never "no branches".
+
 The profile from the old board (commits, lines, PRs opened/merged, commits-per-day, repos, recent commits, and the identity notes) plus **reviews given** and **assigned Jira work**. Two removals:
 
 - **The second commit table** ("without a linked ticket") was the same list split by one attribute. One list; linkage is a column.

@@ -1,5 +1,6 @@
 import { readGithubAuditConfig } from './github-audit.config';
 import { GithubAuditSyncService } from './github-audit-sync.service';
+import { commitBranchIdempotencyKey } from './github-commit-envelope';
 import {
   fakeIngestion,
   fakePrisma,
@@ -91,7 +92,7 @@ function addRange(
     baseSha: null,
     baseRef: 'master',
     headSha: '50b124b05b',
-    kind: 'new_ref',
+    kind: 'moved',
     auditDocumentIds: ['d1'],
     status: 'pending',
     attempts: 0,
@@ -106,6 +107,169 @@ function addRange(
   prisma.githubPushRange.rows.push(row);
   return row;
 }
+
+describe('branch tracking (2026-10-19)', () => {
+  const marker = (prisma: ReturnType<typeof fakePrisma>) =>
+    prisma.githubRefTip.rows.find((r) => r.ref === 'HEAD') as { sha: string };
+
+  it('reads a new branch from its own history and never Compares it with its base', async () => {
+    const { prisma, client, svc } = setup();
+    const range = addRange(prisma, { kind: 'new_ref', baseRef: 'master' });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('n1', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    // The only Compare is the link check against the default branch's tip.
+    client.compareAll.mockResolvedValue({
+      commits: [commit('n1', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(client.listBranchCommits).toHaveBeenCalledWith(
+      'athmahealth/ehr',
+      'tok:GITHUB_TOKEN',
+      '50b124b05b',
+      new Date((range.createdAt as Date).getTime() - 30 * 86_400_000),
+      30,
+    );
+    expect(client.compareAll).toHaveBeenCalledTimes(1);
+    expect(client.compareAll.mock.calls[0][2]).toBe(marker(prisma).sha);
+  });
+
+  it('honours a custom look-back', async () => {
+    const { prisma, client, svc } = setup();
+    const range = addRange(prisma, { kind: 'new_ref' });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [],
+      pages: 1,
+      truncated: false,
+    });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant(
+      't1',
+      readGithubAuditConfig({
+        GITHUB_AUDIT_SYNC_MODE: 'ingest',
+        GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS: '10',
+      }),
+      NOW,
+    );
+    expect(client.listBranchCommits.mock.calls[0][3]).toEqual(
+      new Date((range.createdAt as Date).getTime() - 10 * 86_400_000),
+    );
+  });
+
+  it('links a new branch only to its own commits, not the history it inherited', async () => {
+    const { prisma, client, svc, ingestion } = setup();
+    addRange(prisma, { kind: 'new_ref', ref: 'feat-x' });
+    // Own history: one new commit plus one inherited from master.
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('mine', 'x'), commit('inherited', 'y')],
+      pages: 1,
+      truncated: false,
+    });
+    client.compareAll.mockResolvedValue({
+      commits: [commit('mine', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    const keys = ingestion.ingest.mock.calls
+      .map((c) => c[1].idempotencyKey as string)
+      .filter((k) => k.includes(':branch:'));
+    expect(keys).toEqual(['github:athmahealth/ehr:branch:feat-x:commit:mine']);
+    expect(r.counters.branchLinks).toBe(1);
+    // Both commits are still collected — linking is narrower than collection.
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({ commitsFound: 2 });
+  });
+
+  it('links every commit read when the default-branch check cannot tell', async () => {
+    const { prisma, client, svc, ingestion } = setup();
+    addRange(prisma, { kind: 'new_ref', ref: 'orphan' });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('o1', 'x'), commit('o2', 'y')],
+      pages: 1,
+      truncated: false,
+    });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'no_common_ancestor',
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    const branchKeys = ingestion.ingest.mock.calls
+      .map((c) => c[1])
+      .filter((e) => e.eventType === 'code.commit.branch_observed');
+    expect(branchKeys.map((e) => e.data.sha).sort()).toEqual(['o1', 'o2']);
+    expect(branchKeys[0].data).toMatchObject({
+      repoFullName: 'athmahealth/ehr',
+      branch: 'orphan',
+      observedAt: NOW.toISOString(),
+    });
+  });
+
+  it('links every commit of a moved range, including ones already present', async () => {
+    const { prisma, client, svc, ingestion } = setup();
+    addRange(prisma, { ref: 'ACT-1' });
+    prisma.rawKeys.add('t1|github:athmahealth/ehr:commit:old');
+    client.compareAll.mockResolvedValue({
+      commits: [commit('old', 'x'), commit('new', 'y')],
+      pages: 1,
+      truncated: false,
+    });
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    const branchShas = ingestion.ingest.mock.calls
+      .map((c) => c[1])
+      .filter((e) => e.eventType === 'code.commit.branch_observed')
+      .map((e) => e.data.sha)
+      .sort();
+    expect(branchShas).toEqual(['new', 'old']);
+    expect(r.counters.branchLinks).toBe(2);
+  });
+
+  it('emits no branch links in shadow mode', async () => {
+    const { prisma, client, svc, ingestion } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('s1', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant(
+      't1',
+      readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'shadow' }),
+      NOW,
+    );
+    expect(
+      ingestion.ingest.mock.calls.some(
+        (c) => c[1].eventType === 'code.commit.branch_observed',
+      ),
+    ).toBe(false);
+  });
+
+  it('emits no branch links for a range that does not complete', async () => {
+    const { prisma, client, svc, ingestion } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('f1', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    client.getCommitDetail.mockResolvedValue({}); // no stats → range fails
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(
+      ingestion.ingest.mock.calls.some(
+        (c) => c[1].eventType === 'code.commit.branch_observed',
+      ),
+    ).toBe(false);
+  });
+});
 
 describe('executePending', () => {
   it('25 Sep fixture: recovers branch-only ehr commits with lineage, then ingests nothing on a rerun', async () => {
@@ -292,29 +456,37 @@ describe('executePending', () => {
     expect(r.counters).toMatchObject({ ingested: 1, alreadyPresent: 1 });
   });
 
-  it('retries a moved range against the default branch when its base is gone', async () => {
+  // Rule changed 2026-10-19 (branch tracking): a moved branch whose old tip is
+  // gone no longer retries a Compare against the default branch, which only
+  // ever found what the branch had that master lacked. It reads the branch's
+  // own history instead, like a new branch.
+  it('reads a moved branch from its own history when its old tip is gone', async () => {
     const { prisma, client, svc } = setup();
-    addRange(prisma, { kind: 'moved', baseSha: 'gone', baseRef: null });
-    client.compareAll
-      .mockResolvedValueOnce({
-        commits: [],
-        pages: 0,
-        truncated: false,
-        failure: 'not_found',
-      })
-      .mockResolvedValueOnce({
-        commits: [commit('ddd', 'x')],
-        pages: 1,
-        truncated: false,
-        status: 'diverged',
-      });
+    const range = addRange(prisma, {
+      kind: 'moved',
+      baseSha: 'gone',
+      baseRef: null,
+    });
+    client.compareAll.mockResolvedValueOnce({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'not_found',
+    });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [commit('ddd', 'x')],
+      pages: 1,
+      truncated: false,
+    });
     await svc.runTenant('t1', INGEST, NOW);
-    expect(client.compareAll.mock.calls[1]).toEqual([
+    expect(client.compareAll).toHaveBeenCalledTimes(1);
+    expect(client.listBranchCommits).toHaveBeenCalledWith(
       'athmahealth/ehr',
       'tok:GITHUB_TOKEN',
-      'master',
       '50b124b05b',
-    ]);
+      new Date((range.createdAt as Date).getTime() - 30 * 86_400_000),
+      30,
+    );
     expect(prisma.githubPushRange.rows[0].status).toBe('done');
   });
 
@@ -698,7 +870,7 @@ describe('executePending', () => {
     expect(r.counters.ingested).toBe(1);
   });
 
-  it('fetches a new branch with no common history from its own commit list, bounded to the last 7 days', async () => {
+  it('reads a moved branch with no common history from its own commit list, bounded by the new-branch look-back', async () => {
     const { prisma, client, svc } = setup();
     const range = addRange(prisma, { ref: 'RC4-bugs', headSha: '14753b2f' });
     client.compareAll.mockResolvedValue({
@@ -718,7 +890,8 @@ describe('executePending', () => {
       'athmahealth/ehr',
       'tok:GITHUB_TOKEN',
       '14753b2f',
-      new Date((range.createdAt as Date).getTime() - 7 * 86_400_000),
+      new Date((range.createdAt as Date).getTime() - 30 * 86_400_000),
+      30,
     );
     expect(prisma.githubPushRange.rows[0]).toMatchObject({
       status: 'done',
@@ -753,7 +926,10 @@ describe('executePending', () => {
     expect(prisma.githubPushRange.rows[0].status).toBe('done');
   });
 
-  it('does not fall back to the commit list on an ordinary not-found', async () => {
+  // Rule changed 2026-10-19: any moved range whose Compare is not_found falls
+  // back to the branch's own history (the old tip was garbage-collected); a
+  // failure of that read still leaves the range pending for retry.
+  it('leaves a moved range pending when both the Compare and the own-history read fail', async () => {
     const { prisma, client, svc } = setup();
     addRange(prisma);
     client.compareAll.mockResolvedValue({
@@ -762,11 +938,78 @@ describe('executePending', () => {
       truncated: false,
       failure: 'not_found',
     });
+    client.listBranchCommits.mockResolvedValue({
+      commits: [],
+      pages: 0,
+      truncated: false,
+      failure: 'failed',
+    });
     await svc.runTenant('t1', INGEST, NOW);
-    expect(client.listBranchCommits).not.toHaveBeenCalled();
+    expect(client.listBranchCommits).toHaveBeenCalledTimes(1);
     expect(prisma.githubPushRange.rows[0]).toMatchObject({
       status: 'pending',
       attempts: 1,
+    });
+  });
+
+  it('a moved range with a normal Compare never reads its own history', async () => {
+    const { prisma, client, svc } = setup();
+    addRange(prisma);
+    client.compareAll.mockResolvedValue({
+      commits: [commit('eee', 'x')],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant('t1', INGEST, NOW);
+    expect(client.listBranchCommits).not.toHaveBeenCalled();
+  });
+});
+
+describe('commitBranchIdempotencyKey', () => {
+  it('keys a commit on a branch by repo, branch and sha', () => {
+    expect(
+      commitBranchIdempotencyKey('athmahealth/ehr', 'ACT-1/fix', 'abc'),
+    ).toBe('github:athmahealth/ehr:branch:ACT-1/fix:commit:abc');
+  });
+});
+
+describe('backfillBranchLinks', () => {
+  it('replays the SHAs of completed ranges as branch links, tenant-scoped and paged', async () => {
+    const { prisma, svc, ingestion } = setup();
+    addRange(prisma, {
+      id: 'a',
+      status: 'done',
+      ref: 'feat-a',
+      commitOutcomes: [{ sha: 's1' }, { sha: 's2' }],
+      updatedAt: NOW,
+    });
+    addRange(prisma, {
+      id: 'b',
+      status: 'pending',
+      commitOutcomes: [{ sha: 'p1' }],
+      updatedAt: NOW,
+    });
+    addRange(prisma, {
+      id: 'c',
+      tenantId: 't2',
+      status: 'done',
+      commitOutcomes: [{ sha: 'x' }],
+      updatedAt: NOW,
+    });
+    const r = await svc.backfillBranchLinks('t1');
+    const branchEnvelopes = ingestion.ingest.mock.calls
+      .map((c) => c[1])
+      .filter((e) => e.eventType === 'code.commit.branch_observed');
+    expect(branchEnvelopes.map((e) => e.idempotencyKey)).toEqual([
+      'github:athmahealth/ehr:branch:feat-a:commit:s1',
+      'github:athmahealth/ehr:branch:feat-a:commit:s2',
+    ]);
+    expect(branchEnvelopes[0].data.observedAt).toBe(NOW.toISOString());
+    expect(r).toMatchObject({
+      ranges: 1,
+      linksAccepted: 2,
+      done: true,
+      nextCursor: null,
     });
   });
 });

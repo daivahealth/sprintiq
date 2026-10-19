@@ -672,6 +672,24 @@ model Commit {
   @@map("code_commit")
 }
 
+/// Which branches a commit has been seen on (branch tracking, 2026-10-19),
+/// projected from `code.commit.branch_observed`. One row per commit per
+/// branch, merged or not; written only by the CodeService projector.
+model CommitBranch {
+  id           String   @id
+  tenantId     String
+  repoFullName String
+  branch       String
+  sha          String
+  /// The earliest time the audit route saw the commit on this branch.
+  firstSeenAt  DateTime
+  createdAt    DateTime @default(now())
+
+  @@unique([tenantId, repoFullName, branch, sha])
+  @@index([tenantId, repoFullName, sha])
+  @@map("code_commit_branch")
+}
+
 // ---------------------------------------------------------------------------
 // BC-5 Correlation & Delivery Graph
 // ---------------------------------------------------------------------------

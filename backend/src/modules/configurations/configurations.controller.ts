@@ -425,6 +425,33 @@ export class ConfigurationsController {
   }
 
   /**
+   * One-off: records branch links for audit ranges that completed before
+   * branch tracking existed (2026-10-19), from the SHAs each range stored.
+   * Idempotent; pass `nextCursor` back as `?after=` until `done`. Audited.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/audit-sync/backfill-branch-links')
+  async backfillBranchLinks(
+    @CurrentUser() user: AuthUser,
+    @Query('after') after?: string,
+  ) {
+    const result = await this.auditSync.backfillBranchLinks(
+      user.tenantId,
+      after || undefined,
+    );
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'collectors.github_branch_links.backfill',
+      targetType: 'tenant_configuration',
+      targetId: 'github',
+      metadata: { ranges: result.ranges, linksAccepted: result.linksAccepted },
+    });
+    return result;
+  }
+
+  /**
    * Puts a failed, truncated or dismissed range back in the queue with fresh
    * attempts; the next audit run executes it. Audited.
    */
