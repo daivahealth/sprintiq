@@ -2,6 +2,9 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Commit, PrReview, Prisma, PullRequest } from '@prisma/client';
 import {
   CodeCommitPayload,
+  CodeCopilotReportDayPayload,
+  CodeCopilotSeatsPayload,
+  CodeCopilotUsagePayload,
   CodePullRequestPayload,
 } from '../../common/events/contracts';
 import {
@@ -69,6 +72,18 @@ export class CodeService implements OnModuleInit {
     this.eventBus.subscribe<CodeCommitPayload>(
       EventTypes.CODE_COMMIT_PUSHED,
       (e) => this.handleCommit(e),
+    );
+    this.eventBus.subscribe<CodeCopilotUsagePayload>(
+      EventTypes.CODE_COPILOT_USAGE_REPORTED,
+      (e) => this.handleCopilotUsage(e),
+    );
+    this.eventBus.subscribe<CodeCopilotReportDayPayload>(
+      EventTypes.CODE_COPILOT_REPORT_DAY_COLLECTED,
+      (e) => this.handleCopilotReportDay(e),
+    );
+    this.eventBus.subscribe<CodeCopilotSeatsPayload>(
+      EventTypes.CODE_COPILOT_SEATS_OBSERVED,
+      (e) => this.handleCopilotSeats(e),
     );
   }
 
@@ -525,6 +540,229 @@ export class CodeService implements OnModuleInit {
     });
     return rows.map((r) => r.repoFullName);
   }
+
+  // -------------------------------------------------------------------------
+  // Copilot usage (ADR-0012) — projections of GitHub's usage-metrics reports.
+  // -------------------------------------------------------------------------
+
+  /**
+   * One user-day, last-wins by `collectedAt`. GitHub restates a day while it
+   * finalizes it, and the collector re-reads the newest days for exactly that
+   * reason; a replay of an older raw event must not overwrite a newer reading.
+   */
+  private async handleCopilotUsage(
+    event: DomainEvent<CodeCopilotUsagePayload>,
+  ): Promise<void> {
+    const u = event.payload;
+    const key = {
+      tenantId: event.tenantId,
+      org: u.org,
+      day: dayDate(u.day),
+      githubUserId: BigInt(u.githubUserId),
+    };
+    const collectedAt = new Date(u.collectedAt);
+    const existing = await this.prisma.copilotUsageDay.findUnique({
+      where: { tenantId_org_day_githubUserId: key },
+      select: { collectedAt: true },
+    });
+    if (existing && existing.collectedAt > collectedAt) {
+      return;
+    }
+    const fields = {
+      connectionId: event.connectionId ?? '',
+      login: u.login,
+      interactions: u.interactions,
+      generations: u.generations,
+      acceptances: u.acceptances,
+      locSuggestedAdd: u.locSuggestedAdd,
+      locSuggestedDelete: u.locSuggestedDelete,
+      locAdded: u.locAdded,
+      locDeleted: u.locDeleted,
+      usedAgent: u.usedAgent,
+      usedChat: u.usedChat,
+      usedCli: u.usedCli,
+      usedCodingAgent: u.usedCodingAgent,
+      aiCreditsUsed: u.aiCreditsUsed,
+      rawEventId: event.sourceEventIds?.[0] ?? '',
+      collectedAt,
+    };
+    await this.prisma.copilotUsageDay.upsert({
+      where: { tenantId_org_day_githubUserId: key },
+      create: { id: newId(), ...key, ...fields },
+      update: fields,
+    });
+  }
+
+  /**
+   * Records that a day's report was read whole, and drops anyone a restated
+   * report no longer lists — the report is the authority on who used Copilot
+   * that day, so a user it stopped naming is not one to keep showing.
+   */
+  private async handleCopilotReportDay(
+    event: DomainEvent<CodeCopilotReportDayPayload>,
+  ): Promise<void> {
+    const r = event.payload;
+    const key = { tenantId: event.tenantId, org: r.org, day: dayDate(r.day) };
+    const collectedAt = new Date(r.collectedAt);
+    const existing = await this.prisma.copilotReportDay.findUnique({
+      where: { tenantId_org_day: key },
+      select: { collectedAt: true },
+    });
+    if (existing && existing.collectedAt > collectedAt) {
+      return;
+    }
+    const fields = {
+      connectionId: event.connectionId ?? '',
+      userCount: r.userCount,
+      rawEventId: event.sourceEventIds?.[0] ?? '',
+      collectedAt,
+    };
+    await this.prisma.$transaction([
+      this.prisma.copilotReportDay.upsert({
+        where: { tenantId_org_day: key },
+        create: { id: newId(), ...key, ...fields },
+        update: fields,
+      }),
+      this.prisma.copilotUsageDay.deleteMany({
+        where: {
+          ...key,
+          githubUserId: { notIn: r.githubUserIds.map((id) => BigInt(id)) },
+        },
+      }),
+    ]);
+  }
+
+  /** Replaces the org's seat list whole; a stale replay is ignored. */
+  private async handleCopilotSeats(
+    event: DomainEvent<CodeCopilotSeatsPayload>,
+  ): Promise<void> {
+    const s = event.payload;
+    const observedAt = new Date(s.observedAt);
+    const newest = await this.prisma.copilotSeat.findFirst({
+      where: { tenantId: event.tenantId, org: s.org },
+      orderBy: { observedAt: 'desc' },
+      select: { observedAt: true },
+    });
+    if (newest && newest.observedAt > observedAt) {
+      return;
+    }
+    await this.prisma.$transaction([
+      this.prisma.copilotSeat.deleteMany({
+        where: { tenantId: event.tenantId, org: s.org },
+      }),
+      this.prisma.copilotSeat.createMany({
+        data: s.seats.map((seat) => ({
+          id: newId(),
+          tenantId: event.tenantId,
+          connectionId: event.connectionId ?? '',
+          org: s.org,
+          githubUserId: BigInt(seat.githubUserId),
+          login: seat.login,
+          assignedAt: toDate(seat.assignedAt),
+          lastActivityAt: toDate(seat.lastActivityAt),
+          lastActivityEditor: seat.lastActivityEditor ?? null,
+          pendingCancellationDate: seat.pendingCancellationDate
+            ? dayDate(seat.pendingCancellationDate.slice(0, 10))
+            : null,
+          observedAt,
+          rawEventId: event.sourceEventIds?.[0] ?? '',
+        })),
+        skipDuplicates: true,
+      }),
+    ]);
+  }
+
+  /**
+   * Per-user-day Copilot usage between two UTC report days, inclusive. Rows,
+   * not sums: a developer can hold several logins, and a day used under two
+   * of them is still one day — only the caller, holding the identity index,
+   * can de-duplicate that.
+   */
+  async copilotUsageRows(
+    tenantId: string,
+    fromDay: string,
+    toDay: string,
+  ): Promise<CopilotUsageRow[]> {
+    const rows = await this.prisma.copilotUsageDay.findMany({
+      where: { tenantId, day: { gte: dayDate(fromDay), lte: dayDate(toDay) } },
+      select: {
+        login: true,
+        day: true,
+        interactions: true,
+        generations: true,
+        acceptances: true,
+        locAdded: true,
+      },
+    });
+    return rows.map((r) => ({
+      login: r.login,
+      day: r.day.toISOString().slice(0, 10),
+      interactions: r.interactions,
+      generations: r.generations,
+      acceptances: r.acceptances,
+      locAdded: r.locAdded,
+    }));
+  }
+
+  /** Logins holding a Copilot seat in the latest snapshot; null when none was ever taken. */
+  async copilotSeatLogins(tenantId: string): Promise<string[] | null> {
+    const rows = await this.prisma.copilotSeat.findMany({
+      where: { tenantId },
+      select: { login: true },
+    });
+    return rows.length > 0 ? rows.map((r) => r.login) : null;
+  }
+
+  /**
+   * Whether any Copilot report was ever collected for the tenant, the newest
+   * report day held, and how many report days fall inside the window — the
+   * freshness a board must show beside the column.
+   */
+  async copilotCoverage(
+    tenantId: string,
+    fromDay: string,
+    toDay: string,
+  ): Promise<CopilotCoverage> {
+    const [newest, inWindow] = await Promise.all([
+      this.prisma.copilotReportDay.findFirst({
+        where: { tenantId },
+        orderBy: { day: 'desc' },
+        select: { day: true },
+      }),
+      this.prisma.copilotReportDay.count({
+        where: {
+          tenantId,
+          day: { gte: dayDate(fromDay), lte: dayDate(toDay) },
+        },
+      }),
+    ]);
+    return {
+      collected: newest !== null,
+      coveredThrough: newest ? newest.day.toISOString().slice(0, 10) : null,
+      reportDaysInWindow: inWindow,
+    };
+  }
+}
+
+export interface CopilotUsageRow {
+  login: string;
+  /** UTC report day, `YYYY-MM-DD`. */
+  day: string;
+  interactions: number;
+  generations: number;
+  acceptances: number;
+  locAdded: number;
+}
+
+export interface CopilotCoverage {
+  collected: boolean;
+  coveredThrough: string | null;
+  reportDaysInWindow: number;
+}
+
+/** A `YYYY-MM-DD` report day as the Date a `@db.Date` column stores. */
+function dayDate(day: string): Date {
+  return new Date(`${day}T00:00:00.000Z`);
 }
 
 /**
