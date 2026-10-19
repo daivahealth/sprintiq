@@ -258,6 +258,8 @@ export interface ProjectActivityRow {
    * reason as `unattributedCommits`; absent means unknown, never zero.
    */
   commitsWithoutLineChanges?: number;
+  /** Merge commits left out of `commits` and the LOC fields (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
+  mergeCommitsExcluded?: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
 }
@@ -290,6 +292,8 @@ export interface DeveloperActivityView {
     activeRepos: number;
     /** Commits with no recorded line changes. Optional: an older API omits it — unknown, never zero. */
     commitsWithoutLineChanges?: number;
+    /** Merge commits left out of `commits` and every LOC figure (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
+    mergeCommitsExcluded?: number;
   };
   /**
    * The source identities these figures were gathered under. Optional for the
@@ -318,6 +322,8 @@ export interface DeveloperActivityView {
     committedAt: string;
     additions: number;
     deletions: number;
+    /** A merge commit: listed for context, its lines are in no total. */
+    isMerge?: boolean;
   }[];
   /**
    * Non-bot reviews this person submitted in the window. Optional for the same
@@ -492,6 +498,8 @@ export interface CommitActivityView {
   committers: number;
   assignees: number;
   commits: number;
+  /** Merge commits left out of `commits` (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
+  mergeCommitsExcluded?: number;
   commitsPerDay: number | null;
   prsRaised: number;
   prsOpen: number;
@@ -855,6 +863,8 @@ export interface ActivityDay {
   additions?: number;
   deletions?: number;
   commitsWithoutLineChanges?: number;
+  /** Merge commits that day, left out of every figure above (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
+  mergeCommitsExcluded?: number;
   developers: { developer: string; displayName: string; commits: number }[];
   unattributedCommits: number;
 }
@@ -888,11 +898,16 @@ export interface ActiveDeveloper {
   locChanged?: number;
   additions?: number;
   deletions?: number;
+  /** Merge commits they made — NOT in `commits` or the LOC fields (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
+  mergeCommits?: number;
 }
 
 export interface DeveloperOverviewView {
   totals: {
+    /** Authored commits; merges excluded (METRICS.md §0) on an API that sends `mergeCommitsExcluded`. */
     commits: number;
+    /** Merge commits left out of `commits` and every LOC figure. Optional: an older API omits it — unknown, never zero. */
+    mergeCommitsExcluded?: number;
     developersWithSignal: number;
     developersKnown: number;
     prsOpened: number;

@@ -98,9 +98,13 @@ export interface CodeCommitPayload {
   deletions?: number;
   filesChanged?: number;
   /**
-   * Number of parents (2+ = merge commit). Recorded, not yet acted on: whether
-   * merges count as activity is an open product decision (spec §12 Q5), and
-   * this keeps the data needed to answer it without re-fetching.
+   * Number of parents: 1 for an ordinary commit, 2+ for a merge. Absent when
+   * the transport did not say (push webhooks carry no parent list) — absent
+   * means unknown, never "not a merge". Merge commits are excluded from LOC
+   * and authorship counts (METRICS.md §0), because their stats are the diff
+   * against the first parent: the merged branch's lines a second time. They
+   * still count as activity (signals, the digest) — the answer to the
+   * audit-log spec §12 Q5 (decided 2026-10-15).
    */
   parentCount?: number;
 }

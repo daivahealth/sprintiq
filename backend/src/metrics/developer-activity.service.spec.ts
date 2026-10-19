@@ -12,6 +12,7 @@ import {
   signalScanRange,
   workingDaysAgo,
 } from './developer-activity.service';
+import { isMergeCommit } from './merge-commits';
 
 describe('activeDeveloperRoster', () => {
   const names = new Map([
@@ -70,6 +71,7 @@ describe('activeDeveloperRoster', () => {
       locChanged: 0,
       prsOpened: 5,
       prsMerged: 2,
+      mergeCommits: 0,
       role: null,
     });
   });
@@ -491,6 +493,77 @@ describe('activeDeveloperSet', () => {
       index,
     );
     expect([...set]).toEqual(['alice_athma']);
+  });
+});
+
+describe('merge-commit exclusion (METRICS.md §0)', () => {
+  const index = {
+    byLogin: new Map([
+      ['alice', 'alice'],
+      ['bob', 'bob'],
+    ]),
+    byEmail: new Map<string, string>(),
+    displayNames: new Map([
+      ['alice', 'Alice'],
+      ['bob', 'Bob'],
+    ]),
+  };
+  const commit = (
+    login: string,
+    additions: number,
+    parentCount: number | null,
+    iso = '2026-10-14T05:00:00Z',
+  ) => ({
+    authorLogin: login,
+    authorEmail: null,
+    committedAt: new Date(iso),
+    authoredAt: new Date(iso),
+    additions,
+    deletions: 0,
+    parentCount,
+  });
+
+  it('leaves merges out of the day total, the LOC and the contributors, and discloses them', () => {
+    const [day] = commitDays(
+      [
+        commit('alice', 300, 1),
+        // Bob merged Alice's branch: GitHub reports the same 300 lines again.
+        commit('bob', 300, 2),
+      ],
+      index,
+    );
+    expect(day.totalCommits).toBe(1);
+    expect(day.locChanged).toBe(300);
+    expect(day.mergeCommitsExcluded).toBe(1);
+    expect(day.developers.map((d) => d.developer)).toEqual(['alice']);
+  });
+
+  it('treats an unknown parent count as an ordinary commit', () => {
+    const [day] = commitDays([commit('alice', 50, null)], index);
+    expect(day.totalCommits).toBe(1);
+    expect(day.locChanged).toBe(50);
+    expect(day.mergeCommitsExcluded).toBe(0);
+  });
+
+  it('keeps a merge-only contributor on the roster with zero commits and their merges disclosed', () => {
+    const roster = activeDeveloperRoster(
+      new Map([['alice', 1]]),
+      new Map([['alice', { additions: 300, deletions: 0 }]]),
+      new Map(),
+      index.displayNames,
+      new Map(),
+      new Map([['bob', 1]]),
+    );
+    const bob = roster.find((r) => r.developer === 'bob');
+    expect(bob).toMatchObject({ commits: 0, locChanged: 0, mergeCommits: 1 });
+  });
+
+  it('isMergeCommit is true only for two or more parents', () => {
+    expect(isMergeCommit({ parentCount: 2 })).toBe(true);
+    expect(isMergeCommit({ parentCount: 3 })).toBe(true);
+    expect(isMergeCommit({ parentCount: 1 })).toBe(false);
+    expect(isMergeCommit({ parentCount: 0 })).toBe(false);
+    expect(isMergeCommit({ parentCount: null })).toBe(false);
   });
 });
 

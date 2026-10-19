@@ -87,6 +87,10 @@ export class CodeService implements OnModuleInit {
       additions: c.additions ?? 0,
       deletions: c.deletions ?? 0,
       filesChanged: c.filesChanged ?? 0,
+      // Only ever written when the event carries one: a payload without it (a
+      // push webhook, or an older transport) must leave a known value alone
+      // rather than nulling it, since null reads as "unknown" downstream.
+      ...(c.parentCount !== undefined ? { parentCount: c.parentCount } : {}),
     };
     await this.prisma.commit.upsert({
       where: {

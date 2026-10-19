@@ -18,6 +18,7 @@ import {
   PollResult,
 } from '../../framework/source-collector';
 import {
+  commitParentCount,
   GithubCommit,
   GithubCommitDetail,
   GithubPull,
@@ -1034,6 +1035,7 @@ export class GithubCollector extends BaseSourceCollector {
             additions: c.additions,
             deletions: c.deletions,
             filesChanged: c.filesChanged,
+            parentCount: c.parentCount,
           }),
         )
     );
@@ -1066,6 +1068,7 @@ export class GithubCollector extends BaseSourceCollector {
       additions: detail?.additions,
       deletions: detail?.deletions,
       filesChanged: detail?.filesChanged,
+      parentCount: commitParentCount(commit) ?? detail?.parentCount,
     };
     return this.commitEnvelope(connection, mode, repoFullName, payload);
   }

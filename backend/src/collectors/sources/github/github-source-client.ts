@@ -77,6 +77,13 @@ export interface GithubSourceClient {
     sha: string,
   ): Promise<GithubCommitDetail>;
 
+  /** Parent counts for a batch of one repo's commits (backfill of `parentCount`). */
+  getCommitParentCounts(
+    repoFullName: string,
+    token: string,
+    shas: string[],
+  ): Promise<{ counts: Map<string, number>; rateLimitedUntil?: Date }>;
+
   getPullRequestDetail(
     repoFullName: string,
     token: string,

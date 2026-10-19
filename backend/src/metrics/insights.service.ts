@@ -14,6 +14,7 @@ import {
   PlanningService,
   WorkItemFilters,
 } from '../modules/planning/planning.service';
+import { isMergeCommit, partitionMerges } from './merge-commits';
 
 /** One work item with its bi-directional GitHub linkage (Jira → PRs). */
 export interface WorkItemView {
@@ -369,6 +370,8 @@ export interface ProjectActivityRow {
    * tell when `locChanged` is partial.
    */
   commitsWithoutLineChanges: number;
+  /** Merge commits in this row, left out of `commits` and the LOC fields (METRICS.md §0). */
+  mergeCommitsExcluded: number;
   /** Per-day activity (sparse: only days with commits). */
   dailySeries: { date: string; commits: number; locChanged: number }[];
 }
@@ -442,6 +445,8 @@ export interface DeveloperActivityView {
      * mistaken for a quiet day.
      */
     commitsWithoutLineChanges: number;
+    /** Merge commits in the window, left out of `commits` and every LOC figure (METRICS.md §0). */
+    mergeCommitsExcluded: number;
   };
   identity: DeveloperIdentityNote;
   activeProjects: string[]; // via repo→project graph mapping
@@ -461,6 +466,8 @@ export interface DeveloperActivityView {
     committedAt: string;
     additions: number;
     deletions: number;
+    /** A merge commit: listed for context, but its lines are not in any total. */
+    isMerge: boolean;
   }[];
 }
 
@@ -1336,6 +1343,7 @@ export class InsightsService {
       contributors: Set<string>;
       unattributed: number;
       withoutLineChanges: number;
+      merges: number;
       byDay: Map<string, { commits: number; locChanged: number }>;
     }
     const acc = new Map<string, Acc>();
@@ -1350,6 +1358,7 @@ export class InsightsService {
           contributors: new Set(),
           unattributed: 0,
           withoutLineChanges: 0,
+          merges: 0,
           byDay: new Map(),
         } as Acc);
       acc.set(key, cur);
@@ -1363,6 +1372,11 @@ export class InsightsService {
       const day = istDateKey(c.committedAt ?? c.authoredAt);
       for (const project of projects) {
         const a = ensure(project);
+        // Out of every count and LOC sum, disclosed per row (METRICS.md §0).
+        if (isMergeCommit(c)) {
+          a.merges += 1;
+          continue;
+        }
         a.commits += 1;
         a.additions += c.additions;
         a.deletions += c.deletions;
@@ -1399,6 +1413,7 @@ export class InsightsService {
         contributors: a.contributors.size,
         unattributedCommits: a.unattributed,
         commitsWithoutLineChanges: a.withoutLineChanges,
+        mergeCommitsExcluded: a.merges,
         dailySeries: [...a.byDay.entries()]
           .map(([date, d]) => ({
             date,
@@ -1533,7 +1548,10 @@ export class InsightsService {
     let deletions = 0;
     let filesChanged = 0;
     let withoutLineChanges = 0;
-    for (const c of commits) {
+    // Merges stay in `recentCommits` (flagged) but out of every count and LOC
+    // figure: their lines are the merged branch's, a second time (METRICS.md §0).
+    const { authored, mergeCommits } = partitionMerges(commits);
+    for (const c of authored) {
       const committedAt = c.committedAt ?? c.authoredAt;
       additions += c.additions;
       deletions += c.deletions;
@@ -1569,7 +1587,7 @@ export class InsightsService {
     return {
       developer,
       totals: {
-        commits: commits.length,
+        commits: authored.length,
         additions,
         deletions,
         locChanged: additions + deletions,
@@ -1583,6 +1601,7 @@ export class InsightsService {
         prsMerged: prs.filter((pr) => pr.mergedAt).length,
         activeRepos: byRepo.size,
         commitsWithoutLineChanges: withoutLineChanges,
+        mergeCommitsExcluded: mergeCommits,
       },
       identity: {
         logins: aliases.logins,
@@ -1609,6 +1628,7 @@ export class InsightsService {
         committedAt: (c.committedAt ?? c.authoredAt).toISOString(),
         additions: c.additions,
         deletions: c.deletions,
+        isMerge: isMergeCommit(c),
       })),
     };
   }

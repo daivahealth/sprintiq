@@ -41,6 +41,22 @@ export interface GithubCommit {
     committer: { name?: string; email?: string; date?: string } | null;
   };
   author: { login?: string } | null;
+  /** REST's own field (the list endpoint carries it); its length is the parent count. */
+  parents?: { sha?: string }[];
+  /**
+   * Not a REST field: the GraphQL transport sets it from `parents.totalCount`,
+   * because it has no parent SHAs to fill `parents` with. Read through
+   * `commitParentCount`, which takes whichever the transport supplied.
+   */
+  parentCount?: number;
+}
+
+/** A commit's parent count from either transport's shape; undefined when neither said. */
+export function commitParentCount(commit: GithubCommit): number | undefined {
+  if (typeof commit.parentCount === 'number') {
+    return commit.parentCount;
+  }
+  return Array.isArray(commit.parents) ? commit.parents.length : undefined;
 }
 
 export interface GithubRepo {
@@ -55,6 +71,8 @@ export interface GithubCommitDetail {
   filesChanged?: number;
   /** `commit.committer.date` — same response, no extra cost; used by the reconciler to backfill already-ingested commits. */
   committedAt?: string;
+  /** Number of parents (2+ = a merge commit). Same response, no extra cost. */
+  parentCount?: number;
   /** Set when GitHub signaled the token is rate-limited; caller should stop this tick. */
   rateLimitedUntil?: Date;
 }
@@ -229,6 +247,8 @@ export interface GithubPullCommitRef {
   additions?: number;
   deletions?: number;
   filesChanged?: number;
+  /** Number of parents (2+ = a merge commit). */
+  parentCount?: number;
 }
 
 export interface GithubPullCommits {
@@ -340,6 +360,29 @@ export class GithubClient implements GithubSourceClient {
     return this.getPage<GithubCommit>(url, token);
   }
 
+  /**
+   * Parent counts for many commits — the REST transport has no batch read, so
+   * this is one detail call per SHA, stopping at the first rate-limit signal.
+   * Correct but expensive; the GraphQL transport answers a batch in one query.
+   */
+  async getCommitParentCounts(
+    repoFullName: string,
+    token: string,
+    shas: string[],
+  ): Promise<{ counts: Map<string, number>; rateLimitedUntil?: Date }> {
+    const counts = new Map<string, number>();
+    for (const sha of shas) {
+      const detail = await this.getCommitDetail(repoFullName, token, sha);
+      if (typeof detail.parentCount === 'number') {
+        counts.set(sha, detail.parentCount);
+      }
+      if (detail.rateLimitedUntil) {
+        return { counts, rateLimitedUntil: detail.rateLimitedUntil };
+      }
+    }
+    return { counts };
+  }
+
   /** `GET /repos/{repo}/commits/{sha}` — the only way to get a commit's line-change stats; the list endpoint never includes them. */
   async getCommitDetail(
     repoFullName: string,
@@ -374,12 +417,16 @@ export class GithubClient implements GithubSourceClient {
       commit?: { committer?: { date?: string } | null };
       stats?: { additions?: number; deletions?: number };
       files?: unknown[];
+      parents?: unknown[];
     };
     const detail: GithubCommitDetail = {
       additions: body.stats?.additions,
       deletions: body.stats?.deletions,
       filesChanged: Array.isArray(body.files) ? body.files.length : undefined,
       committedAt: body.commit?.committer?.date,
+      parentCount: Array.isArray(body.parents)
+        ? body.parents.length
+        : undefined,
     };
 
     // Same preemption as list pages: don't let the NEXT call blow past a hard 403.

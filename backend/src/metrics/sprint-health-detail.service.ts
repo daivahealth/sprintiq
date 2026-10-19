@@ -12,6 +12,7 @@ import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
 import { attributeCommit } from './developer-activity.service';
 import { InsightsService } from './insights.service';
+import { partitionMerges } from './merge-commits';
 
 /** The sprint's own elapsed window, clamped to now. */
 export interface SprintWindowDates {
@@ -37,6 +38,8 @@ export interface CommitActivityView {
   assignees: number;
   commits: number;
   commitsPerDay: number | null;
+  /** Merge commits in the sprint window, left out of `commits` (METRICS.md §0). */
+  mergeCommitsExcluded: number;
   prsRaised: number;
   prsOpen: number;
   prsMerged: number;
@@ -256,6 +259,9 @@ export class SprintHealthDetailService {
     // M assigned") that can never contain any of them — but their commits
     // still count in `commits.length` below. Matches `bridgeCoverage`'s rule
     // exactly: excluded from figures that count people, not from the work.
+    // Merge commits are out of the commit count (METRICS.md §0) but still mark
+    // their author as having committed — merging is real work in the sprint.
+    const { authored } = partitionMerges(commits);
     const committers = new Set<string>();
     for (const commit of commits) {
       const person = attributeCommit(commit, index);
@@ -297,10 +303,11 @@ export class SprintHealthDetailService {
     return {
       committers: committers.size,
       assignees: assignees.size,
-      commits: commits.length,
+      commits: authored.length,
+      mergeCommitsExcluded: commits.length - authored.length,
       commitsPerDay:
         win.dayKeys.length > 0
-          ? round1(commits.length / win.dayKeys.length)
+          ? round1(authored.length / win.dayKeys.length)
           : null,
       prsRaised: prs.length,
       prsOpen: prs.filter((pr) => pr.state === 'open').length,
@@ -438,7 +445,10 @@ export class SprintHealthDetailService {
       // attributed to someone by name.
       index.excluded.has(person);
 
-    for (const commit of commitsPage.commits) {
+    // Authored commits only: a merge commit's lines are the merged branch's a
+    // second time, credited to the merger (METRICS.md §0). This table shows
+    // LOC by name, so the double count would land on a named person.
+    for (const commit of partitionMerges(commitsPage.commits).authored) {
       const person = attributeCommit(commit, index);
       if (!person || isExcludedPerson(person)) {
         continue;

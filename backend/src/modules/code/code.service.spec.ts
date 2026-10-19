@@ -1,4 +1,7 @@
-import { CodePullRequestPayload } from '../../common/events/contracts';
+import {
+  CodeCommitPayload,
+  CodePullRequestPayload,
+} from '../../common/events/contracts';
 import { DomainEvent } from '../../common/events/domain-event';
 import { EventBus } from '../../common/events/event-bus';
 import { EventTypes } from '../../common/events/event-types';
@@ -98,5 +101,59 @@ describe('CodeService — PR commit messages', () => {
     };
     expect(arg.update).not.toHaveProperty('commitMessages');
     expect(arg.create.commitMessages).toEqual([]);
+  });
+});
+
+describe('CodeService — commit parent count', () => {
+  function setup() {
+    const upsert = jest.fn().mockResolvedValue({});
+    const prisma = {
+      pullRequest: { upsert: jest.fn() },
+      commit: { upsert },
+    } as unknown as PrismaService;
+    const handlers = new Map<
+      string,
+      (e: DomainEvent<CodeCommitPayload>) => Promise<void>
+    >();
+    const eventBus = {
+      subscribe: jest.fn((t: string, fn: never) => handlers.set(t, fn)),
+    } as unknown as EventBus;
+    new CodeService(prisma, eventBus).onModuleInit();
+    return { upsert, handle: handlers.get(EventTypes.CODE_COMMIT_PUSHED)! };
+  }
+
+  const event = (
+    payload: Partial<CodeCommitPayload>,
+  ): DomainEvent<CodeCommitPayload> => ({
+    type: EventTypes.CODE_COMMIT_PUSHED,
+    tenantId: 'tenant-a',
+    connectionId: 'conn_1',
+    sourceEventIds: ['evt_1'],
+    occurredAt: new Date('2026-10-14T05:00:00.000Z'),
+    payload: {
+      repoFullName: 'acme/payments',
+      sha: 'abc123',
+      message: 'Merge pull request #7',
+      authoredAt: '2026-10-14T05:00:00.000Z',
+      ...payload,
+    },
+  });
+
+  it('stores the parent count when the event carries one', async () => {
+    const { upsert, handle } = setup();
+    await handle(event({ parentCount: 2 }));
+    const arg = upsert.mock.calls[0][0] as {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+    expect(arg.create.parentCount).toBe(2);
+    expect(arg.update.parentCount).toBe(2);
+  });
+
+  it('never nulls a known parent count from an event that lacks one (a push webhook)', async () => {
+    const { upsert, handle } = setup();
+    await handle(event({}));
+    const arg = upsert.mock.calls[0][0] as { update: Record<string, unknown> };
+    expect(arg.update).not.toHaveProperty('parentCount');
   });
 });
