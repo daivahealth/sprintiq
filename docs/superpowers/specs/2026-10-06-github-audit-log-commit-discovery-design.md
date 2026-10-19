@@ -206,7 +206,7 @@ Revisit the mirror from the handover §3 if, during acceptance or in operation, 
 2. Overlap: default 15 min.
 3. Backfill horizon: from go-live (the seeding pass). Earlier history stays with the existing routes; a retroactive pass would need per-branch date lookups (cost: about one call per branch).
 4. Late-arriving commits restate history, as today.
-5. Merge commits stay counted (`parentCount` is now recorded).
+5. ~~Merge commits stay counted (`parentCount` is now recorded).~~ **Answered 2026-10-15:** merge commits are excluded from commit counts and LOC but still count as activity (signals, the digest). `parentCount` is now persisted on `code_commit` from every route, including this one, and backfilled for history (METRICS.md §0, api/README.md §12 row 12).
 6. Activity date stays `committedAt`.
 7. Incomplete audit collection: the run or range is reported, and the digest stays off.
 8. The digest can trust the new collector only after §9 step 7.

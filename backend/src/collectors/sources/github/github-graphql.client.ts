@@ -301,6 +301,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
         deletions: node.deletions,
         filesChanged: node.changedFilesIfAvailable ?? undefined,
         committedAt: node.committedDate,
+        parentCount: node.parents?.totalCount ?? undefined,
       });
     }
     this.storeCommitPrefetch(repoFullName, byShaDetail);
@@ -621,7 +622,53 @@ export class GithubGraphqlClient implements GithubSourceClient {
       deletions: node.deletions,
       filesChanged: node.changedFilesIfAvailable ?? undefined,
       committedAt: node.committedDate,
+      parentCount: node.parents?.totalCount ?? undefined,
     };
+  }
+
+  /**
+   * Parent counts for many commits of one repo, in one query: one aliased
+   * `object(oid:)` per SHA, so a batch of 100 costs about one GraphQL point
+   * where per-commit detail calls would cost 100. Backfill only — collection
+   * reads `parents.totalCount` inline. A SHA missing from the result (deleted,
+   * or not a commit) is simply absent from the map; the caller leaves it null.
+   */
+  async getCommitParentCounts(
+    repoFullName: string,
+    token: string,
+    shas: string[],
+  ): Promise<{ counts: Map<string, number>; rateLimitedUntil?: Date }> {
+    const counts = new Map<string, number>();
+    const [owner, name] = this.splitRepo(repoFullName);
+    if (!token || !owner || !name || shas.length === 0) {
+      return { counts };
+    }
+    const selections = shas
+      .map(
+        (sha, i) =>
+          `c${i}: object(oid: "${sha.replace(/[^0-9a-f]/gi, '')}") { ... on Commit { oid parents { totalCount } } }`,
+      )
+      .join('\n    ');
+    const query = `
+query CommitParents($owner: String!, $name: String!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    ${selections}
+  }
+}`;
+    const result = await this.post<CommitParentsQuery>(token, query, {
+      owner,
+      name,
+    });
+    if (result.rateLimitedUntil) {
+      return { counts, rateLimitedUntil: result.rateLimitedUntil };
+    }
+    for (const node of Object.values(result.data?.repository ?? {})) {
+      if (node?.oid && typeof node.parents?.totalCount === 'number') {
+        counts.set(node.oid, node.parents.totalCount);
+      }
+    }
+    return { counts };
   }
 
   // ------------------------------------------------------------- prefetch
@@ -784,6 +831,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
       author: node.author?.user?.login
         ? { login: node.author.user.login }
         : null,
+      parentCount: node.parents?.totalCount ?? undefined,
     };
   }
 
@@ -813,6 +861,7 @@ export class GithubGraphqlClient implements GithubSourceClient {
         additions: c.additions,
         deletions: c.deletions,
         filesChanged: c.changedFilesIfAvailable ?? undefined,
+        parentCount: c.parents?.totalCount ?? undefined,
       }));
   }
 
@@ -1132,6 +1181,7 @@ const PULL_COMMIT_FIELDS = `commit {
       additions
       deletions
       changedFilesIfAvailable
+      parents { totalCount }
       author { name email user { login } }
     }`;
 
@@ -1210,6 +1260,7 @@ query Commits($owner: String!, $name: String!, $first: Int!, $after: String, $si
               additions
               deletions
               changedFilesIfAvailable
+              parents { totalCount }
               author { name email user { login } }
               committer { name email }
             }
@@ -1230,6 +1281,7 @@ query CommitDetail($owner: String!, $name: String!, $oid: GitObjectID!) {
         deletions
         changedFilesIfAvailable
         committedDate
+        parents { totalCount }
       }
     }
   }
@@ -1303,6 +1355,7 @@ interface PullCommitNode {
   additions?: number;
   deletions?: number;
   changedFilesIfAvailable?: number | null;
+  parents?: { totalCount?: number } | null;
   author?: {
     name?: string;
     email?: string;
@@ -1318,6 +1371,7 @@ interface CommitNode {
   additions?: number;
   deletions?: number;
   changedFilesIfAvailable?: number | null;
+  parents?: { totalCount?: number } | null;
   author?: {
     name?: string;
     email?: string;
@@ -1365,8 +1419,17 @@ interface CommitDetailQuery {
       deletions?: number;
       changedFilesIfAvailable?: number | null;
       committedDate?: string;
+      parents?: { totalCount?: number } | null;
     } | null;
   } | null;
+}
+
+/** One aliased `object(oid:)` per commit, keyed `c0`, `c1`, … */
+interface CommitParentsQuery {
+  repository?: Record<
+    string,
+    { oid?: string; parents?: { totalCount?: number } | null } | null
+  > | null;
 }
 
 interface ReposQuery {

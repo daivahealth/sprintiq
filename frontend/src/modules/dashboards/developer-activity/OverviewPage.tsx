@@ -26,6 +26,7 @@ import {
   type ActivityDay,
 } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
+import { mergeExclusionNote } from '../merge-commits';
 import { CurrentLensNote } from './CurrentLensNote';
 import { hasDailyLoc, timelineMetric } from './timeline-metric';
 import {
@@ -87,7 +88,11 @@ export function OverviewPage() {
         <Stat
           label="Commits"
           value={totals.commits.toLocaleString()}
-          hint="all repos, this window"
+          hint={
+            totals.mergeCommitsExcluded
+              ? `all repos, this window · ${totals.mergeCommitsExcluded.toLocaleString()} merges not counted`
+              : 'all repos, this window'
+          }
         />
         <Stat
           label="Developers with a signal"
@@ -167,7 +172,9 @@ export function OverviewPage() {
                   <span className="font-medium text-fg">
                     {attribution.coveragePct}%
                   </span>{' '}
-                  of {attribution.commitsInScope.toLocaleString()} commits match
+                  of {attribution.commitsInScope.toLocaleString()} commits{' '}
+                  {(totals.mergeCommitsExcluded ?? 0) > 0 && '(merges included) '}
+                  match
                   a known developer.{' '}
                   {attribution.commitsUnattributed > 0 && (
                     <>
@@ -367,6 +374,17 @@ function ActiveDevelopers({
                 </td>
                 <td className="py-2.5 pr-4 tabular-nums text-fg-muted">
                   {dev.commits}
+                  {/* Merges are a signal, so a merge-only contributor is on the
+                      roster — with 0 commits. Saying so stops that row reading
+                      as missing data. */}
+                  {(dev.mergeCommits ?? 0) > 0 && (
+                    <span
+                      className="ml-1 text-xs text-fg-faint"
+                      title="Merge commits: not counted in commits or lines"
+                    >
+                      +{dev.mergeCommits} merge{dev.mergeCommits === 1 ? '' : 's'}
+                    </span>
+                  )}
                 </td>
                 {/* An API that predates this column sends nothing, and nothing
                     is not zero: "changed no lines" and "we cannot tell" are
@@ -484,6 +502,16 @@ function MonthlyTrend() {
           </>
         ) : null}
         Team totals, never a ranking. Changed LOC is volume, not productivity.
+        {mergeExclusionNote(
+          months.reduce((n, m) => n + (m.mergeCommitsExcluded ?? 0), 0),
+        ) && (
+          <>
+            {' '}
+            {mergeExclusionNote(
+              months.reduce((n, m) => n + (m.mergeCommitsExcluded ?? 0), 0),
+            )}
+          </>
+        )}
       </ProvenanceNote>
     </Card>
   );
@@ -539,6 +567,11 @@ function CommitTimeline({
   const withoutLines = byLoc
     ? days.reduce((n, d) => n + (d.commitsWithoutLineChanges ?? 0), 0)
     : 0;
+  // In either metric: merges are out of the commit bars as well as the lines.
+  const mergesExcluded = days.reduce(
+    (n, d) => n + (d.mergeCommitsExcluded ?? 0),
+    0,
+  );
   const header = (
     <Header
       sort={sort}
@@ -640,10 +673,14 @@ function CommitTimeline({
               {' '}
               {withoutLines} commit{withoutLines === 1 ? '' : 's'} in this
               window recorded no line changes (line stats not collected yet, or
+              collected yet, or
               commits that change no lines), so line totals may be partial.
             </>
           )}
         </ProvenanceNote>
+      )}
+      {mergeExclusionNote(mergesExcluded) && (
+        <ProvenanceNote>{mergeExclusionNote(mergesExcluded)}</ProvenanceNote>
       )}
     </Card>
   );

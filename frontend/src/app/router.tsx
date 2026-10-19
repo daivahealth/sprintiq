@@ -85,7 +85,19 @@ export function AppRouter() {
         <Route path="/_styleguide" element={<StyleguidePage />} />
       ) : null}
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/" element={<Page><DeliveryDashboard /></Page>} />
+      {/* `/` lands on Engineering Activity, the first primary board, since
+          2026-10-15. Delivery Explorer — the landing page until then — moved
+          to the sidebar's Later group and its own path. A redirect, not a
+          render, so `/` never shows one page under two URLs. */}
+      <Route
+        path="/"
+        element={
+          <RequireAuth>
+            <Navigate to="/engineering-activity/overview" replace />
+          </RequireAuth>
+        }
+      />
+      <Route path="/delivery-explorer" element={<Page><DeliveryDashboard /></Page>} />
       <Route path="/sprint-health" element={<Page><SprintHealthBoard /></Page>} />
       <Route path="/sprint-risk" element={<Page><SprintRiskBoard /></Page>} />
       <Route path="/velocity" element={<Page><VelocityBoard /></Page>} />

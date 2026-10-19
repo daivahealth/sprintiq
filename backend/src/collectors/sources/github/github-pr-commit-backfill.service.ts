@@ -255,6 +255,7 @@ export class GithubPrCommitBackfillService {
       additions?: number;
       deletions?: number;
       filesChanged?: number;
+      parentCount?: number;
     },
   ): CanonicalEnvelope {
     const authoredAt = commit.authoredAt ?? new Date().toISOString();
@@ -270,6 +271,7 @@ export class GithubPrCommitBackfillService {
       additions: commit.additions,
       deletions: commit.deletions,
       filesChanged: commit.filesChanged,
+      parentCount: commit.parentCount,
     };
     return buildCommitEnvelope({
       connectionId,

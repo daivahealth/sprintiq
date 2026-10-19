@@ -114,4 +114,131 @@ export class GithubCommitReconcilerService {
     );
     return { candidates: candidates.length, updated, skipped, rateLimited };
   }
+
+  /**
+   * One-off maintenance: fills `parentCount` for commits ingested before it was
+   * collected, so merge commits (2+ parents) can be excluded from LOC and
+   * authorship counts (METRICS.md §0). Same direct-update rationale as
+   * `reconcile`: a commit's idempotency key makes re-ingestion a no-op.
+   *
+   * Batched per repo, up to `PARENT_BATCH` SHAs per source call — one GraphQL
+   * query on the GraphQL transport. **Resumable by cursor, not by candidacy**:
+   * a commit GitHub no longer returns (a deleted repo or force-pushed history)
+   * stays null forever, and re-selecting nulls from the top would wedge every
+   * later run on the same unanswerable rows. Pass the returned `nextCursor` back
+   * as `after` until `done`.
+   */
+  async reconcileParentCounts(
+    tenantId: string,
+    after?: string,
+    limit = 5000,
+  ): Promise<ParentCountReconcileResult> {
+    const candidates = await this.prisma.commit.findMany({
+      where: {
+        tenantId,
+        parentCount: null,
+        ...(after ? { id: { gt: after } } : {}),
+      },
+      select: { id: true, connectionId: true, repoFullName: true, sha: true },
+      orderBy: { id: 'asc' },
+      take: limit,
+    });
+
+    const groups = new Map<string, typeof candidates>();
+    for (const c of candidates) {
+      const key = `${c.connectionId}\u0000${c.repoFullName}`;
+      groups.set(key, [...(groups.get(key) ?? []), c]);
+    }
+
+    let updated = 0;
+    let unanswered = 0;
+    let rateLimited = false;
+    const tokenCache = new Map<string, string>();
+
+    outer: for (const rows of groups.values()) {
+      const { connectionId, repoFullName } = rows[0];
+      let token = tokenCache.get(connectionId);
+      if (token === undefined) {
+        const connection = await this.prisma.connection.findUnique({
+          where: { id: connectionId },
+          select: { secretRef: true },
+        });
+        token = connection
+          ? ((await this.secrets.resolve(tenantId, connection.secretRef)) ?? '')
+          : '';
+        tokenCache.set(connectionId, token);
+      }
+
+      for (let i = 0; i < rows.length; i += PARENT_BATCH) {
+        const batch = rows.slice(i, i + PARENT_BATCH);
+        if (!token) {
+          unanswered += batch.length;
+          continue;
+        }
+        const { counts, rateLimitedUntil } =
+          await this.client.getCommitParentCounts(
+            repoFullName,
+            token,
+            batch.map((r) => r.sha),
+          );
+        if (rateLimitedUntil) {
+          rateLimited = true;
+          break outer;
+        }
+        const byCount = new Map<number, string[]>();
+        for (const row of batch) {
+          const n = counts.get(row.sha);
+          if (n === undefined) {
+            unanswered++;
+          } else {
+            byCount.set(n, [...(byCount.get(n) ?? []), row.id]);
+          }
+        }
+        for (const [parentCount, ids] of byCount) {
+          const res = await this.prisma.commit.updateMany({
+            where: { tenantId, id: { in: ids } },
+            data: { parentCount },
+          });
+          updated += res.count;
+        }
+      }
+    }
+
+    // A rate-limited pass resumes from the cursor it was given: groups
+    // interleave ids, so no later id is safely "done", and the rows it did
+    // update no longer match `parentCount: null` anyway.
+    const done = !rateLimited && candidates.length < limit;
+    const nextCursor = done
+      ? null
+      : rateLimited
+        ? (after ?? null)
+        : candidates[candidates.length - 1].id;
+    this.logger.log(
+      `Reconciled commit parent counts: ${updated} updated, ${unanswered} unanswered, ${candidates.length} candidates` +
+        (rateLimited ? ' (stopped early — rate-limited)' : ''),
+    );
+    return {
+      candidates: candidates.length,
+      updated,
+      unanswered,
+      rateLimited,
+      done,
+      nextCursor,
+    };
+  }
+}
+
+/** SHAs per source call — 100 aliased objects keep a GraphQL query near 1 point. */
+const PARENT_BATCH = 100;
+
+export interface ParentCountReconcileResult {
+  candidates: number;
+  updated: number;
+  /** Commits GitHub did not answer for (deleted, or no token); left null. */
+  unanswered: number;
+  rateLimited: boolean;
+  /** True when this pass reached the last candidate; stop calling. */
+  done: boolean;
+  /** Pass back as `after` on the next call (null = from the start). */
+  nextCursor: string | null;
 }

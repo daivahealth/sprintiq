@@ -1067,4 +1067,98 @@ describe('GithubGraphqlClient', () => {
     // Not `failed` — nothing was refused; there was simply nothing to ask with.
     expect(page.failed).toBeUndefined();
   });
+  // ----------------------------------------------------------- parent counts
+
+  it('carries parents.totalCount through the history walk and its prefetched detail', async () => {
+    // A merge commit's stats are the diff against its first parent — the
+    // merged branch's lines a second time — so the count must survive both
+    // paths a commit can reach ingestion by (METRICS.md §0).
+    global.fetch = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: {
+          data: {
+            rateLimit: RATE_LIMIT,
+            repository: {
+              defaultBranchRef: {
+                target: {
+                  history: {
+                    pageInfo: { hasNextPage: false, endCursor: 'C1' },
+                    nodes: [
+                      {
+                        oid: 'merge1',
+                        message: 'Merge pull request #7 from acme/feature',
+                        authoredDate: '2026-10-14T05:00:00.000Z',
+                        committedDate: '2026-10-14T05:00:00.000Z',
+                        additions: 300,
+                        deletions: 0,
+                        changedFilesIfAvailable: 4,
+                        parents: { totalCount: 2 },
+                        author: {
+                          name: 'Bob',
+                          email: 'bob@example.com',
+                          user: { login: 'bob' },
+                        },
+                        committer: {
+                          name: 'GitHub',
+                          email: 'noreply@github.com',
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    const page = await client.listCommitsPage(
+      'acme/payments',
+      'tok',
+      { page: 1 },
+      '2026-10-01T00:00:00.000Z',
+    );
+    expect(page.items[0].parentCount).toBe(2);
+    const detail = await client.getCommitDetail(
+      'acme/payments',
+      'tok',
+      'merge1',
+    );
+    expect(detail.parentCount).toBe(2);
+  });
+
+  it('answers a batch of parent counts in one aliased query, omitting SHAs GitHub does not return', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      fakeResponse({
+        body: {
+          data: {
+            rateLimit: RATE_LIMIT,
+            repository: {
+              c0: { oid: 'aaa111', parents: { totalCount: 1 } },
+              c1: { oid: 'bbb222', parents: { totalCount: 2 } },
+              c2: null,
+            },
+          },
+        },
+      }),
+    );
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const { counts } = await client.getCommitParentCounts(
+      'acme/payments',
+      'tok',
+      ['aaa111', 'bbb222', 'ccc333'],
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect([...counts.entries()]).toEqual([
+      ['aaa111', 1],
+      ['bbb222', 2],
+    ]);
+    const sent = JSON.parse(
+      (fetchMock.mock.calls[0][1] as { body: string }).body,
+    ) as { query: string };
+    expect(sent.query).toContain('c2: object(oid: "ccc333")');
+  });
 });

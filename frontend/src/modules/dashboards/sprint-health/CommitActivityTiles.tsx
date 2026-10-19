@@ -23,7 +23,13 @@ export function CommitActivityTiles({ data }: { data: CommitActivityView }) {
         <Stat
           label="Commits this sprint"
           value={data.commits}
-          hint={data.commitsPerDay === null ? undefined : `${data.commitsPerDay}/day avg`}
+          hint={[
+            data.commitsPerDay === null ? null : `${data.commitsPerDay}/day avg`,
+            // Merges are out of the count (METRICS.md §0); say how many.
+            data.mergeCommitsExcluded ? `${data.mergeCommitsExcluded} merges not counted` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || undefined}
         />
         <Stat label="PRs raised" value={data.prsRaised}
           hint={`${data.prsOpen} open, ${data.prsMerged} merged`} />
