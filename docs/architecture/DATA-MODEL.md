@@ -142,7 +142,7 @@ Added 2026-09-16 (api/README.md §12 #52). The ladders in §3 and §3.1 merge on
 1. **Split people.** A developer who also commits from a personal laptop under a Gmail address, or from a machine whose git config carries an employee number (`a379031@CORPLPM000257.local`, `357486@narayanahealth.org`), produces a second entity with no evidential bridge to the first. Every rung correctly declines: no login, no shared address, and a name matching no known login.
 2. **Non-developers.** Automation the bot heuristics miss, and Jira-only accounts that hold tickets and never commit. Neither belongs in a head-count and nothing in the collected data says so.
 
-Only a human can settle either, so this table is where a human says it.
+Only a human can settle either, so this table is where a human says it. **Since 2026-10-19 it is admin-managed in the app** (Configuration → Developer identities: possible duplicates by normalised name, merge with a required reason, remove; every change audited and re-resolved at once; `/admin/configurations/identity-overrides`). `scripts/apply-identity-overrides.ts` remains a one-off importer for restoring rows after a reset.
 
 | Entity | Key fields | Notes |
 |---|---|---|

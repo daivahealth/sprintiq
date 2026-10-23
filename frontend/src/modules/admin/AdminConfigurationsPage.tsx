@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
+import { DeveloperIdentitiesPanel } from './DeveloperIdentitiesPanel';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api/client';
 import type {
@@ -772,6 +773,8 @@ export function AdminConfigurationsPage() {
           </Card>
         ) : null}
       </div>
+
+      <DeveloperIdentitiesPanel />
     </section>
   );
 }

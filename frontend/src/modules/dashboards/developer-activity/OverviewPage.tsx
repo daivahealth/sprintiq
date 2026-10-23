@@ -94,11 +94,19 @@ export function OverviewPage() {
         <Stat
           label="Commits"
           value={totals.commits.toLocaleString()}
-          hint={
+          hint={[
+            'all repos, this window',
             totals.mergeCommitsExcluded
-              ? `all repos, this window · ${totals.mergeCommitsExcluded.toLocaleString()} merges not counted`
-              : 'all repos, this window'
-          }
+              ? `${totals.mergeCommitsExcluded.toLocaleString()} merges not counted`
+              : null,
+            // A commit several repos hold (a repo copied from another) is
+            // one commit, counted once (METRICS.md §0).
+            totals.sharedCommitsCollapsed
+              ? `${totals.sharedCommitsCollapsed.toLocaleString()} repo copies counted once`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         />
         <Stat
           label="Developers with a signal"

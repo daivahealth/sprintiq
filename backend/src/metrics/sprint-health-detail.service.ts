@@ -12,6 +12,7 @@ import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
 import { attributeCommit } from './developer-activity.service';
 import { InsightsService } from './insights.service';
+import { distinctCommitsBySha } from './commit-dedupe';
 import { partitionMerges } from './merge-commits';
 
 /** The sprint's own elapsed window, clamped to now. */
@@ -252,7 +253,8 @@ export class SprintHealthDetailService {
           })
         : Promise.resolve<PullRequest[]>([]),
     ]);
-    const commits = commitsPage.commits;
+    // Copied repos mapped to one project hold the same commits; count once.
+    const { commits } = distinctCommitsBySha(commitsPage.commits);
 
     // Bots, deprovisioned accounts and admin-withheld entities stay OUT of
     // this head-count — it is read against a Jira-assignee denominator ("N of
@@ -448,7 +450,9 @@ export class SprintHealthDetailService {
     // Authored commits only: a merge commit's lines are the merged branch's a
     // second time, credited to the merger (METRICS.md §0). This table shows
     // LOC by name, so the double count would land on a named person.
-    for (const commit of partitionMerges(commitsPage.commits).authored) {
+    for (const commit of partitionMerges(
+      distinctCommitsBySha(commitsPage.commits).commits,
+    ).authored) {
       const person = attributeCommit(commit, index);
       if (!person || isExcludedPerson(person)) {
         continue;

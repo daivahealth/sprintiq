@@ -16,6 +16,7 @@ import {
 } from '../modules/planning/planning.service';
 import { developerBranches, type DeveloperBranch } from './developer-branches';
 import { isMergeCommit, partitionMerges } from './merge-commits';
+import { distinctCommitsBySha } from './commit-dedupe';
 
 /** One work item with its bi-directional GitHub linkage (Jira → PRs). */
 export interface WorkItemView {
@@ -448,6 +449,8 @@ export interface DeveloperActivityView {
     commitsWithoutLineChanges: number;
     /** Merge commits in the window, left out of `commits` and every LOC figure (METRICS.md §0). */
     mergeCommitsExcluded: number;
+    /** Extra copies of commits held by more than one repository, counted once. */
+    sharedCommitsCollapsed: number;
   };
   identity: DeveloperIdentityNote;
   activeProjects: string[]; // via repo→project graph mapping
@@ -1536,7 +1539,7 @@ export class InsightsService {
     // returns nothing for anyone whose git config uses an unverified address —
     // and the board then reports "0 commits" as a fact about them.
     const aliases = await this.identities.aliasesFor(tenantId, developer);
-    const commits = await this.code.listCommits(tenantId, {
+    const rows = await this.code.listCommits(tenantId, {
       authorLogins: aliases.logins,
       authorEmails: aliases.emails,
       from,
@@ -1560,6 +1563,9 @@ export class InsightsService {
     let withoutLineChanges = 0;
     // Merges stay in `recentCommits` (flagged) but out of every count and LOC
     // figure: their lines are the merged branch's, a second time (METRICS.md §0).
+    // One person's figures: a commit held by several repositories (copied
+    // repos) counts once (METRICS.md §0).
+    const { commits, sharedCommitsCollapsed } = distinctCommitsBySha(rows);
     const { authored, mergeCommits } = partitionMerges(commits);
     // Branch tracking: which branches this person's authored commits were
     // seen on, with each branch's PR status as a label.
@@ -1632,6 +1638,7 @@ export class InsightsService {
         activeRepos: byRepo.size,
         commitsWithoutLineChanges: withoutLineChanges,
         mergeCommitsExcluded: mergeCommits,
+        sharedCommitsCollapsed,
       },
       identity: {
         logins: aliases.logins,

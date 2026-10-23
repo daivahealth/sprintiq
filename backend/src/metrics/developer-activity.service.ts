@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import {
   istDateKey,
@@ -21,11 +22,8 @@ import {
   CopilotCoverage,
   CopilotUsageRow,
 } from '../modules/code/code.service';
-import {
-  isMergeCommit,
-  MERGE_COMMIT,
-  NOT_A_MERGE_COMMIT,
-} from './merge-commits';
+import { distinctCommitsBySha } from './commit-dedupe';
+import { isMergeCommit } from './merge-commits';
 
 /**
  * Read models for the Engineering Activity section (DASHBOARDS.md §4.4).
@@ -228,6 +226,11 @@ export interface OverviewView {
     commits: number;
     /** Merge commits in the window, left out of `commits` and every LOC figure. */
     mergeCommitsExcluded: number;
+    /**
+     * Extra copies of commits held by more than one repository (copied
+     * repos), counted once here (METRICS.md §0).
+     */
+    sharedCommitsCollapsed: number;
     /** Developers with any tracked signal in the window. */
     developersWithSignal: number;
     /** Developers known to the tenant at all — the honest denominator. */
@@ -325,6 +328,8 @@ export interface TrendMonth {
   locChanged: number;
   /** Merge commits in the month, left out of `commits` and the LOC fields. */
   mergeCommitsExcluded: number;
+  /** Extra copies of commits held by more than one repository, counted once. */
+  sharedCommitsCollapsed: number;
   /**
    * Whether collection had reached this month at all.
    *
@@ -424,7 +429,7 @@ export class DeveloperActivityService {
     const fromDay = istDateKey(from);
     const toDay = istDateKey(to);
     const [
-      { commits, truncated },
+      page,
       index,
       attribution,
       assignees,
@@ -455,6 +460,12 @@ export class DeveloperActivityService {
       this.code.copilotSeatLogins(tenantId),
       this.code.copilotCoverage(tenantId, fromDay, toDay),
     ]);
+    const { truncated } = page;
+    // A commit held by several repositories (a repo created from another's
+    // history) counts once on this team- and person-level board (METRICS.md §0).
+    const { commits, sharedCommitsCollapsed } = distinctCommitsBySha(
+      page.commits,
+    );
 
     const committers = new Set<string>();
     // Window totals per person, accumulated from the same passes the day
@@ -563,6 +574,7 @@ export class DeveloperActivityService {
       totals: {
         commits: commits.length - mergeCommitsExcluded,
         mergeCommitsExcluded,
+        sharedCommitsCollapsed,
         developersWithSignal: [...withSignal].filter(isPerson).length,
         developersKnown: index.displayNames.size,
         prsOpened: prs.length,
@@ -621,48 +633,60 @@ export class DeveloperActivityService {
     const tenantId = this.tenantContext.requireTenantId();
     const months = lastIstMonths(TREND_MONTHS, now);
 
-    const monthWhere = (month: string) => ({
-      tenantId,
-      ...(repos.length > 0 ? { repoFullName: { in: repos } } : {}),
-      // By committer date, matching `listCommitsPage` — the two diverge
-      // on a rebase, and a trend bucketed differently from the day series
-      // above it would disagree with it about the same month.
-      committedAt: {
-        gte: istMonthStart(month),
-        lte: istMonthEnd(month),
-      },
-    });
-    const [buckets, merges] = await Promise.all([
-      Promise.all(
-        months.map((month) =>
-          this.prisma.commit.aggregate({
-            // Merge commits out of both the count and the sums (METRICS.md §0).
-            where: { AND: [monthWhere(month), NOT_A_MERGE_COMMIT] },
-            _count: { _all: true },
-            _sum: { additions: true, deletions: true },
-          }),
-        ),
+    // One grouped read over the year (was 24 aggregates): a commit held by
+    // several repositories counts once (METRICS.md §0), which a per-row
+    // aggregate cannot express. Merge commits are out of the count and the
+    // sums and reported beside them. Months by IST, on committer date —
+    // matching `listCommitsPage`, so the trend and the day series agree.
+    const from = istMonthStart(months[0]);
+    const to = istMonthEnd(months[months.length - 1]);
+    const repoFilter =
+      repos.length > 0
+        ? Prisma.sql`AND "repoFullName" IN (${Prisma.join(repos)})`
+        : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<
+      {
+        month: string;
+        commits: number;
+        additions: number;
+        deletions: number;
+        merges: number;
+        copies: number;
+      }[]
+    >`
+      WITH c AS (
+        SELECT sha, "repoFullName", additions, deletions,
+               COALESCE("parentCount", 0) > 1 AS is_merge,
+               to_char("committedAt" + interval '5 hours 30 minutes', 'YYYY-MM') AS month
+        FROM code_commit
+        WHERE "tenantId" = ${tenantId}
+          AND "committedAt" >= ${from} AND "committedAt" <= ${to}
+          ${repoFilter}
       ),
-      Promise.all(
-        months.map((month) =>
-          this.prisma.commit.count({
-            where: { AND: [monthWhere(month), MERGE_COMMIT] },
-          }),
-        ),
-      ),
-    ]);
+      d AS (SELECT DISTINCT ON (sha) * FROM c ORDER BY sha, "repoFullName")
+      SELECT d.month,
+             COUNT(*) FILTER (WHERE NOT d.is_merge)::int AS commits,
+             COALESCE(SUM(d.additions) FILTER (WHERE NOT d.is_merge), 0)::int AS additions,
+             COALESCE(SUM(d.deletions) FILTER (WHERE NOT d.is_merge), 0)::int AS deletions,
+             COUNT(*) FILTER (WHERE d.is_merge)::int AS merges,
+             (SELECT COUNT(*) FROM c WHERE c.month = d.month)::int - COUNT(*)::int AS copies
+      FROM d GROUP BY d.month
+    `;
+    const byMonth = new Map(rows.map((r) => [r.month, r]));
 
     return {
-      months: months.map((month, i) => {
-        const additions = buckets[i]._sum.additions ?? 0;
-        const deletions = buckets[i]._sum.deletions ?? 0;
+      months: months.map((month) => {
+        const r = byMonth.get(month);
+        const additions = r?.additions ?? 0;
+        const deletions = r?.deletions ?? 0;
         return {
           month,
-          commits: buckets[i]._count._all,
+          commits: r?.commits ?? 0,
           additions,
           deletions,
           locChanged: additions + deletions,
-          mergeCommitsExcluded: merges[i],
+          mergeCommitsExcluded: r?.merges ?? 0,
+          sharedCommitsCollapsed: r?.copies ?? 0,
           collected: monthCollected(month, collectedBackTo),
         };
       }),

@@ -792,6 +792,8 @@ describe('Copilot column (ADR-0012)', () => {
 describe('DeveloperActivityService.overview — people and the Copilot column', () => {
   function service(copilotCollected: boolean) {
     const commit = (login: string) => ({
+      sha: `sha-${login}`,
+      repoFullName: 'org/repo',
       authorLogin: login,
       authorEmail: null,
       committedAt: new Date('2026-10-10T06:00:00Z'),

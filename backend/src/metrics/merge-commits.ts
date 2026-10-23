@@ -1,5 +1,3 @@
-import type { Prisma } from '@prisma/client';
-
 /**
  * Merge commits are excluded from LOC and from authorship commit counts
  * (METRICS.md §0).
@@ -32,17 +30,3 @@ export function partitionMerges<T extends { parentCount?: number | null }>(
   const authored = commits.filter((c) => !isMergeCommit(c));
   return { authored, mergeCommits: commits.length - authored.length };
 }
-
-/**
- * The same rule as a Prisma filter, for aggregates. Spelled as an OR because
- * `NOT: { parentCount: { gt: 1 } }` is `NOT (NULL > 1)` in SQL — NULL, so it
- * would silently drop every not-yet-backfilled commit too.
- */
-export const NOT_A_MERGE_COMMIT: Prisma.CommitWhereInput = {
-  OR: [{ parentCount: null }, { parentCount: { lte: 1 } }],
-};
-
-/** Merge commits only — for the disclosure count beside an aggregate. */
-export const MERGE_COMMIT: Prisma.CommitWhereInput = {
-  parentCount: { gt: 1 },
-};

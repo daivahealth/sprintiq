@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Inject,
   Optional,
@@ -40,6 +41,10 @@ import { SecretsService } from '../../common/secrets/secrets.service';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
+import {
+  IdentityOverrideInput,
+  IdentityOverridesService,
+} from '../../correlation/identity-overrides.service';
 import {
   CONFIGURATION_CATALOG,
   CONFIGURATION_NAMESPACES,
@@ -121,9 +126,119 @@ export class ConfigurationsController {
     private readonly progress: CollectionProgressService,
     private readonly auditSync: GithubAuditSyncService,
     private readonly auditReport: GithubAuditReportService,
+    private readonly identityOverrides: IdentityOverridesService,
     private readonly copilotSync: GithubCopilotUsageSyncService,
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
+
+  /** Current identity overrides — admin-made merges and exclusions (2026-10-19). */
+  @Roles(Role.ADMIN)
+  @Get('identity-overrides')
+  async listIdentityOverrides(@CurrentUser() user: AuthUser) {
+    return { overrides: await this.identityOverrides.list(user.tenantId) };
+  }
+
+  /**
+   * Developers who look like one person in two rows (names that normalise to
+   * the same letters). Suggestions only; nothing merges until an admin acts.
+   */
+  @Roles(Role.ADMIN)
+  @Get('identity-overrides/possible-duplicates')
+  async possibleDuplicateIdentities(@CurrentUser() user: AuthUser) {
+    return {
+      groups: await this.identityOverrides.possibleDuplicates(user.tenantId),
+    };
+  }
+
+  /**
+   * Records one identity override (merge or exclude) and re-resolves at once.
+   * A human statement with a required reason; audited.
+   */
+  @Roles(Role.ADMIN)
+  @Put('identity-overrides')
+  async setIdentityOverride(
+    @CurrentUser() user: AuthUser,
+    @Body() body: IdentityOverrideInput,
+  ) {
+    const result = await this.identityOverrides.set(
+      user.tenantId,
+      user.userId,
+      body,
+    );
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'correlation.identity_override.set',
+      targetType: 'developer_identity',
+      targetId: `${body.sourceSystem}:${body.sourceKey}`,
+      metadata: {
+        action: result.action,
+        canonicalDeveloperId: result.canonicalDeveloperId,
+        reason: result.reason,
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Merges every GitHub identity of one developer into another — the action
+   * behind "Merge into…" on a possible duplicate. Audited.
+   */
+  @Roles(Role.ADMIN)
+  @Post('identity-overrides/merge-developer')
+  async mergeDeveloperIdentities(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { from?: string; into?: string; reason?: string },
+  ) {
+    if (!body?.from || !body?.into) {
+      throw new BadRequestException('from and into are required.');
+    }
+    const result = await this.identityOverrides.mergeDeveloper(
+      user.tenantId,
+      user.userId,
+      body.from,
+      body.into,
+      body.reason ?? '',
+    );
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'correlation.identity_override.merge_developer',
+      targetType: 'developer',
+      targetId: body.from,
+      metadata: { into: body.into, merged: result.merged, reason: body.reason },
+    });
+    return result;
+  }
+
+  /** Removes one override and re-resolves. Audited. */
+  @Roles(Role.ADMIN)
+  @Delete('identity-overrides/:sourceSystem/:sourceKey')
+  async removeIdentityOverride(
+    @CurrentUser() user: AuthUser,
+    @Param('sourceSystem') sourceSystem: string,
+    @Param('sourceKey') sourceKey: string,
+  ) {
+    const removed = await this.identityOverrides.remove(
+      user.tenantId,
+      sourceSystem,
+      sourceKey,
+    );
+    if (!removed) {
+      throw new BadRequestException('No such override for this tenant.');
+    }
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'correlation.identity_override.remove',
+      targetType: 'developer_identity',
+      targetId: `${sourceSystem}:${sourceKey}`,
+    });
+    return { removed: true };
+  }
 
   @Roles(Role.ADMIN)
   @Get('catalog')
