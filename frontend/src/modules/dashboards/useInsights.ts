@@ -910,6 +910,27 @@ export interface ActiveDeveloper {
   deletions?: number;
   /** Merge commits they made — NOT in `commits` or the LOC fields (METRICS.md §0). Optional: an older API omits it — unknown, never zero. */
   mergeCommits?: number;
+  /**
+   * Copilot usage in the window (ADR-0012). `null` when the tenant has never
+   * collected a Copilot report; `undefined` when this API predates the field.
+   * Either way the column isn't shown — neither is "no usage".
+   */
+  copilot?: DeveloperCopilot | null;
+}
+
+/** One person's Copilot usage over the window — context, never an ordering. */
+export interface DeveloperCopilot {
+  status: 'active' | 'seat_unused' | 'no_seat' | 'no_activity';
+  activeDays: number;
+  linesAdded: number;
+}
+
+/** Freshness of the roster's Copilot column. */
+export interface CopilotCoverage {
+  collected: boolean;
+  /** Newest UTC report day held — GitHub publishes ~2 days after a day closes. */
+  coveredThrough: string | null;
+  reportDaysInWindow: number;
 }
 
 export interface DeveloperOverviewView {
@@ -931,6 +952,8 @@ export interface DeveloperOverviewView {
    * cannot disagree about the same window.
    */
   activeDevelopers: ActiveDeveloper[];
+  /** Absent from an API that predates the Copilot column. */
+  copilot?: CopilotCoverage;
   days: ActivityDay[];
   attribution: {
     commitsInScope: number;

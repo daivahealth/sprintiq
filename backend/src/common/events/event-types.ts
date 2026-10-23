@@ -12,6 +12,10 @@ export const EventTypes = {
   CODE_PUSH_OBSERVED: 'code.push.observed',
   /** A commit was found on a branch (branch tracking, ingest mode only). */
   CODE_COMMIT_BRANCH_OBSERVED: 'code.commit.branch_observed',
+  // Copilot usage metrics (ADR-0012), from GitHub's org usage-metrics reports.
+  CODE_COPILOT_USAGE_REPORTED: 'code.copilot.usage.reported',
+  CODE_COPILOT_REPORT_DAY_COLLECTED: 'code.copilot.report_day.collected',
+  CODE_COPILOT_SEATS_OBSERVED: 'code.copilot.seats.observed',
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
   PLANNING_VERSION_UPSERTED: 'planning.version.upserted',

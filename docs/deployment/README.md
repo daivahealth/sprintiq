@@ -171,6 +171,15 @@ All parsed in one place (`github-audit.config.ts`) and boot-validated — an out
 | `GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES` (2026-10-12) | `50` | integer `0–500` | A repo the audit log shows a push to, with no GitHub connection at all in the tenant, is auto-registered (as the admin org sync would) and seeded; it is additionally given a `new_ref` range per non-default branch only when it has at most this many branches — above it, seeded only, noted in `run.error`. `0` means always seed only. |
 
 Execution also respects the existing `GITHUB_BACKFILL_RATE_RESERVE` ([api/README.md §3.2](../api/README.md)): Compare and detail calls are charged against a run-level `core` budget estimate (latest remaining minus the reserve), and exhausting it stops the run, leaving the remaining ranges `pending` for the next tick.
+### 5.2 Copilot usage metrics (`GITHUB_COPILOT_*`, [ADR-0012](../ADR/0012-per-developer-copilot-usage.md))
+
+| Variable | Default | Values | Purpose |
+|---|---|---|---|
+| `GITHUB_COPILOT_USAGE_SYNC` | off | unset, or `on`|`true`|`1` / `off`|`false`|`0` (case-insensitive) | Deployment-wide switch for the Copilot usage sync (api/README.md §3.3). Unset is **off**. Off makes the daily cron a no-op and the admin run-now endpoint return `400`. An unrecognised value fails `validateEnv` at boot. Read from the process environment, so a change needs a restart. |
+| `GITHUB_COPILOT_BACKFILL_DAYS` | `28` | integer `1–365` | How far back the **first** run reaches. Later runs continue from the cursor, so raising this afterwards does not re-backfill. |
+| *(token)* | none | `secretRefs.copilotMetricsTokenRef` on the `github` configuration | Its own credential, never the collector's `tokenRef`. Either an org owner's classic PAT with `read:org`, or a fine-grained token with "View organization Copilot metrics". It must be SSO-authorized for the org. Seat status (`Seat, not used` / `No seat`) needs the **org-owner** classic PAT, because GitHub restricts the seats endpoint to owners; a fine-grained token gets usage only. Resolved by `SecretsService` (DB store, then env fallback); never store it in `values`. |
+
+**Prerequisite outside SprintIQ:** the org's (or enterprise's) **"Copilot usage metrics" policy must be enabled**. Otherwise GitHub refuses the report and the sync records `lastStatus: forbidden`.
 
 ---
 
@@ -233,6 +242,19 @@ The third commit-discovery route — org audit log → branch-tip diff → Compa
 An unrecognised value (e.g. `DIGEST_CRON_ENABLED=flase`) fails `validateEnv` at boot rather than being silently treated as unset — a typo here has an unusually bad failure mode (a real person's name reaching a channel because an operator believed the cron was disarmed), so it fails loudly instead of guessing.
 
 **Does not affect `POST /admin/notifications/no-commit-digest/run`.** The manual endpoint calls `NotificationsService.runNoCommitDigest()` directly and never passes through the scheduler, so it keeps working regardless of `DIGEST_CRON_ENABLED` — including with the cron disarmed. This is how step 5's `dryRun` and step 6's one deliberate live post are performed, and it must keep working precisely when an operator has reason to hold the unattended cron back.
+
+### 6.6 Copilot usage sync rollout (BC-1, [ADR-0012](../ADR/0012-per-developer-copilot-usage.md))
+
+1. **Apply the migration by hand.** `20261015120000_add_copilot_usage` is additive only: `collectors_github_copilot_sync`, `code_copilot_usage_day`, `code_copilot_report_day` and `code_copilot_seat`. Run `prisma migrate status` first, as for every migration here. Then stop the backend before `prisma generate` (the engine DLL is locked while it runs), `rm -rf dist`, build, and restart.
+2. **Check access before turning anything on.** With the intended token, `GET /orgs/{org}/copilot/metrics/reports/users-1-day?day=<3 days ago>` (header `X-GitHub-Api-Version: 2026-03-10`) must return `200` with `download_links`. A `403` means scope, SSO authorization, or the "Copilot usage metrics" policy.
+3. **Configure.**
+   - Store the token under a ref, e.g. `GITHUB_COPILOT_TOKEN`.
+   - Set `copilotMetricsTokenRef` on the active `github` configuration.
+   - Set `GITHUB_COPILOT_USAGE_SYNC=on` on the worker, and restart.
+4. **First run.** `POST /api/admin/configurations/github/copilot-sync` backfills `GITHUB_COPILOT_BACKFILL_DAYS`. Then check `GET .../copilot-sync/status`: `lastStatus: ok`, and `lastCompleteDay` about 2 days ago.
+5. **Spot-check two developers.** Compare their Overview cells against the downloaded NDJSON for the same days. The column appears on the Overview only once a report day exists.
+
+The cron runs daily at **04:30 UTC** on the worker role (`GithubCopilotSchedulerService`). Every run is audit-logged (`collector.copilot_usage_sync`). To turn the sync off, set `GITHUB_COPILOT_USAGE_SYNC=off` and restart. Data already collected stays, and the column keeps showing it with its data date.
 
 ---
 
