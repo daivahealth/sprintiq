@@ -243,3 +243,73 @@ export interface PlanningVersionPayload {
   released: boolean;
   archived: boolean;
 }
+
+/**
+ * One user's Copilot usage on one UTC day, normalized from a record in
+ * GitHub's org `users-1-day` usage-metrics report (ADR-0012). The verbatim
+ * source record rides along in `record` so the raw-event store keeps
+ * everything GitHub said, not just the fields projected today.
+ */
+export interface CodeCopilotUsagePayload {
+  org: string;
+  /** UTC calendar day the report covers, `YYYY-MM-DD`. */
+  day: string;
+  githubUserId: number;
+  login: string;
+  /** `user_initiated_interaction_count` — explicit prompts (chat, agent, CLI). */
+  interactions: number;
+  /** `code_generation_activity_count` — includes inline completions shown. */
+  generations: number;
+  acceptances: number;
+  locSuggestedAdd: number;
+  locSuggestedDelete: number;
+  /** `loc_added_sum` — lines Copilot added to the user's code. */
+  locAdded: number;
+  locDeleted: number;
+  usedAgent: boolean;
+  usedChat: boolean;
+  usedCli: boolean;
+  usedCodingAgent: boolean;
+  aiCreditsUsed: number | null;
+  /** When SprintIQ fetched the report — the last-wins key for restatements. */
+  collectedAt: string;
+  record: Record<string, unknown>;
+}
+
+/**
+ * "GitHub delivered the users-1-day report for this day, with this many
+ * users in it." The only fact that lets a board say "no Copilot activity"
+ * rather than "not collected" for a day nobody appears on.
+ */
+export interface CodeCopilotReportDayPayload {
+  org: string;
+  day: string;
+  userCount: number;
+  /**
+   * Everyone in the report. A restated report that no longer lists someone
+   * removes their row for the day, rather than leaving the first reading.
+   */
+  githubUserIds: number[];
+  collectedAt: string;
+}
+
+/** One assigned Copilot seat, from `GET /orgs/{org}/copilot/billing/seats`. */
+export interface CodeCopilotSeatRef {
+  githubUserId: number;
+  login: string;
+  assignedAt?: string;
+  lastActivityAt?: string;
+  lastActivityEditor?: string;
+  pendingCancellationDate?: string;
+}
+
+/**
+ * The org's complete seat list at `observedAt`. A whole snapshot, not one
+ * event per seat, because the projection must also learn which seats are
+ * gone — and an absent per-seat event can't say that.
+ */
+export interface CodeCopilotSeatsPayload {
+  org: string;
+  observedAt: string;
+  seats: CodeCopilotSeatRef[];
+}
