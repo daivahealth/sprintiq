@@ -9,6 +9,7 @@ import {
   validateSync,
   ValidationOptions,
 } from 'class-validator';
+import { readGithubCopilotConfig } from '../collectors/sources/github/github-copilot.config';
 import { AppRole } from './app-role';
 import { isValidTriStateFlagValue } from './env-flags';
 import { readGithubAuditConfig } from '../collectors/sources/github/github-audit.config';
@@ -100,15 +101,19 @@ export function validateEnv(config: Record<string, unknown>) {
     enableImplicitConversion: true,
   });
   const errors = validateSync(validated, { skipMissingProperties: false });
-  if (errors.length > 0) {
-    throw new Error(
-      `Environment validation failed:\n${errors
-        .map(
-          (e) =>
-            `  - ${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`,
-        )
-        .join('\n')}`,
-    );
+  const messages = errors.map(
+    (e) =>
+      `  - ${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`,
+  );
+  // The Copilot sync's knobs are parsed by the same function the sync uses,
+  // so a value that boots is a value the sync understands.
+  try {
+    readGithubCopilotConfig(config);
+  } catch (error) {
+    messages.push(`  - ${(error as Error).message}`);
+  }
+  if (messages.length > 0) {
+    throw new Error(`Environment validation failed:\n${messages.join('\n')}`);
   }
   return validated;
 }
