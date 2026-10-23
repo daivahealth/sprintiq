@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Commit, PrReview, Prisma, PullRequest } from '@prisma/client';
 import {
+  CodeCommitBranchObservedPayload,
   CodeCommitPayload,
   CodeCopilotReportDayPayload,
   CodeCopilotSeatsPayload,
@@ -73,6 +74,10 @@ export class CodeService implements OnModuleInit {
       EventTypes.CODE_COMMIT_PUSHED,
       (e) => this.handleCommit(e),
     );
+    this.eventBus.subscribe<CodeCommitBranchObservedPayload>(
+      EventTypes.CODE_COMMIT_BRANCH_OBSERVED,
+      (e) => this.handleBranchObserved(e),
+    );
     this.eventBus.subscribe<CodeCopilotUsagePayload>(
       EventTypes.CODE_COPILOT_USAGE_REPORTED,
       (e) => this.handleCopilotUsage(e),
@@ -85,6 +90,34 @@ export class CodeService implements OnModuleInit {
       EventTypes.CODE_COPILOT_SEATS_OBSERVED,
       (e) => this.handleCopilotSeats(e),
     );
+  }
+
+  /**
+   * One row per commit per branch (branch tracking, 2026-10-19). Create once;
+   * a later observation never moves `firstSeenAt` later, an earlier one
+   * (a replayed range) moves it back. Two statements rather than a read-then-
+   * write, so concurrent observations of the same link cannot race.
+   */
+  private async handleBranchObserved(
+    event: DomainEvent<CodeCommitBranchObservedPayload>,
+  ): Promise<void> {
+    const p = event.payload;
+    const seenAt = new Date(p.observedAt);
+    const key = {
+      tenantId: event.tenantId,
+      repoFullName: p.repoFullName,
+      branch: p.branch,
+      sha: p.sha,
+    };
+    await this.prisma.commitBranch.upsert({
+      where: { tenantId_repoFullName_branch_sha: key },
+      create: { id: newId(), ...key, firstSeenAt: seenAt },
+      update: {},
+    });
+    await this.prisma.commitBranch.updateMany({
+      where: { ...key, firstSeenAt: { gt: seenAt } },
+      data: { firstSeenAt: seenAt },
+    });
   }
 
   private async handleCommit(
@@ -459,6 +492,75 @@ export class CodeService implements OnModuleInit {
   }
 
   /** Commit activity read, when the caller doesn't need the truncation signal. */
+  /**
+   * The branches each of these commits has been seen on (branch tracking).
+   * The only reader of `code_commit_branch`, so other contexts reach branch
+   * links through here rather than the table. Tenant-scoped; one query per
+   * repo, each bounded by the commits asked about.
+   */
+  async branchesForCommits(
+    tenantId: string,
+    commits: { repoFullName: string; sha: string }[],
+  ): Promise<{ repoFullName: string; branch: string; sha: string }[]> {
+    const byRepo = new Map<string, string[]>();
+    for (const c of commits) {
+      byRepo.set(c.repoFullName, [
+        ...(byRepo.get(c.repoFullName) ?? []),
+        c.sha,
+      ]);
+    }
+    if (byRepo.size === 0) return [];
+    return this.prisma.commitBranch.findMany({
+      where: {
+        tenantId,
+        OR: [...byRepo.entries()].map(([repoFullName, shas]) => ({
+          repoFullName,
+          sha: { in: shas },
+        })),
+      },
+      select: { repoFullName: true, branch: true, sha: true },
+    });
+  }
+
+  /**
+   * The state of each branch's pull requests, by head branch name: merged if
+   * any merged, else open if any open, else closed if any, else none. A
+   * label for branch tracking — it never filters anything. Tenant-scoped.
+   */
+  async pullStatusByBranch(
+    tenantId: string,
+    branches: { repoFullName: string; branch: string }[],
+  ): Promise<Map<string, 'merged' | 'open' | 'closed'>> {
+    const out = new Map<string, 'merged' | 'open' | 'closed'>();
+    if (branches.length === 0) return out;
+    const byRepo = new Map<string, string[]>();
+    for (const b of branches) {
+      byRepo.set(b.repoFullName, [
+        ...(byRepo.get(b.repoFullName) ?? []),
+        b.branch,
+      ]);
+    }
+    const prs = await this.prisma.pullRequest.findMany({
+      where: {
+        tenantId,
+        OR: [...byRepo.entries()].map(([repoFullName, names]) => ({
+          repoFullName,
+          branch: { in: names },
+        })),
+      },
+      select: { repoFullName: true, branch: true, state: true },
+    });
+    const rank = { merged: 3, open: 2, closed: 1 } as const;
+    for (const pr of prs) {
+      const state = pr.state as keyof typeof rank;
+      if (!(state in rank)) continue;
+      const k = branchKey(pr.repoFullName, pr.branch);
+      const cur = out.get(k);
+      if (!cur || rank[state] > rank[cur]) out.set(k, state);
+    }
+    return out;
+  }
+
   async listCommits(
     tenantId: string,
     filters: CommitFilters,
@@ -811,4 +913,9 @@ function parsePullRequestRef(
     repoFullName: ref.slice(0, hash),
     externalNumber: ref.slice(hash + 1),
   };
+}
+
+/** Map key for one repo's branch. */
+export function branchKey(repoFullName: string, branch: string): string {
+  return `${repoFullName} ${branch}`;
 }

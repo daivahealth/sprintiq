@@ -47,6 +47,17 @@ The existing walk and PR harvest are unchanged and keep running.
 - **Webhooks:** deferred (ADR-0008).
 - **Git mirror (Phase 2):** a complete enumeration of refs, but it needs `git`, disk and a fleet clone. Build it if acceptance or operation shows unexplained misses, misses from refs deleted or force-pushed between runs, a retention overrun, or tip-diff `core` spend that threatens the collectors.
 
+## 2026-10-19 update — branch tracking and the new-branch rule
+
+Implements the plan agreed 2026-10-14 ([docs/superpowers/plans/2026-10-14-branch-tracking.md](../superpowers/plans/2026-10-14-branch-tracking.md)): record every branch a developer's commits are on, merged or not, and show them on the Developer page. It supersedes the 2026-10-14 "no common history" note below: that fallback still exists, but a new branch now always reads its own history.
+
+1. **New-branch rule.** A `new_ref` range is read from the branch's own commits (`listBranchCommits`, back to `createdAt − GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS`, default 30, range 1–90, up to 30 pages) instead of Compared with the default branch. Comparing only ever found "what the branch has that master lacks", which misses unrelated and rewritten histories. A `moved` range is still Compared old...new; when the old tip is gone (`not_found`) or unrelated (`no_common_ancestor`) it falls back to the same own-history read. The old retry against the default branch is removed, and the setting replaces the fixed 7-day `UNRELATED_HISTORY_LOOKBACK_MS`.
+2. **Links are narrower than collection** (a refinement made while implementing). A branch cut from master carries master's recent history in its own commit list. Linking all of it would credit every developer's master work to every new feature branch. So a new branch is **linked** only to the commits a Compare from the default branch's stored tip shows as new on it. If that check cannot run (no stored tip, or unrelated history), every commit read is linked. **Collection** still takes the full own-history read, so nothing is missed.
+3. **Branch links.** In ingest mode, a completed range emits one `code.commit.branch_observed` envelope per linked commit (key `github:{repo}:branch:{branch}:commit:{sha}`), before the range is marked done, so a failure retries the range and the keys make re-emission a no-op. `CodeService` projects them into `code_commit_branch`, keeping the earliest `firstSeenAt`. Run counter: `branchLinks`. Shadow mode emits none.
+4. **Backfill.** `POST /admin/configurations/github/audit-sync/backfill-branch-links` replays the SHAs that already-completed ranges stored (`commitOutcomes`) as branch links, paged by cursor. On the reference tenant, 854 ranges became 12,002 links.
+
+Migration: `20261019130000_commit_branch` (additive).
+
 ## 2026-10-19 update — robustness found running ingest mode
 
 Running the route in `ingest` mode locally for three days, then checking every push GitHub's per-repo events recorded against what was stored (1,215 of 1,216 collected, the one exception a commit amended away 99 seconds later), surfaced five operational gaps. None were correctness bugs in collection; all were about what happens when something goes wrong.

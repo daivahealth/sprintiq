@@ -30,6 +30,7 @@ import {
 } from './github-audit-push-planner';
 import {
   buildCommitEnvelope,
+  buildCommitBranchEnvelope,
   commitIdempotencyKey,
 } from './github-commit-envelope';
 import { evaluateBudget, rateReserve } from './github-rate-budget';
@@ -78,6 +79,8 @@ export interface AuditRunCounters {
   ingested: number;
   wouldIngest: number;
   commitsWithoutLogin: number;
+  /** Commit-on-branch links recorded this run (branch tracking, ingest mode). */
+  branchLinks: number;
   truncatedRanges: number;
   failedRanges: number;
   pendingRanges: number;
@@ -322,13 +325,6 @@ const RETENTION_LOSS_MS = 7 * 86_400_000;
 /** Shadow-mode ranges younger than this are replayed when the mode becomes `ingest`. */
 export const SHADOW_REPLAY_MS = 7 * 86_400_000;
 
-/**
- * How far back a branch with no common history is read (`listBranchCommits`):
- * GitHub keeps git events for 7 days, so no push the audit log reported can be
- * older than this when its range was planned.
- */
-export const UNRELATED_HISTORY_LOOKBACK_MS = 7 * 86_400_000;
-
 export function emptyCounters(): AuditRunCounters {
   return {
     reposSeeded: 0,
@@ -354,6 +350,7 @@ export function emptyCounters(): AuditRunCounters {
     ingested: 0,
     wouldIngest: 0,
     commitsWithoutLogin: 0,
+    branchLinks: 0,
     truncatedRanges: 0,
     failedRanges: 0,
     pendingRanges: 0,
@@ -479,6 +476,80 @@ export class GithubAuditSyncService {
             status: lastFullSweep.status,
           }
         : null,
+    };
+  }
+
+  /**
+   * One-off backfill of branch links (branch tracking, 2026-10-19) from ranges
+   * that completed before links were emitted. Each \`done\` range already
+   * stores the SHAs it covered (\`commitOutcomes\`) and its branch, so this
+   * replays them as \`code.commit.branch_observed\` envelopes through the
+   * normal pipeline — idempotent, so re-running is a no-op. Ranges completed
+   * under the old rule covered only what a branch had that its base lacked,
+   * which is exactly the set a branch should be linked to.
+   *
+   * Bounded per call (\`take\` ranges, oldest first after \`after\`); pass the
+   * returned \`nextCursor\` back until \`done\`.
+   */
+  async backfillBranchLinks(
+    tenantId: string,
+    after?: string,
+    take = 200,
+  ): Promise<{
+    ranges: number;
+    linksAccepted: number;
+    done: boolean;
+    nextCursor: string | null;
+  }> {
+    const ranges = await this.prisma.githubPushRange.findMany({
+      where: {
+        tenantId,
+        status: 'done',
+        ...(after ? { id: { gt: after } } : {}),
+      },
+      orderBy: { id: 'asc' },
+      take,
+      select: {
+        id: true,
+        connectionId: true,
+        repoFullName: true,
+        ref: true,
+        commitOutcomes: true,
+        updatedAt: true,
+      },
+    });
+    let linksAccepted = 0;
+    for (const r of ranges) {
+      const outcomes = Array.isArray(r.commitOutcomes)
+        ? (r.commitOutcomes as { sha?: string }[])
+        : [];
+      for (const o of outcomes) {
+        if (!o?.sha) continue;
+        const res = await this.ingestion.ingest(
+          tenantId,
+          buildCommitBranchEnvelope({
+            connectionId: r.connectionId,
+            repoFullName: r.repoFullName,
+            branch: r.ref,
+            sha: o.sha,
+            // When the range completed: the best record of when the commit
+            // was seen on the branch.
+            observedAt: r.updatedAt.toISOString(),
+            extraRefs: {
+              pushRangeId: r.id,
+              discoveredBy: 'branch-link-backfill',
+            },
+          }),
+        );
+        if (res.status === 'accepted') linksAccepted++;
+      }
+    }
+    const done = ranges.length < take;
+    return {
+      ranges: ranges.length,
+      linksAccepted,
+      done,
+      nextCursor: done ? null : ranges[ranges.length - 1].id,
     };
   }
 
@@ -2130,6 +2201,31 @@ export class GithubAuditSyncService {
         return;
       }
 
+      if (ctx.cfg.mode === 'ingest') {
+        // Branch tracking (2026-10-19): this range's commits are on
+        // `range.ref`. Every commit of the completed range — newly ingested,
+        // already present, or seen earlier this run — except, for a new
+        // branch, the history it inherited (`linkShas`). Emitted before the
+        // range is marked done, so a failure here retries the whole range;
+        // the keys make re-emission a no-op.
+        const observedAt = ctx.now.toISOString();
+        for (const c of compared.commits) {
+          if (compared.linkShas && !compared.linkShas.has(c.sha)) continue;
+          const r = await this.ingestion.ingest(
+            ctx.tenantId,
+            buildCommitBranchEnvelope({
+              connectionId: connection.id,
+              repoFullName: range.repoFullName,
+              branch: range.ref,
+              sha: c.sha,
+              observedAt,
+              extraRefs: { pushRangeId: range.id },
+            }),
+          );
+          if (r.status === 'accepted') ctx.counters.branchLinks++;
+        }
+      }
+
       await this.prisma.githubPushRange.update({
         where: { id: range.id },
         data: {
@@ -2150,77 +2246,108 @@ export class GithubAuditSyncService {
     }
   }
 
-  /** Compare base...head; a `moved` range whose base is gone falls back to the default branch. */
+  /**
+   * The commits a range covers (branch tracking rule, 2026-10-19):
+   *   - a `new_ref` (new branch) is read from its OWN history, bounded to
+   *     `GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS` before the range was planned —
+   *     never only "what it has that the default branch lacks", which misses
+   *     unrelated and rewritten histories. Only the commits a Compare against
+   *     the default branch's tip shows as new on the branch are linked to it
+   *     (`linkShas`), so a branch cut from master is not credited with
+   *     master's inherited history; when that Compare fails, all are linked;
+   *   - a `moved` branch is Compared old...new; if the old tip is gone
+   *     (`not_found`) or shares no history (`no_common_ancestor`) it falls
+   *     back to the same own-history read. The old default-branch retry is gone;
+   *   - a Compare that hits its 250-commit cap is re-read the same way.
+   */
   private async compareRange(
     ctx: RunContext,
     range: GithubPushRange,
     token: string,
-  ): Promise<GithubCompareResult> {
-    const base = range.baseSha ?? range.baseRef;
+  ): Promise<GithubCompareResult & { linkShas?: Set<string> }> {
     const head = range.headSha as string;
+    const since = new Date(
+      range.createdAt.getTime() - ctx.cfg.newBranchLookbackDays * 86_400_000,
+    );
+    const readOwnHistory = () =>
+      this.client.listBranchCommits(
+        range.repoFullName,
+        token,
+        head,
+        since,
+        TRUNCATION_REREAD_PAGES,
+      );
+
+    if (range.kind === 'new_ref') {
+      const own = await readOwnHistory();
+      if (own.failure) return own;
+      const linkShas = await this.newOnBranch(ctx, range, token, head);
+      return linkShas ? { ...own, linkShas } : own;
+    }
+
+    const base = range.baseSha ?? range.baseRef;
     if (!base) {
       return { commits: [], pages: 0, truncated: false, failure: 'failed' };
     }
-    let result = await this.client.compareAll(
+    const result = await this.client.compareAll(
       range.repoFullName,
       token,
       base,
       head,
     );
-    if (result.failure === 'not_found' && range.kind === 'moved') {
-      const marker = await this.prisma.githubRefTip.findUnique({
-        where: {
-          tenantId_repoFullName_ref: {
-            tenantId: ctx.tenantId,
-            repoFullName: range.repoFullName,
-            ref: DEFAULT_BRANCH_MARKER,
-          },
-        },
-      });
-      if (marker) {
-        result = await this.client.compareAll(
-          range.repoFullName,
-          token,
-          marker.sha,
-          head,
-        );
-      }
+    if (
+      result.failure === 'not_found' ||
+      result.failure === 'no_common_ancestor'
+    ) {
+      // The old tip was garbage-collected, or the branch was rewritten onto
+      // unrelated history: read the branch's own commits instead.
+      return readOwnHistory();
     }
     if (!result.failure && result.truncated) {
-      // Compare stops at 250 commits. Re-read the branch's own history over
-      // the same horizon as an unrelated branch, paged much further, so a big
-      // push is collected rather than only flagged (2026-10-19). Still
-      // truncated after that, the range stays `truncated` and the digest
-      // gate withholds its days until an admin dismisses it.
-      const reread = await this.client.listBranchCommits(
-        range.repoFullName,
-        token,
-        head,
-        new Date(range.createdAt.getTime() - UNRELATED_HISTORY_LOOKBACK_MS),
-        TRUNCATION_REREAD_PAGES,
-      );
+      // Compare stops at 250 commits; re-read so a big push is collected
+      // rather than only flagged. Still truncated after that, the range stays
+      // `truncated` and the digest gate withholds its days.
+      const reread = await readOwnHistory();
       if (!reread.failure) {
         return { ...reread, pages: result.pages + reread.pages };
       }
-      return result;
-    }
-    if (result.failure === 'no_common_ancestor') {
-      // The head shares no history with the base (an orphan branch, or a
-      // rewritten history), so no comparison can ever succeed. Read the
-      // branch's own commits instead, bounded to the audit log's retention
-      // horizon before the range was planned: enough for any push the audit
-      // log could have reported, without sweeping in an imported old history.
-      return this.client.listBranchCommits(
-        range.repoFullName,
-        token,
-        head,
-        new Date(range.createdAt.getTime() - UNRELATED_HISTORY_LOOKBACK_MS),
-      );
     }
     return result;
   }
-}
 
+  /**
+   * Which of a new branch's commits are its own: a Compare from the default
+   * branch's stored tip. Undefined when that cannot be told (no stored tip,
+   * or the Compare fails, e.g. unrelated history) — the caller then links
+   * every commit it read, the safe side for "which branches has this work
+   * been on".
+   */
+  private async newOnBranch(
+    ctx: RunContext,
+    range: GithubPushRange,
+    token: string,
+    head: string,
+  ): Promise<Set<string> | undefined> {
+    const marker = await this.prisma.githubRefTip.findUnique({
+      where: {
+        tenantId_repoFullName_ref: {
+          tenantId: ctx.tenantId,
+          repoFullName: range.repoFullName,
+          ref: DEFAULT_BRANCH_MARKER,
+        },
+      },
+    });
+    if (!marker) return undefined;
+    const ahead = await this.client.compareAll(
+      range.repoFullName,
+      token,
+      marker.sha,
+      head,
+    );
+    if (ahead.failure || ahead.truncated) return undefined;
+    return new Set(ahead.commits.map((c) => c.sha));
+  }
+}
 /**
  * One observed push, kept in the raw-event store (not a second store) so the
  * audit evidence outlives GitHub's 7-day retention. No subscriber projects it;

@@ -692,6 +692,24 @@ model Commit {
   @@map("code_commit")
 }
 
+/// Which branches a commit has been seen on (branch tracking, 2026-10-19),
+/// projected from `code.commit.branch_observed`. One row per commit per
+/// branch, merged or not; written only by the CodeService projector.
+model CommitBranch {
+  id           String   @id
+  tenantId     String
+  repoFullName String
+  branch       String
+  sha          String
+  /// The earliest time the audit route saw the commit on this branch.
+  firstSeenAt  DateTime
+  createdAt    DateTime @default(now())
+
+  @@unique([tenantId, repoFullName, branch, sha])
+  @@index([tenantId, repoFullName, sha])
+  @@map("code_commit_branch")
+}
+
 // One person's Copilot usage on one UTC day, as GitHub's org users-1-day
 // usage-metrics report states it (ADR-0012). GitHub only lists a user on a
 // day they had activity, so absence is "nothing reported", never a zero GitHub

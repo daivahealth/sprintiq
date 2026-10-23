@@ -27,6 +27,9 @@ function setup() {
     listHeadRefs: jest.fn(),
     getDefaultBranch: jest.fn().mockResolvedValue({ name: 'master' }),
     compareAll: jest.fn(),
+    listBranchCommits: jest
+      .fn()
+      .mockResolvedValue({ commits: [], pages: 1, truncated: false }),
     getCommitDetail: jest.fn(),
   };
   const secrets = {
@@ -1994,12 +1997,14 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
         runId: r.runId,
       });
     }
-    // Executed in the same run, against the new connection.
-    expect(client.compareAll).toHaveBeenCalledWith(
+    // Executed in the same run, against the new connection — a new branch is
+    // read from its own history (branch tracking, 2026-10-19).
+    expect(client.listBranchCommits).toHaveBeenCalledWith(
       'acme/fresh',
       'tok:GITHUB_TOKEN',
-      'main',
       'a1',
+      expect.any(Date),
+      30,
     );
     // The push evidence is stored against the new connection too.
     const pushEnvelopes = ingestion.ingest.mock.calls

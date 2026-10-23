@@ -14,6 +14,7 @@ import {
   PlanningService,
   WorkItemFilters,
 } from '../modules/planning/planning.service';
+import { developerBranches, type DeveloperBranch } from './developer-branches';
 import { isMergeCommit, partitionMerges } from './merge-commits';
 
 /** One work item with its bi-directional GitHub linkage (Jira → PRs). */
@@ -469,6 +470,15 @@ export interface DeveloperActivityView {
     /** A merge commit: listed for context, but its lines are not in any total. */
     isMerge: boolean;
   }[];
+  /**
+   * The branches this person's commits in the window were seen on, merged or
+   * not (branch tracking, 2026-10-19), most recently active first, capped at
+   * 50. Empty until the audit-log route runs in ingest mode — branch names
+   * come only from it.
+   */
+  branches: DeveloperBranch[];
+  /** All branches, beyond the cap on `branches`. */
+  branchesTotal: number;
 }
 
 const DEFAULT_SPRINT_DAYS = 14;
@@ -1551,6 +1561,26 @@ export class InsightsService {
     // Merges stay in `recentCommits` (flagged) but out of every count and LOC
     // figure: their lines are the merged branch's, a second time (METRICS.md §0).
     const { authored, mergeCommits } = partitionMerges(commits);
+    // Branch tracking: which branches this person's authored commits were
+    // seen on, with each branch's PR status as a label.
+    const links = await this.code.branchesForCommits(
+      tenantId,
+      authored.map((c) => ({ repoFullName: c.repoFullName, sha: c.sha })),
+    );
+    const prStatus = await this.code.pullStatusByBranch(
+      tenantId,
+      [...new Set(links.map((l) => `${l.repoFullName} ${l.branch}`))].map(
+        (k) => {
+          const i = k.indexOf(' ');
+          return { repoFullName: k.slice(0, i), branch: k.slice(i + 1) };
+        },
+      ),
+    );
+    const { branches, branchesTotal } = developerBranches(
+      authored,
+      links,
+      prStatus,
+    );
     for (const c of authored) {
       const committedAt = c.committedAt ?? c.authoredAt;
       additions += c.additions;
@@ -1620,6 +1650,8 @@ export class InsightsService {
       dailySeries: [...byDay.entries()]
         .map(([date, d]) => ({ date, commits: d.commits, locChanged: d.loc }))
         .sort((a, b) => a.date.localeCompare(b.date)),
+      branches,
+      branchesTotal,
       recentCommits: commits.slice(0, 20).map((c) => ({
         sha: c.sha.slice(0, 7),
         repo: c.repoFullName,

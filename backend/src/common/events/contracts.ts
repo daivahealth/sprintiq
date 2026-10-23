@@ -109,6 +109,20 @@ export interface CodeCommitPayload {
   parentCount?: number;
 }
 
+/**
+ * A commit seen on a branch by the audit-log route (branch tracking,
+ * 2026-10-19). One event per commit per branch, keyed
+ * `github:{repo}:branch:{branch}:commit:{sha}`, so re-observing it is a no-op.
+ * `observedAt` is when the route saw it there; the projector keeps the
+ * earliest. Lineage for "which branches has this work been on", merged or not.
+ */
+export interface CodeCommitBranchObservedPayload {
+  repoFullName: string;
+  branch: string;
+  sha: string;
+  observedAt: string;
+}
+
 /** Sprint attribution embedded in a work-item event (upserted as a Sprint row). */
 export interface PlanningSprintRef {
   externalId: string;

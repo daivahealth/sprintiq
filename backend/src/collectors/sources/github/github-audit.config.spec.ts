@@ -22,7 +22,21 @@ describe('readGithubAuditConfig', () => {
       newRepoMaxBranches: 50,
       rangeGiveUpHours: 24,
       orgSyncHours: 24,
+      newBranchLookbackDays: 30,
     });
+  });
+
+  it('bounds the new-branch look-back to 1–90 days', () => {
+    expect(
+      readGithubAuditConfig({ GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS: '10' })
+        .newBranchLookbackDays,
+    ).toBe(10);
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS: '0' }),
+    ).toThrow(/GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS/);
+    expect(() =>
+      readGithubAuditConfig({ GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS: '91' }),
+    ).toThrow(/GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS/);
   });
 
   it('accepts the allowed org-sync cadences and rejects others', () => {

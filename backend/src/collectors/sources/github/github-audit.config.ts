@@ -47,6 +47,14 @@ export interface GithubAuditConfig {
    * the audit route in ingest mode. 0 = off.
    */
   orgSyncHours: number;
+  /**
+   * How far back a new branch's own history is read (2026-10-19, branch
+   * tracking). A new branch is read from its own commits rather than compared
+   * with the default branch, so an unrelated or rewritten history is never
+   * missed; this bounds that read so an imported old history is not swept in.
+   * Also bounds the fallback read of a moved branch whose Compare fails.
+   */
+  newBranchLookbackDays: number;
 }
 
 function intIn(
@@ -121,6 +129,13 @@ export function readGithubAuditConfig(
     fullSweepMinutes,
     orgSyncHours,
     rangeGiveUpHours: intIn(env, 'GITHUB_AUDIT_RANGE_GIVEUP_HOURS', 24, 1, 168),
+    newBranchLookbackDays: intIn(
+      env,
+      'GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS',
+      30,
+      1,
+      90,
+    ),
     pageSize: intIn(env, 'GITHUB_AUDIT_PAGE_SIZE', 100, 1, 100),
     overlapMinutes: intIn(env, 'GITHUB_AUDIT_OVERLAP_MINUTES', 15, 0, 120),
     compareConcurrency: intIn(env, 'GITHUB_AUDIT_COMPARE_CONCURRENCY', 2, 1, 8),

@@ -14,6 +14,7 @@ import { CommitChart, type DailyMetric } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
 import { BarList, ErrorCard, LoadingCard, Stat, TypeBadge } from '../widgets';
 import { mergeExclusionNote } from '../merge-commits';
+import { BranchesSection } from './BranchesSection';
 import { CurrentLensNote } from './CurrentLensNote';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
@@ -238,6 +239,8 @@ export function DeveloperPage() {
               }))}
             />
           </Card>
+
+          <BranchesSection branches={d.branches} branchesTotal={d.branchesTotal} />
 
           <Card className="space-y-3">
             <h4 className="text-sm font-medium text-fg-muted">Recent commits</h4>

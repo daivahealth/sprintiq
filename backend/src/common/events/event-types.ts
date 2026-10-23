@@ -10,6 +10,8 @@ export const EventTypes = {
   CODE_PR_CLOSED: 'code.pull_request.closed',
   CODE_COMMIT_PUSHED: 'code.commit.pushed',
   CODE_PUSH_OBSERVED: 'code.push.observed',
+  /** A commit was found on a branch (branch tracking, ingest mode only). */
+  CODE_COMMIT_BRANCH_OBSERVED: 'code.commit.branch_observed',
   // Copilot usage metrics (ADR-0012), from GitHub's org usage-metrics reports.
   CODE_COPILOT_USAGE_REPORTED: 'code.copilot.usage.reported',
   CODE_COPILOT_REPORT_DAY_COLLECTED: 'code.copilot.report_day.collected',
