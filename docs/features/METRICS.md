@@ -329,6 +329,19 @@ Each metric below: **Definition · Formula · Window · Scopes · Source · Note
 - **Formula:** rolling pattern of (after-hours activity share AND sustained over-WIP AND high review load) above thresholds. **Window:** rolling 30d. **Scopes:** team (individual only to the person + their manager, gated).
 - **Source:** `commit`/`pr_review` timestamps, `wip`. **Notes:** explicitly *not* a performance metric; designed against misuse.
 
+### copilot_active_days / copilot_lines_added *(scoped exception — [ADR-0012](../ADR/0012-per-developer-copilot-usage.md))*
+- **Definition:** how much a developer used GitHub Copilot in the window — **context beside a person, never a score**.
+- **Formula:**
+  - `copilot_active_days` = distinct UTC report days on which GitHub's users-1-day report lists the person with `user_initiated_interaction_count + code_generation_activity_count + code_acceptance_activity_count > 0`.
+  - `copilot_lines_added` = `Σ loc_added_sum`.
+  - Logins resolve to the canonical developer as PR authors do. Days are the union across a person's logins; lines are the sum.
+- **Window:** the Activity Overview's window (IST days), matched to UTC report days by date. **Scopes:** developer, on the Overview roster only. **Source:** `code_copilot_usage_day`, `code_copilot_seat` for seat status, and `code_copilot_report_day` for freshness.
+- **Notes:**
+  - Never ranked, sorted on, graded, or used in the digest or Watchlist.
+  - Hidden until a report is collected.
+  - Its caption states the rule, the data date (GitHub publishes about 2 days late), and that Copilot on github.com or mobile, or with IDE telemetry off, is not counted.
+  - Lines Copilot added are volume, the same caveat as `loc_added_deleted`.
+
 ### sprint_productivity_grade *(scoped exception to the team-level default — see below)*
 - **Definition:** per-developer sprint productivity table on the Sprint Health board — LOC added/removed, tickets worked, commits, PRs raised, PRs reviewed — with a `high | medium | low` grade.
 - **Formula:** `tickets_worked` = distinct sprint items (by the sprint's own item keys, not the project) a developer transitioned in the window. **Not the same population `sprint_daily_check_ins` counts**, despite both reading the same transitions: this counts distinct ticket *keys* per sprint, the check-in grid counts transition *events* per day — a person who moves one ticket through six statuses shows `1` here and `6` there, and both are correct. What the two panels DO share is identity resolution (the same Jira-login/name → canonical-developer bridge), so the same person is never shown under two different names between them. `score = tickets_worked + prs_raised + prs_reviewed`. Bots and deprovisioned accounts (`isBotDeveloper`/`isAnonymizedAccount`) are excluded from this table entirely — their commits still count in `commit_frequency`/`loc_added_deleted` elsewhere, but not here. Grade is cut by **tertiles of `score`, descending, across this sprint's *signal-carrying* contributors** (those with `score > 0`) — top third `high`, bottom third `low`, middle `medium`. A contributor with commits but no ticket/PR/review signal (`score = 0`) stays in the table but is graded `medium` and excluded from the cut, so a zero-score row cannot shift the boundaries or borrow a "high" grade from an undersized distribution.

@@ -151,6 +151,26 @@ model ConnectionSyncRun {
   @@map("collectors_connection_sync_run")
 }
 
+// Per-tenant, per-org state of the Copilot usage-metrics sync (ADR-0012):
+// the newest UTC day whose report was ingested, and how the last run ended.
+// `lastStatus` is what an operator reads when the column stops moving —
+// `forbidden` almost always means the token's scope or the org's
+// "Copilot usage metrics" policy, not an outage.
+model GithubCopilotSync {
+  id              String    @id
+  tenantId        String
+  org             String
+  lastCompleteDay DateTime? @db.Date
+  lastRunAt       DateTime?
+  lastStatus      String? // ok | not_ready | forbidden | not_found | rate_limited | no_token | error
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([tenantId, org])
+  @@map("collectors_github_copilot_sync")
+}
+
 // Encrypted, tenant-scoped secret values (BC-0). `ref` matches the human-chosen
 // name an admin sets in a `secretRefs` field (e.g. "GITHUB_TOKEN") — SecretsService
 // resolves it here first (AES-256-GCM, app-level master key) before falling back
@@ -662,6 +682,82 @@ model Commit {
   // DeveloperIdentity), so the email is a query predicate, not just a fact.
   @@index([tenantId, authorEmail, committedAt])
   @@map("code_commit")
+}
+
+// One person's Copilot usage on one UTC day, as GitHub's org users-1-day
+// usage-metrics report states it (ADR-0012). GitHub only lists a user on a
+// day they had activity, so absence is "nothing reported", never a zero GitHub
+// asserted. Restated reports (GitHub finalizes a day over ~3 days) replace the
+// row last-wins by `collectedAt`. The full source record stays in the raw
+// event (`rawEventId`) for lineage.
+model CopilotUsageDay {
+  id                 String   @id
+  tenantId           String
+  connectionId       String
+  org                String
+  day                DateTime @db.Date
+  githubUserId       BigInt
+  login              String
+  interactions       Int      @default(0)
+  generations        Int      @default(0)
+  acceptances        Int      @default(0)
+  locSuggestedAdd    Int      @default(0)
+  locSuggestedDelete Int      @default(0)
+  locAdded           Int      @default(0)
+  locDeleted         Int      @default(0)
+  usedAgent          Boolean  @default(false)
+  usedChat           Boolean  @default(false)
+  usedCli            Boolean  @default(false)
+  usedCodingAgent    Boolean  @default(false)
+  aiCreditsUsed      Decimal? @db.Decimal(14, 4)
+  rawEventId         String
+  collectedAt        DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([tenantId, org, day, githubUserId])
+  @@index([tenantId, day])
+  @@map("code_copilot_usage_day")
+}
+
+// One row per UTC day GitHub delivered a users-1-day report for. This is what
+// separates "nobody used Copilot that day" (a report with no one in it) from
+// "that day was never collected" — the usage table alone cannot tell them
+// apart, and only the first is safe to print as "no activity".
+model CopilotReportDay {
+  id           String   @id
+  tenantId     String
+  connectionId String
+  org          String
+  day          DateTime @db.Date
+  userCount    Int
+  rawEventId   String
+  collectedAt  DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([tenantId, org, day])
+  @@map("code_copilot_report_day")
+}
+
+// The org's current Copilot seat assignments — a snapshot, replaced whole on
+// each seat sync, so a removed seat disappears rather than lingering.
+model CopilotSeat {
+  id                      String    @id
+  tenantId                String
+  connectionId            String
+  org                     String
+  githubUserId            BigInt
+  login                   String
+  assignedAt              DateTime?
+  lastActivityAt          DateTime?
+  lastActivityEditor      String?
+  pendingCancellationDate DateTime? @db.Date
+  observedAt              DateTime
+  rawEventId              String
+
+  @@unique([tenantId, org, githubUserId])
+  @@map("code_copilot_seat")
 }
 
 // ---------------------------------------------------------------------------

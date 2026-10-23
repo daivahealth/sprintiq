@@ -14,8 +14,8 @@ import {
   PlanningService,
   WorkItemFilters,
 } from '../modules/planning/planning.service';
-import { distinctCommitsBySha } from './commit-dedupe';
 import { isMergeCommit, partitionMerges } from './merge-commits';
+import { distinctCommitsBySha } from './commit-dedupe';
 
 /** One work item with its bi-directional GitHub linkage (Jira → PRs). */
 export interface WorkItemView {
