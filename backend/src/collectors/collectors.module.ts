@@ -10,6 +10,7 @@ import { GithubAuditLogClient } from './sources/github/github-audit-log.client';
 import { GithubAuditReportService } from './sources/github/github-audit-report.service';
 import { GithubAuditSyncService } from './sources/github/github-audit-sync.service';
 import { GithubAuditSchedulerService } from './scheduler/github-audit-scheduler.service';
+import { GithubOrgSyncSchedulerService } from './scheduler/github-org-sync-scheduler.service';
 import { GithubCopilotSchedulerService } from './scheduler/github-copilot-scheduler.service';
 import { GithubCopilotMetricsClient } from './sources/github/github-copilot-metrics.client';
 import { GithubCopilotUsageSyncService } from './sources/github/github-copilot-usage-sync.service';
@@ -73,6 +74,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubAuditSyncService,
     GithubAuditReportService,
     GithubAuditSchedulerService,
+    GithubOrgSyncSchedulerService,
     GithubCommitMessageReconcilerService,
     GithubPrCommitBackfillService,
     GithubCommitReconcilerService,

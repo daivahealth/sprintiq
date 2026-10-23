@@ -388,6 +388,114 @@ export class ConfigurationsController {
   }
 
   /**
+   * The audit route's push ranges for the Sync Status panel, newest first
+   * (2026-10-19). `status` narrows to one of pending | shadowed | done |
+   * failed | dismissed; `truncated=true` to ranges that could not be read whole.
+   */
+  @Roles(Role.ADMIN)
+  @Get('github/audit-sync/ranges')
+  async auditSyncRanges(
+    @CurrentUser() user: AuthUser,
+    @Query('status') status?: string,
+    @Query('take') take?: string,
+    @Query('truncated') truncated?: string,
+  ) {
+    const allowed = ['pending', 'shadowed', 'done', 'failed', 'dismissed'];
+    if (status && !allowed.includes(status)) {
+      throw new BadRequestException(
+        `status must be one of: ${allowed.join(', ')}`,
+      );
+    }
+    const n = take ? Number(take) : 100;
+    if (!Number.isInteger(n) || n < 1) {
+      throw new BadRequestException('take must be a positive integer.');
+    }
+    if (
+      truncated !== undefined &&
+      truncated !== 'true' &&
+      truncated !== 'false'
+    ) {
+      throw new BadRequestException('truncated must be true or false.');
+    }
+    return {
+      ranges: await this.auditSync.listRanges(
+        user.tenantId,
+        status,
+        n,
+        truncated === undefined ? undefined : truncated === 'true',
+      ),
+    };
+  }
+
+  /**
+   * Puts a failed, truncated or dismissed range back in the queue with fresh
+   * attempts; the next audit run executes it. Audited.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/audit-sync/ranges/:id/retry')
+  async retryAuditRange(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+  ) {
+    const ok = await this.auditSync.retryRange(user.tenantId, id);
+    if (!ok) {
+      throw new BadRequestException(
+        'No failed, truncated or dismissed range with that id for this tenant.',
+      );
+    }
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'collectors.github_audit_range.retry',
+      targetType: 'github_push_range',
+      targetId: id,
+    });
+    return { id, status: 'pending' };
+  }
+
+  /**
+   * Accepts that a range will never complete, so it stops holding back the
+   * digest. Requires a reason; who and why stay on the range and in the
+   * audit log, because a dismissed range is a gap someone chose to accept.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/audit-sync/ranges/:id/dismiss')
+  async dismissAuditRange(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+  ) {
+    const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
+    if (reason.length < 3) {
+      throw new BadRequestException(
+        'A reason (at least 3 characters) is required.',
+      );
+    }
+    const ok = await this.auditSync.dismissRange(
+      user.tenantId,
+      id,
+      user.userId,
+      reason,
+    );
+    if (!ok) {
+      throw new BadRequestException(
+        'No pending, failed or truncated range with that id for this tenant.',
+      );
+    }
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'collectors.github_audit_range.dismiss',
+      targetType: 'github_push_range',
+      targetId: id,
+      metadata: { reason },
+    });
+    return { id, status: 'dismissed' };
+  }
+
+  /**
    * One IST day of the audit route: what it saw, planned, fetched and ingested,
    * and how many of its commits nobody can be attributed to. Unattributed is
    * reported as unattributed — never as anyone being idle.

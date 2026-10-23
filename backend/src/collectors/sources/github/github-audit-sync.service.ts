@@ -114,6 +114,10 @@ export interface AuditStatus {
   lastError: string | null;
   pendingRanges: number;
   failedRanges: number;
+  /** Ranges whose commits could not all be read even after the branch re-read. */
+  truncatedRanges: number;
+  /** Ranges an admin dismissed — accepted gaps, kept visible. */
+  dismissedRanges: number;
   /** The latest full-branch-sweep run for the tenant (any status), or null if none has ever run. */
   lastFullSweep: {
     startedAt: Date;
@@ -260,12 +264,37 @@ export type CommitOutcome = {
 type SeedOutcome = 'seeded' | 'unseedable' | 'budget' | 'failed';
 
 /**
- * A run claim older than this is treated as abandoned (crashed process) and
- * taken over. Sized well above any realistic run — including the first
- * ingest-mode run, which replays up to a week of shadowed ranges — so a slow
- * but live run is never run over by a second one.
+ * A run claim not refreshed for this long is treated as abandoned (a crashed
+ * or killed process) and taken over. A live run refreshes its claim every
+ * `RUN_CLAIM_HEARTBEAT_MS` (2026-10-19), so the threshold no longer has to
+ * outlast the longest run: a 3-hour ingest replay keeps its claim, and a dead
+ * process frees the route within minutes instead of the hour it used to take.
  */
-export const RUN_CLAIM_STALE_MS = 60 * 60_000;
+export const RUN_CLAIM_STALE_MS = 10 * 60_000;
+
+/** How often a live run refreshes its claim — well inside the stale threshold. */
+export const RUN_CLAIM_HEARTBEAT_MS = 2 * 60_000;
+
+/** Ceiling on the retry backoff of a failing range. */
+const RANGE_BACKOFF_MAX_MS = 60 * 60_000;
+
+/**
+ * How long a range that failed `attempts` times waits before its next try:
+ * the audit interval, doubled per failure, capped at an hour.
+ */
+export function rangeBackoffMs(
+  attempts: number,
+  intervalMinutes: number,
+): number {
+  if (attempts <= 0) return 0;
+  return Math.min(
+    intervalMinutes * 60_000 * 2 ** (attempts - 1),
+    RANGE_BACKOFF_MAX_MS,
+  );
+}
+
+/** Pages `listBranchCommits` may read when re-reading a truncated Compare. */
+const TRUNCATION_REREAD_PAGES = 30;
 
 /** At most this many repos are named in `run.error` for one note. */
 const MAX_NAMED_REPOS = 10;
@@ -383,30 +412,43 @@ export class GithubAuditSyncService {
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
   ): Promise<AuditStatus> {
-    const [config, checkpoint, pendingRanges, failedRanges, lastFullSweep] =
-      await Promise.all([
-        this.prisma.tenantConfiguration.findUnique({
-          where: {
-            tenantId_namespace_key: {
-              tenantId,
-              namespace: 'github',
-              key: 'default',
-            },
+    const [
+      config,
+      checkpoint,
+      pendingRanges,
+      failedRanges,
+      lastFullSweep,
+      truncatedRanges,
+      dismissedRanges,
+    ] = await Promise.all([
+      this.prisma.tenantConfiguration.findUnique({
+        where: {
+          tenantId_namespace_key: {
+            tenantId,
+            namespace: 'github',
+            key: 'default',
           },
-        }),
-        this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
-        this.prisma.githubPushRange.findMany({
-          where: { tenantId, status: 'pending' },
-        }),
-        this.prisma.githubPushRange.findMany({
-          where: { tenantId, status: 'failed' },
-        }),
-        this.prisma.githubAuditRun.findFirst({
-          where: { tenantId, trigger: 'full_sweep' },
-          orderBy: { startedAt: 'desc' },
-          select: { startedAt: true, finishedAt: true, status: true },
-        }),
-      ]);
+        },
+      }),
+      this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+      this.prisma.githubPushRange.findMany({
+        where: { tenantId, status: 'pending' },
+      }),
+      this.prisma.githubPushRange.findMany({
+        where: { tenantId, status: 'failed' },
+      }),
+      this.prisma.githubAuditRun.findFirst({
+        where: { tenantId, trigger: 'full_sweep' },
+        orderBy: { startedAt: 'desc' },
+        select: { startedAt: true, finishedAt: true, status: true },
+      }),
+      this.prisma.githubPushRange.count({
+        where: { tenantId, status: 'done', truncated: true },
+      }),
+      this.prisma.githubPushRange.count({
+        where: { tenantId, status: 'dismissed' },
+      }),
+    ]);
     const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
     const enabled =
       !!config &&
@@ -428,6 +470,8 @@ export class GithubAuditSyncService {
       lastError: checkpoint?.lastError ?? null,
       pendingRanges: pendingRanges.length,
       failedRanges: failedRanges.length,
+      truncatedRanges,
+      dismissedRanges,
       lastFullSweep: lastFullSweep
         ? {
             startedAt: lastFullSweep.startedAt,
@@ -436,6 +480,100 @@ export class GithubAuditSyncService {
           }
         : null,
     };
+  }
+
+  /** Ranges for the admin panel, newest first; optionally one status. */
+  async listRanges(
+    tenantId: string,
+    status?: string,
+    take = 100,
+    truncated?: boolean,
+  ) {
+    return this.prisma.githubPushRange.findMany({
+      where: {
+        tenantId,
+        ...(status ? { status } : {}),
+        ...(truncated === undefined ? {} : { truncated }),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Math.max(take, 1), 500),
+      select: {
+        id: true,
+        repoFullName: true,
+        ref: true,
+        kind: true,
+        status: true,
+        attempts: true,
+        truncated: true,
+        commitsFound: true,
+        ingested: true,
+        lastError: true,
+        lastAttemptAt: true,
+        createdAt: true,
+        dismissedAt: true,
+        dismissedByUserId: true,
+        dismissedReason: true,
+      },
+    });
+  }
+
+  /**
+   * Puts a failed (or truncated, or dismissed) range back in the queue with
+   * fresh attempts. The next run executes it. Returns false when the range
+   * does not exist for this tenant or is already pending.
+   */
+  async retryRange(tenantId: string, id: string): Promise<boolean> {
+    const r = await this.prisma.githubPushRange.updateMany({
+      where: {
+        tenantId,
+        id,
+        OR: [
+          { status: { in: ['failed', 'dismissed'] } },
+          { status: 'done', truncated: true },
+        ],
+      },
+      data: {
+        status: 'pending',
+        attempts: 0,
+        lastAttemptAt: null,
+        truncated: false,
+        dismissedAt: null,
+        dismissedByUserId: null,
+        dismissedReason: null,
+      },
+    });
+    return r.count === 1;
+  }
+
+  /**
+   * An admin's acceptance that a range will never complete: it stops holding
+   * back the digest (`coverageForDay` reads only pending/failed/truncated)
+   * and stays listed, with who dismissed it and why.
+   */
+  async dismissRange(
+    tenantId: string,
+    id: string,
+    userId: string,
+    reason: string,
+    now: Date = new Date(),
+  ): Promise<boolean> {
+    const r = await this.prisma.githubPushRange.updateMany({
+      where: {
+        tenantId,
+        id,
+        OR: [
+          { status: { in: ['failed', 'pending'] } },
+          { status: 'done', truncated: true },
+        ],
+      },
+      data: {
+        status: 'dismissed',
+        dismissedAt: now,
+        dismissedByUserId: userId,
+        dismissedReason: reason.slice(0, 500),
+      },
+    });
+    return r.count === 1;
   }
 
   /**
@@ -513,35 +651,48 @@ export class GithubAuditSyncService {
         { status: 'shadowed', createdAt: { gte: replayFrom } },
       ],
     };
-    const [checkpoint, unfinished, shown, sweep] = await Promise.all([
-      this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
-      this.prisma.githubPushRange.count({ where: unfinishedWhere }),
-      this.prisma.githubPushRange.findMany({
-        where: unfinishedWhere,
-        select: { repoFullName: true, ref: true },
-        orderBy: { createdAt: 'asc' },
-        take: COVERAGE_RANGES_SHOWN,
-      }),
-      cfg.fullSweepMinutes > 0
-        ? this.prisma.githubAuditRun.findFirst({
-            where: {
-              tenantId,
-              trigger: 'full_sweep',
-              status: 'success',
-              // A shadow-mode sweep ingests nothing — its ranges are only
-              // `shadowed` — so it is not evidence the day's commits are in
-              // (final review, I2).
-              mode: 'ingest',
-              // startedAt, not finishedAt (controller ruling, fix round 1):
-              // a sweep that started before the day ended but finished after
-              // was already running against the old branch tips and cannot
-              // vouch for pushes made during the day.
-              startedAt: { gt: new Date(dayEndMs) },
-            },
-            select: { id: true },
-          })
-        : Promise.resolve(null),
-    ]);
+    // A range whose commits could not all be read (Compare's cap, then the
+    // branch re-read's page cap) is "done" but not complete: the people who
+    // pushed to it must not be named off it (2026-10-19). Dismissing it is
+    // the admin's way to accept the gap.
+    const truncatedWhere = {
+      tenantId,
+      status: 'done',
+      truncated: true,
+      createdAt: { gte: dayStart },
+    };
+    const [checkpoint, unfinished, shown, sweep, truncated] = await Promise.all(
+      [
+        this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+        this.prisma.githubPushRange.count({ where: unfinishedWhere }),
+        this.prisma.githubPushRange.findMany({
+          where: unfinishedWhere,
+          select: { repoFullName: true, ref: true },
+          orderBy: { createdAt: 'asc' },
+          take: COVERAGE_RANGES_SHOWN,
+        }),
+        cfg.fullSweepMinutes > 0
+          ? this.prisma.githubAuditRun.findFirst({
+              where: {
+                tenantId,
+                trigger: 'full_sweep',
+                status: 'success',
+                // A shadow-mode sweep ingests nothing — its ranges are only
+                // `shadowed` — so it is not evidence the day's commits are in
+                // (final review, I2).
+                mode: 'ingest',
+                // startedAt, not finishedAt (controller ruling, fix round 1):
+                // a sweep that started before the day ended but finished after
+                // was already running against the old branch tips and cannot
+                // vouch for pushes made during the day.
+                startedAt: { gt: new Date(dayEndMs) },
+              },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+        this.prisma.githubPushRange.count({ where: truncatedWhere }),
+      ],
+    );
 
     const reasons: string[] = [];
     if (!checkpoint?.seededAt) {
@@ -565,6 +716,11 @@ export class GithubAuditSyncService {
     if (cfg.fullSweepMinutes > 0 && !sweep) {
       reasons.push(
         `no successful full branch sweep has started since ${day} ended`,
+      );
+    }
+    if (truncated > 0) {
+      reasons.push(
+        `${truncated} truncated range(s): more commits than could be read — dismiss on Sync Status to accept the gap`,
       );
     }
     return { applies: true, ok: reasons.length === 0, reasons };
@@ -726,14 +882,50 @@ export class GithubAuditSyncService {
     if (claim.count === 0) {
       return skipped('Another audit sync run for this tenant is in progress.');
     }
+    // Heartbeat (2026-10-19): move the claim forward while the run is alive,
+    // so a long run is never mistaken for a dead one. Each refresh only moves
+    // OUR value; if another run took the claim over (we really were stalled),
+    // the update matches nothing and the heartbeat stops.
+    let held = now;
+    let beating: Promise<void> | null = null;
+    const heartbeat = setInterval(() => {
+      if (beating) return;
+      const next = new Date(Math.max(Date.now(), held.getTime() + 1));
+      beating = this.prisma.githubAuditCheckpoint
+        .updateMany({
+          where: { tenantId, runningSince: held },
+          data: { runningSince: next },
+        })
+        .then((r) => {
+          if (r.count === 1) {
+            held = next;
+          } else {
+            clearInterval(heartbeat);
+            this.logger.warn(
+              `[tenant ${tenantId}] audit sync run claim was taken over; heartbeat stopped`,
+            );
+          }
+        })
+        .catch((err: Error) =>
+          this.logger.warn(
+            `[tenant ${tenantId}] audit sync claim heartbeat failed: ${err.message}`,
+          ),
+        )
+        .finally(() => {
+          beating = null;
+        });
+    }, RUN_CLAIM_HEARTBEAT_MS);
+    heartbeat.unref?.();
     try {
       return await body();
     } finally {
+      clearInterval(heartbeat);
       try {
-        // Release only OUR claim: if a stale claim of ours was taken over,
-        // the newer run's claim must stay in place.
+        await beating;
+        // Release only OUR claim, by its current value: if it was taken
+        // over, the newer run's claim must stay in place.
         await this.prisma.githubAuditCheckpoint.updateMany({
-          where: { tenantId, runningSince: now },
+          where: { tenantId, runningSince: held },
           data: { runningSince: null },
         });
       } catch (err) {
@@ -1678,10 +1870,19 @@ export class GithubAuditSyncService {
             ],
           }
         : { tenantId: ctx.tenantId, status: 'pending' };
-    const ranges = await this.prisma.githubPushRange.findMany({
-      where,
-      orderBy: { createdAt: 'asc' },
-    });
+    const ranges = (
+      await this.prisma.githubPushRange.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+      })
+    ).filter(
+      // Backoff (2026-10-19): a range that just failed waits before its next
+      // try, so a GitHub outage spends attempts slowly instead of in minutes.
+      (r) =>
+        !r.lastAttemptAt ||
+        ctx.now.getTime() - r.lastAttemptAt.getTime() >=
+          rangeBackoffMs(r.attempts, ctx.cfg.intervalMinutes),
+    );
     await forEachBounded(ranges, ctx.cfg.compareConcurrency, async (range) => {
       if (ctx.stopForBudget) return;
       await this.executeRange(ctx, range);
@@ -1721,7 +1922,14 @@ export class GithubAuditSyncService {
           };
     const fail = async (message: string) => {
       const attempts = range.attempts + 1;
-      const failed = attempts >= ctx.cfg.maxRangeAttempts;
+      // Given up only when BOTH the attempts are spent and the range has
+      // been failing for long enough (2026-10-19): five quick failures during
+      // one GitHub outage used to fail a range for good in 25 minutes, and a
+      // failed range holds back the digest until an admin acts.
+      const failed =
+        attempts >= ctx.cfg.maxRangeAttempts &&
+        ctx.now.getTime() - range.createdAt.getTime() >=
+          ctx.cfg.rangeGiveUpHours * 3_600_000;
       if (failed) ctx.counters.failedRanges++;
       await this.prisma.githubPushRange.update({
         where: { id: range.id },
@@ -1729,6 +1937,7 @@ export class GithubAuditSyncService {
           attempts,
           status: failed ? 'failed' : 'pending',
           lastError: message.slice(0, 500),
+          lastAttemptAt: ctx.now,
           ...progress(),
         },
       });
@@ -1976,6 +2185,24 @@ export class GithubAuditSyncService {
           head,
         );
       }
+    }
+    if (!result.failure && result.truncated) {
+      // Compare stops at 250 commits. Re-read the branch's own history over
+      // the same horizon as an unrelated branch, paged much further, so a big
+      // push is collected rather than only flagged (2026-10-19). Still
+      // truncated after that, the range stays `truncated` and the digest
+      // gate withholds its days until an admin dismisses it.
+      const reread = await this.client.listBranchCommits(
+        range.repoFullName,
+        token,
+        head,
+        new Date(range.createdAt.getTime() - UNRELATED_HISTORY_LOOKBACK_MS),
+        TRUNCATION_REREAD_PAGES,
+      );
+      if (!reread.failure) {
+        return { ...reread, pages: result.pages + reread.pages };
+      }
+      return result;
     }
     if (result.failure === 'no_common_ancestor') {
       // The head shares no history with the base (an orphan branch, or a

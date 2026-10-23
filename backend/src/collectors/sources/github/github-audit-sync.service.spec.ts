@@ -1,5 +1,6 @@
 import { readGithubAuditConfig } from './github-audit.config';
 import {
+  RUN_CLAIM_HEARTBEAT_MS,
   GithubAuditSyncService,
   SHADOW_REPLAY_MS,
 } from './github-audit-sync.service';
@@ -696,6 +697,63 @@ describe('GithubAuditSyncService.runTenant (per-tenant run claim)', () => {
     ).toBeNull();
   });
 
+  it('takes over a claim not refreshed for more than 10 minutes, but not a fresher one', async () => {
+    const { svc, prisma, audit } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    audit.listGitPushes.mockResolvedValue(emptyAudit);
+    prisma.githubAuditCheckpoint.rows[0].runningSince = new Date(
+      NOW.getTime() - 9 * 60_000,
+    );
+    expect((await svc.runTenant('t1', SHADOW, NOW)).status).toBe('skipped');
+    prisma.githubAuditCheckpoint.rows[0].runningSince = new Date(
+      NOW.getTime() - 11 * 60_000,
+    );
+    expect((await svc.runTenant('t1', SHADOW, NOW)).status).toBe('success');
+  });
+
+  it('keeps refreshing its claim during a long run, and releases the refreshed claim', async () => {
+    jest.useFakeTimers({ now: NOW });
+    try {
+      const { svc, prisma, audit } = setup();
+      seedTenant(prisma, 't1', ['acme/ehr']);
+      seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+      let finish!: (v: unknown) => void;
+      audit.listGitPushes.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const run = svc.runTenant('t1', SHADOW, NOW);
+      // Let the claim land before the clock moves.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(prisma.githubAuditCheckpoint.rows[0].runningSince).toEqual(NOW);
+      // 25 minutes of a slow run: far past the 10-minute stale threshold.
+      for (let m = 0; m < 25; m += 2) {
+        await jest.advanceTimersByTimeAsync(RUN_CLAIM_HEARTBEAT_MS);
+      }
+      const refreshed = prisma.githubAuditCheckpoint.rows[0].runningSince;
+      expect(refreshed.getTime()).toBeGreaterThan(NOW.getTime() + 20 * 60_000);
+      // A second run now sees a fresh claim and stays out.
+      expect(
+        (
+          await svc.runTenant(
+            't1',
+            SHADOW,
+            new Date(NOW.getTime() + 26 * 60_000),
+          )
+        ).status,
+      ).toBe('skipped');
+      finish(emptyAudit);
+      await run;
+      expect(
+        prisma.githubAuditCheckpoint.rows[0].runningSince ?? null,
+      ).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('creates the checkpoint row to claim on a first run, and still sets seededAt/checkpointAt', async () => {
     const { svc, prisma, client } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);
@@ -1021,6 +1079,22 @@ describe('GithubAuditSyncService.status', () => {
     });
   });
 
+  it('counts truncated and dismissed ranges for the admin panel', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    prisma.githubPushRange.rows.push(
+      { id: 'a', tenantId: 't1', status: 'done', truncated: true },
+      { id: 'b', tenantId: 't1', status: 'done', truncated: false },
+      { id: 'c', tenantId: 't1', status: 'dismissed', truncated: true },
+      { id: 'd', tenantId: 't2', status: 'done', truncated: true },
+    );
+    expect(await svc.status('t1', SHADOW, NOW)).toMatchObject({
+      truncatedRanges: 1,
+      dismissedRanges: 1,
+    });
+  });
+
   it('judges behind against max(lag threshold, 2 × interval)', async () => {
     const { svc, prisma } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);
@@ -1269,6 +1343,34 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     expect(c.reasons).toEqual([
       '2 unfinished range(s): acme/ehr@main, acme/lab@dev',
     ]);
+  });
+
+  it('is not ok while a range from the day is truncated, and ok once an admin dismisses it', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    const r = {
+      ...range('tr', 't1', 'done', DAY_END, 'acme/ehr', 'big'),
+      truncated: true,
+    };
+    prisma.githubPushRange.rows.push(r);
+    const c = await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW);
+    expect(c.ok).toBe(false);
+    expect(c.reasons.join(' ')).toMatch(/1 truncated range/);
+    r.status = 'dismissed';
+    expect((await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW)).ok).toBe(
+      true,
+    );
+  });
+
+  it('ignores a dismissed range that would otherwise be unfinished', async () => {
+    const { svc, prisma } = setup();
+    covered(prisma, 't1');
+    prisma.githubPushRange.rows.push(
+      range('gone', 't1', 'dismissed', DAY_END, 'acme/ehr', 'deleted'),
+    );
+    expect((await svc.coverageForDay('t1', DAY, INGEST, DIGEST_NOW)).ok).toBe(
+      true,
+    );
   });
 
   it('is not ok with a shadowed range from the day still inside the replay window (ingest will replay it)', async () => {

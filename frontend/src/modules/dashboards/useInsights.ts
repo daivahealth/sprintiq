@@ -4,6 +4,7 @@ import type { Scope } from '../../lib/scope';
 import { rangeParams, type ActivityRange } from './activity-range';
 import type { DeveloperRoleValue } from './developer-role';
 import type { TrendMonth } from './monthly-trend';
+import type { AuditRouteFreshness } from './audit-lag';
 
 // ---- Response types (mirror backend insights.service.ts) -------------------
 
@@ -394,6 +395,11 @@ function scopeParams(scope: Scope, from?: string): URLSearchParams {
  * facts is the misreading this exists to prevent.
  */
 export interface FreshnessView {
+  /**
+   * The audit-log route's lag (2026-10-19). Optional: an older API omits it,
+   * and null means the route's state could not be read — neither is "on time".
+   */
+  auditRoute?: AuditRouteFreshness | null;
   /**
    * Source time everything on screen is COMPLETE through — the real bound.
    * Null while any connection is still backfilling (`incomplete`).

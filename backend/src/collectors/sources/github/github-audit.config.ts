@@ -10,6 +10,9 @@ export const ALLOWED_AUDIT_INTERVALS = [5, 10, 15, 20, 30, 60] as const;
 /** Full branch sweep cadence in minutes; 0 turns the sweep off (spec item 3). */
 export const ALLOWED_FULL_SWEEP_INTERVALS = [0, 30, 60, 120, 240] as const;
 
+/** Hours between scheduled whole-org repo syncs. 0 = off (manual only). */
+export const ALLOWED_ORG_SYNC_HOURS = [0, 6, 12, 24] as const;
+
 export interface GithubAuditConfig {
   mode: GithubAuditMode;
   intervalMinutes: number;
@@ -31,6 +34,19 @@ export interface GithubAuditConfig {
    * the repo is seeded only and named in `run.error`. 0 = always seed only.
    */
   newRepoMaxBranches: number;
+  /**
+   * A range that keeps failing is given up on (`failed`) only once it has
+   * used `maxRangeAttempts` AND is at least this old (2026-10-19). Until then
+   * it stays `pending` and is retried with backoff, so a short GitHub outage
+   * no longer fails ranges for good in 25 minutes.
+   */
+  rangeGiveUpHours: number;
+  /**
+   * Hours between scheduled whole-org repo syncs (GithubOrgSyncSchedulerService),
+   * so a repo nobody registered is picked up even when no push to it reaches
+   * the audit route in ingest mode. 0 = off.
+   */
+  orgSyncHours: number;
 }
 
 function intIn(
@@ -93,10 +109,18 @@ export function readGithubAuditConfig(
       `Invalid GITHUB_AUDIT_FULL_SWEEP_MINUTES "${fullSweepMinutes}". Expected one of ${ALLOWED_FULL_SWEEP_INTERVALS.join(', ')} (0 = off).`,
     );
   }
+  const orgSyncHours = intIn(env, 'GITHUB_ORG_SYNC_HOURS', 24, 0, 24);
+  if (!(ALLOWED_ORG_SYNC_HOURS as readonly number[]).includes(orgSyncHours)) {
+    throw new Error(
+      `Invalid GITHUB_ORG_SYNC_HOURS "${orgSyncHours}". Expected one of ${ALLOWED_ORG_SYNC_HOURS.join(', ')} (0 = off).`,
+    );
+  }
   return {
     mode,
     intervalMinutes,
     fullSweepMinutes,
+    orgSyncHours,
+    rangeGiveUpHours: intIn(env, 'GITHUB_AUDIT_RANGE_GIVEUP_HOURS', 24, 1, 168),
     pageSize: intIn(env, 'GITHUB_AUDIT_PAGE_SIZE', 100, 1, 100),
     overlapMinutes: intIn(env, 'GITHUB_AUDIT_OVERLAP_MINUTES', 15, 0, 120),
     compareConcurrency: intIn(env, 'GITHUB_AUDIT_COMPARE_CONCURRENCY', 2, 1, 8),
@@ -126,6 +150,14 @@ export function effectiveLagWarnMinutes(
 }
 
 /** Six-field (seconds-first) cron, as `@nestjs/schedule` accepts. 60 ⇒ top of every hour. */
+/**
+ * The org-sync cron: 15 past the hour, every `hours` hours (UTC). Off (0)
+ * still gets a valid daily expression; the tick gates itself.
+ */
+export function orgSyncCronExpression(hours: number): string {
+  return hours === 0 || hours === 24 ? '0 15 0 * * *' : `0 15 */${hours} * * *`;
+}
+
 export function auditCronExpression(intervalMinutes: number): string {
   return intervalMinutes === 60
     ? '0 0 * * * *'

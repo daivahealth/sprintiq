@@ -3,6 +3,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Roles } from '../../common/auth/roles.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
+import { GithubAuditSyncService } from '../../collectors/sources/github/github-audit-sync.service';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { MetricsService } from '../../metrics/metrics.service';
 import { CodeService } from '../code/code.service';
@@ -37,6 +38,9 @@ export class DashboardsController {
     private readonly correlation: CorrelationService,
     private readonly planning: PlanningService,
     private readonly connections: ConnectionsService,
+    // Read-only, for the audit route's lag (2026-10-19): it reads only the
+    // collector's own tables and never calls GitHub.
+    private readonly auditSync: GithubAuditSyncService,
   ) {}
 
   /**
@@ -52,8 +56,27 @@ export class DashboardsController {
    */
   @Roles(...DASHBOARD_ROLES)
   @Get('freshness')
-  getFreshness(@CurrentUser() user: AuthUser) {
-    return this.connections.getDataFreshness(user.tenantId);
+  async getFreshness(@CurrentUser() user: AuthUser) {
+    const [freshness, audit] = await Promise.all([
+      this.connections.getDataFreshness(user.tenantId),
+      this.auditSync.status(user.tenantId).catch(() => null),
+    ]);
+    // Composed here so BC-0's ConnectionsService keeps no collector
+    // dependency. `applies` is the same test the digest gate uses: the route
+    // is part of collection only in ingest mode with an audit token ref.
+    // Branch-only commits arrive through it, so when it lags, boards are
+    // missing them and must say so (it once ran 2.8 days behind silently).
+    return {
+      ...freshness,
+      auditRoute: audit
+        ? {
+            applies: audit.mode === 'ingest' && audit.enabled,
+            lagMinutes: audit.lagMinutes,
+            behind: audit.behind,
+            checkpointAt: audit.checkpointAt,
+          }
+        : null,
+    };
   }
 
   /** Single-repo endpoint retained for compatibility; the UI uses `metrics`. */
