@@ -2,16 +2,27 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Inject,
   NotFoundException,
+  Optional,
   Query,
 } from '@nestjs/common';
+import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
+import { Roles } from '../../common/auth/roles.decorator';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
-import { istDayEnd, istDayStart, istWindowFloor } from '../../common/time';
+import {
+  istDateKey,
+  istDayEnd,
+  istDayStart,
+  istWindowFloor,
+  previousWorkingDayKey,
+} from '../../common/time';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
+import { NoCommitDetectionService } from '../../metrics/no-commit-detection.service';
 import { SprintHealthDetailService } from '../../metrics/sprint-health-detail.service';
 import { CodeService } from '../code/code.service';
 import { ConnectionsService } from '../connections/connections.service';
@@ -233,7 +244,45 @@ export class InsightsController {
     // Read-only, for the collection watermark the 12-month trend needs to tell
     // an empty month from an unwalked one. BC-13 never reaches a source itself.
     private readonly connections: ConnectionsService,
+    // The digest's own detection, for the admin-only previous-day view.
+    private readonly noCommit: NoCommitDetectionService,
+    @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
+
+  /**
+   * Tracked developers with no delivery signal on one IST working day — the
+   * daily digest's list, shown in the app (ADR-0009, 2026-10-19 amendment).
+   *
+   * **Admins only**, by the decision that permits it: the list names people,
+   * and the exception covers this one admin surface beside the Teams channel.
+   * Read-only — the digest's own `detect`, no run row, no message — and every
+   * view is audit-logged. `day` defaults to the previous working day.
+   */
+  @Roles(Role.ADMIN)
+  @Get('developer-activity/watchlist/previous-day')
+  async previousDayInactive(
+    @CurrentUser() user: AuthUser,
+    @Query('day') day?: string,
+  ) {
+    const key = day ? parseDateKeyParam(day, 'day') : previousWorkingDayKey();
+    if (!key) {
+      throw new BadRequestException('day must be an IST date, YYYY-MM-DD.');
+    }
+    if (key > istDateKey(new Date())) {
+      throw new BadRequestException('day cannot be in the future.');
+    }
+    const view = await this.noCommit.previousDayView(user.tenantId, key);
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'dashboards.watchlist.previous_day.view',
+      targetType: 'reported_day',
+      targetId: key,
+      metadata: { outcome: view.outcome, flaggedCount: view.flagged.length },
+    });
+    return view;
+  }
 
   /** Dashboards visible to the current user's roles (role-based assignment). */
   @Get('assignments')

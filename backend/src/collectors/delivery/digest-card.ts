@@ -1,3 +1,5 @@
+import { DIGEST_RULE_TEXT } from '../../common/digest-rule';
+
 /**
  * Who to name on the card.
  *
@@ -41,8 +43,7 @@ export interface DigestCardInput {
  * to one line (2026-09-28 product decision) from the earlier multi-sentence
  * paragraph — the condition is unchanged, only how briefly it is met.
  */
-const RULE_TEXT =
-  "Counts commits and PRs opened only — reviews and Jira aren't counted.";
+const RULE_TEXT = DIGEST_RULE_TEXT;
 
 /**
  * Neutralise the markdown subset an Adaptive Card `TextBlock` renders.

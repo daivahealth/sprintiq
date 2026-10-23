@@ -25,6 +25,20 @@ The list is never ordered by volume — alphabetical by display name, always, th
 
 **This decision does not extend to any other notification.** It covers this one attributed list, sent to this one channel, computed from this one rule. A second attributed notification — a different channel, a different signal set, a different cadence — requires its own decision under the same rule, taken again, not inherited from this one or from 2026-09-07.
 
+## Amendment, 2026-10-19 — the same list in the app, admins only
+
+**Decision (product owner, 2026-10-19):** the list this ADR permits in one Teams channel may also be shown in the app, as a card on the Engineering Activity Watchlist, **to admins only**. The ask was a visible list of who showed no delivery signal on the previous working day; until now it existed only in the channel, which on the reference tenant had the digest switched off.
+
+It inherits this ADR's three conditions unchanged, and they are enforced the same way:
+
+1. **The rule ships with the list.** The card displays the identical rule sentence as the Teams card, both read from one constant (`backend/src/common/digest-rule.ts`), so the two surfaces cannot drift.
+2. **Suppressions are honoured.** The card is computed by `NoCommitDetectionService.detect`, the digest's own detection, including every withhold gate, so it names exactly who the digest would name and withholds whenever the digest would. Unresolved and incomplete roster entries are reported, never named.
+3. **Every view is recorded.** `GET /dashboards/developer-activity/watchlist/previous-day` is `@Roles(Role.ADMIN)`, read-only (no run row, no message), and writes an `AuditLog` row (`dashboards.watchlist.previous_day.view`) for every view.
+
+It adds one thing the channel cannot do: when a Teams card was sent for the day, the view lists anyone that card named who **now** shows a signal for that day — usually work pushed after the digest's 10:30 IST read. The correction is visible to admins without posting a second message to the channel.
+
+Scope stays narrow. This amendment covers one admin view of this one list. Showing it to any other role, on any other board, or in another channel needs the decision taken again; it does not extend to the Watchlist's recency buckets, which remain a separate, earlier surface.
+
 ## Consequences
 
 **What parity with the Activity Overview board costs, stated plainly rather than discovered later as a bug.** The active-set definition is deliberately identical to the Overview's `developersWithSignal` — a commit or a pull request opened in the window, nothing else — so the digest and the dashboard a reader opens to check it can never disagree about the same person on the same day. That parity is the point (one definition, one number, no explaining why two SprintIQ surfaces disagree), and it has a real cost: **a developer who spent the day reviewing code is named on the list**, because pull-request reviews are not in the Overview's signal set. So is someone who merged work they opened a week earlier, since the PR-opened window is keyed to `openedAt`, not `mergedAt`. Neither is a defect to be patched quietly here — widening the signal set is a real improvement, but it must be made in the Overview first and inherited by the digest, never added to the digest alone, which is exactly how the two would drift apart again (the codebase has already paid for that mistake once, recorded against `planningGapDevelopers` disagreeing with the Watchlist on real data).
