@@ -570,6 +570,47 @@ export class ConfigurationsController {
   }
 
   /**
+   * Re-reads the existing branch history of already-seeded repos (all active
+   * GitHub repos, or `repos`), so their branches appear on Developer pages
+   * without waiting for a push. Ingest mode only; the next full sweep does the
+   * reading. Audited.
+   */
+  @Roles(Role.ADMIN)
+  @Post('github/audit-sync/reread-branch-history')
+  async rereadBranchHistory(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { repos?: unknown },
+  ) {
+    const repos = Array.isArray(body?.repos)
+      ? body.repos.filter((r): r is string => typeof r === 'string')
+      : undefined;
+    const result = await this.auditSync.rereadBranchHistory(
+      user.tenantId,
+      repos,
+    );
+    if (result.status === 'not_ingest') {
+      throw new BadRequestException(
+        'Branch history is read only in ingest mode (GITHUB_AUDIT_SYNC_MODE=ingest).',
+      );
+    }
+    if (result.status === 'not_seeded') {
+      throw new BadRequestException(
+        'The audit route has not finished its first seeding pass yet.',
+      );
+    }
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'collectors.github_branch_history.reread',
+      targetType: 'tenant_configuration',
+      targetId: 'github',
+      metadata: { repos: result.repos.length, unknown: result.unknown },
+    });
+    return result;
+  }
+
+  /**
    * Puts a failed, truncated or dismissed range back in the queue with fresh
    * attempts; the next audit run executes it. Audited.
    */

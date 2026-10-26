@@ -95,6 +95,20 @@ export function AuditRoutePanel() {
       return refresh();
     },
   });
+  // Branch history of repos seeded before it was read on first sight
+  // (2026-10-26): clears their tips so the next sweep reads every branch.
+  const [confirmReread, setConfirmReread] = useState(false);
+  const reread = useMutation({
+    mutationFn: () =>
+      api.post<{ repos: string[]; readOnNextPushOnly: boolean }>(
+        `${BASE}/reread-branch-history`,
+        {},
+      ),
+    onSuccess: () => {
+      setConfirmReread(false);
+      return refresh();
+    },
+  });
 
   const s = status.data;
   if (!s) return null;
@@ -141,6 +155,47 @@ export function AuditRoutePanel() {
           value={`${s.truncatedRanges ?? 0} / ${s.dismissedRanges ?? 0}`}
         />
       </dl>
+
+      {s.mode === "ingest" && s.enabled && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-fg-subtle">
+          {confirmReread ? (
+            <>
+              <span>
+                Re-read every branch of every repo on the next branch sweep?
+                It costs GitHub API calls and holds back the digest until the
+                reads finish.
+              </span>
+              <Button size="sm" variant="secondary" disabled={reread.isPending} onClick={() => reread.mutate()}>
+                Re-read
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmReread(false)}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <>
+              <span>
+                Branches made before a repo was tracked don&apos;t show on
+                Developer pages until their history is read.
+              </span>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmReread(true)}>
+                Re-read branch history…
+              </Button>
+            </>
+          )}
+          {reread.data && (
+            <span className="text-fg-secondary">
+              {reread.data.repos.length} repo(s) queued —{" "}
+              {reread.data.readOnNextPushOnly
+                ? "read on each repo's next push (the branch sweep is off)."
+                : "read on the next branch sweep, at :02 past the hour."}
+            </span>
+          )}
+          {reread.isError && (
+            <span className="text-danger-fg">{(reread.error as Error).message}</span>
+          )}
+        </div>
+      )}
 
       {s.lastError && (
         <p className="text-xs text-warning-fg">Last run: {s.lastError}</p>

@@ -47,6 +47,16 @@ The existing walk and PR harvest are unchanged and keep running.
 - **Webhooks:** deferred (ADR-0008).
 - **Git mirror (Phase 2):** a complete enumeration of refs, but it needs `git`, disk and a fleet clone. Build it if acceptance or operation shows unexplained misses, misses from refs deleted or force-pushed between runs, a retention overrun, or tip-diff `core` spend that threatens the collectors.
 
+## 2026-10-26 update — branch history when a repo is first seen
+
+Found on `athmahealth/n8n-workflow`: created 28 Sep, pushed to on 5–13 Oct while the route was in shadow mode, registered by an org sync on 19 Oct. Its commits were collected, but no branch was ever linked. Only auto-registration (spec item 4) planned ranges for a new repo's branches. A repo registered any other way (org sync, by hand) was **seeded only**: tips stored, history unread. Its branches stayed absent from Developer pages until someone pushed to them again.
+
+1. **First sight reads history.** When the route meets a repo with no stored tips after its own seeding pass (the full sweep, or a push to it), in ingest mode it now seeds the repo **and** plans a `new_ref` range per non-default branch, exactly as auto-registration does. The same `GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES` cap applies, and a repo over it is seeded only and named in `run.error`. Each range then follows the 2026-10-19 new-branch rule: the branch's own history back `GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS`, linked only where new against the default branch. Counter: `historyRangesPlanned`. The initial `seedAll` pass is unchanged and still seeds only, since that is every repo at once. Shadow mode is unchanged.
+2. **Re-read for repos seeded earlier.** `POST /admin/configurations/github/audit-sync/reread-branch-history` `{ repos? }` clears the stored tips of the named repos (default: every active GitHub repo). The next full sweep then treats each as first seen. Ingest mode only. Also available as a button on Sync Status.
+3. **Cost and the digest.** Each branch costs one own-history read plus one Compare, budget-gated like any range. Until the ranges finish they are `pending` ranges created today, which holds back the digest (`coverageForDay`) as any unfinished range does. That is deliberate: the branches really are not read yet.
+
+The default branch is still never a range, as before: Branches lists the branches work happened on beside the default one.
+
 ## 2026-10-19 update — branch tracking and the new-branch rule
 
 Implements the plan agreed 2026-10-14 ([docs/superpowers/plans/2026-10-14-branch-tracking.md](../superpowers/plans/2026-10-14-branch-tracking.md)): record every branch a developer's commits are on, merged or not, and show them on the Developer page. It supersedes the 2026-10-14 "no common history" note below: that fallback still exists, but a new branch now always reads its own history.
