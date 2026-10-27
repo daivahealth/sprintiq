@@ -790,7 +790,7 @@ describe('Copilot column (ADR-0012)', () => {
 });
 
 describe('DeveloperActivityService.overview — people and the Copilot column', () => {
-  function service(copilotCollected: boolean) {
+  function service(copilotCollected: boolean, tracked: string[] = []) {
     const commit = (login: string) => ({
       sha: `sha-${login}`,
       repoFullName: 'org/repo',
@@ -808,6 +808,7 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
           commit('Copilot'),
           commit('dependabot[bot]'),
           commit('gone'),
+          commit('ravi'),
         ],
         truncated: false,
       }),
@@ -833,9 +834,13 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
         byLogin: new Map([
           ['asha', 'asha'],
           ['gone', 'gone'],
+          ['ravi', 'ravi'],
         ]),
         byEmail: new Map(),
-        displayNames: new Map([['asha', 'Asha Rao']]),
+        displayNames: new Map([
+          ['asha', 'Asha Rao'],
+          ['ravi', 'Ravi Kumar'],
+        ]),
         excluded: new Set(['gone']),
       }),
       attributionCoverage: jest.fn().mockResolvedValue({
@@ -853,6 +858,13 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
     const prisma = {
       pullRequest: { findMany: jest.fn().mockResolvedValue([]) },
       developerRole: { findMany: jest.fn().mockResolvedValue([]) },
+      trackedDeveloper: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(
+            tracked.map((canonicalDeveloperId) => ({ canonicalDeveloperId })),
+          ),
+      },
     };
     const tenantContext = { requireTenantId: () => 'tenant-a' };
     return new DeveloperActivityService(
@@ -869,10 +881,36 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
   it('lists people only, and the tile counts exactly the list', async () => {
     const view = await service(true).overview([], from, to, 14);
     // Copilot (the agent), a [bot] and an admin-excluded account are not people.
-    expect(view.activeDevelopers.map((d) => d.developer)).toEqual(['asha']);
+    expect(view.activeDevelopers.map((d) => d.developer)).toEqual([
+      'asha',
+      'ravi',
+    ]);
     expect(view.totals.developersWithSignal).toBe(view.activeDevelopers.length);
     // …but their commits still count as work.
-    expect(view.totals.commits).toBe(4);
+    expect(view.totals.commits).toBe(5);
+    // Nobody tracked yet: no denominator, nobody set aside.
+    expect(view.totals.trackedDevelopers).toBeNull();
+    expect(view.notTracked).toEqual([]);
+  });
+
+  it('counts tracked developers only once a list exists, and discloses the rest', async () => {
+    const view = await service(true, ['asha', 'meera']).overview(
+      [],
+      from,
+      to,
+      14,
+    );
+    // The headline reads "1 of 2 tracked developers"; the roster matches it.
+    expect(view.totals.developersWithSignal).toBe(1);
+    expect(view.totals.trackedDevelopers).toBe(2);
+    expect(view.activeDevelopers.map((d) => d.developer)).toEqual(['asha']);
+    // Ravi was active but is not tracked: named beside the tile, not dropped.
+    // Bots and excluded accounts are still not people, tracked or not.
+    expect(view.notTracked).toEqual([
+      { developer: 'ravi', displayName: 'Ravi Kumar' },
+    ]);
+    // Work volume is never scoped: every commit still counts.
+    expect(view.totals.commits).toBe(5);
   });
 
   it('attaches the Copilot cell and the freshness when reports were collected', async () => {

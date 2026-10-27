@@ -943,7 +943,11 @@ export interface DeveloperOverviewView {
     mergeCommitsExcluded?: number;
     /** Extra copies of commits held by more than one repository, counted once (METRICS.md §0). Optional: an older API omits it. */
     sharedCommitsCollapsed?: number;
+    /** Tracked developers with a signal (2026-10-27); everyone with one when nobody is tracked. */
     developersWithSignal: number;
+    /** Active entries on the Tracked Developers list; null when it is empty. Absent from an older API. */
+    trackedDevelopers?: number | null;
+    /** Every identity ever seen, bots included. No longer displayed. */
     developersKnown: number;
     prsOpened: number;
     prsMerged: number;
@@ -956,6 +960,8 @@ export interface DeveloperOverviewView {
    * cannot disagree about the same window.
    */
   activeDevelopers: ActiveDeveloper[];
+  /** Active people not on the Tracked Developers list (2026-10-27). Absent from an older API. */
+  notTracked?: { developer: string; displayName: string }[];
   /** Absent from an API that predates the Copilot column. */
   copilot?: CopilotCoverage;
   days: ActivityDay[];

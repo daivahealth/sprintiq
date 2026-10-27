@@ -231,9 +231,23 @@ export interface OverviewView {
      * repos), counted once here (METRICS.md §0).
      */
     sharedCommitsCollapsed: number;
-    /** Developers with any tracked signal in the window. */
+    /**
+     * Tracked developers (the Tracked Developers list) with a signal in the
+     * window — the board's headline "active developers" (2026-10-27). When no
+     * one is tracked yet, every person with a signal, as before.
+     */
     developersWithSignal: number;
-    /** Developers known to the tenant at all — the honest denominator. */
+    /**
+     * Active entries on the Tracked Developers list — the denominator of the
+     * headline (2026-10-27). `null` when the list is empty: then the board
+     * falls back to everyone with a signal and has no denominator.
+     */
+    trackedDevelopers: number | null;
+    /**
+     * Every developer identity ever seen, bots, excluded and unmatched ones
+     * included. Kept for older clients; no longer shown — it was never a
+     * meaningful denominator.
+     */
     developersKnown: number;
     prsOpened: number;
     prsMerged: number;
@@ -246,6 +260,12 @@ export interface OverviewView {
    * disagree about the same window.
    */
   activeDevelopers: ActiveDeveloper[];
+  /**
+   * People with a signal in the window who are NOT on the Tracked Developers
+   * list, alphabetical — disclosed beside the headline rather than silently
+   * dropped. Empty when the list is empty (then they are all on the roster).
+   */
+  notTracked: { developer: string; displayName: string }[];
   /**
    * Freshness for the roster's Copilot column. `collected: false` means no
    * report has ever been collected for this tenant (the column is hidden).
@@ -438,6 +458,7 @@ export class DeveloperActivityService {
       copilotRows,
       copilotSeats,
       copilotCoverage,
+      trackedRows,
     ] = await Promise.all([
       this.code.listCommitsPage(tenantId, {
         ...(repos.length > 0 ? { repos } : {}),
@@ -459,6 +480,10 @@ export class DeveloperActivityService {
       this.code.copilotUsageRows(tenantId, fromDay, toDay),
       this.code.copilotSeatLogins(tenantId),
       this.code.copilotCoverage(tenantId, fromDay, toDay),
+      this.prisma.trackedDeveloper.findMany({
+        where: { tenantId, active: true },
+        select: { canonicalDeveloperId: true },
+      }),
     ]);
     const { truncated } = page;
     // A commit held by several repositories (a repo created from another's
@@ -546,6 +571,25 @@ export class DeveloperActivityService {
       !isAnonymizedAccount(developer) &&
       !index.excluded.has(developer);
 
+    // The headline and the roster count the Tracked Developers list only
+    // (product decision 2026-10-27): the team the board is about, not every
+    // identity GitHub has ever shown. Active people outside it are disclosed
+    // in `notTracked`, never dropped silently. With no list configured yet,
+    // everyone counts, as before.
+    const tracked = new Set(trackedRows.map((r) => r.canonicalDeveloperId));
+    const scoped = tracked.size > 0;
+    const counted = (developer: string) =>
+      isPerson(developer) && (!scoped || tracked.has(developer));
+    const notTracked = scoped
+      ? [...withSignal]
+          .filter((d) => isPerson(d) && !tracked.has(d))
+          .map((developer) => ({
+            developer,
+            displayName: index.displayNames.get(developer) ?? developer,
+          }))
+          .sort((a, b) => a.displayName.localeCompare(b.displayName))
+      : [];
+
     // Same definition the Watchlist reports, via the same function — these two
     // numbers are the same claim on two pages and disagreed on real data while
     // they were computed separately (see `planningGapDevelopers`).
@@ -575,7 +619,8 @@ export class DeveloperActivityService {
         commits: commits.length - mergeCommitsExcluded,
         mergeCommitsExcluded,
         sharedCommitsCollapsed,
-        developersWithSignal: [...withSignal].filter(isPerson).length,
+        developersWithSignal: [...withSignal].filter(counted).length,
+        trackedDevelopers: scoped ? tracked.size : null,
         developersKnown: index.displayNames.size,
         prsOpened: prs.length,
         prsMerged,
@@ -591,7 +636,8 @@ export class DeveloperActivityService {
         copilotCoverage.collected
           ? copilotLookup(copilotRows, copilotSeats, index.byLogin)
           : null,
-      ).filter((row) => isPerson(row.developer)),
+      ).filter((row) => counted(row.developer)),
+      notTracked,
       copilot: copilotCoverage,
       days: commitDays(commits, index),
       attribution: {
