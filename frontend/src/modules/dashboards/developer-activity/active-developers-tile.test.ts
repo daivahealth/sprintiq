@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { activeDevelopersTile } from './active-developers-tile';
 
 describe('activeDevelopersTile', () => {
-  it('counts against the tracked list', () => {
+  it('counts against the tracked list, and mentions no one outside it', () => {
     expect(
-      activeDevelopersTile({ developersWithSignal: 40, trackedDevelopers: 66 }, []),
+      activeDevelopersTile({ developersWithSignal: 40, trackedDevelopers: 66 }),
     ).toEqual({
       label: 'Active developers',
       value: '40 / 66',
@@ -12,28 +12,16 @@ describe('activeDevelopersTile', () => {
     });
   });
 
-  it('discloses active people who are not tracked', () => {
-    const tile = activeDevelopersTile(
-      { developersWithSignal: 40, trackedDevelopers: 66 },
-      [{}, {}, {}],
-    );
-    expect(tile.hint).toBe(
-      'tracked developers with a commit or PR · +3 active, not tracked',
-    );
-  });
-
   it('stands alone, and says why, when nobody is tracked yet', () => {
-    const tile = activeDevelopersTile(
-      { developersWithSignal: 12, trackedDevelopers: null },
-      [],
-    );
+    const tile = activeDevelopersTile({
+      developersWithSignal: 12,
+      trackedDevelopers: null,
+    });
     expect(tile.value).toBe('12');
     expect(tile.hint).toMatch(/Tracked Developers/);
   });
 
   it('never invents a denominator for an older API', () => {
-    expect(activeDevelopersTile({ developersWithSignal: 12 }, undefined).value).toBe(
-      '12',
-    );
+    expect(activeDevelopersTile({ developersWithSignal: 12 }).value).toBe('12');
   });
 });

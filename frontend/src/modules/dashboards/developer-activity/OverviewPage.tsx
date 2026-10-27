@@ -109,7 +109,7 @@ export function OverviewPage() {
             .filter(Boolean)
             .join(' · ')}
         />
-        <Stat {...activeDevelopersTile(totals, d.notTracked)} />
+        <Stat {...activeDevelopersTile(totals)} />
         <Stat
           label="PRs opened"
           value={totals.prsOpened}
@@ -148,15 +148,6 @@ export function OverviewPage() {
         copilot={d.copilot}
         range={range}
       />
-      {/* The roster is the tracked team (2026-10-27). Anyone else who was
-          active is named here, never silently dropped — add them on Tracked
-          Developers if they belong to the team. */}
-      {d.notTracked && d.notTracked.length > 0 && (
-        <p className="-mt-3 text-xs text-fg-subtle">
-          Also active, not on the Tracked Developers list:{' '}
-          {d.notTracked.map((p) => p.displayName).join(', ')}.
-        </p>
-      )}
 
       <CommitTimeline
         days={d.days}

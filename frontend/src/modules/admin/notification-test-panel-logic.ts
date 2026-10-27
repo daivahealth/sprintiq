@@ -219,12 +219,9 @@ export function previewActiveLine(result: {
   if (result.activeCount === null) {
     return `Active developers: not evaluated (${result.rosterCount} tracked)`;
   }
-  const tile = activeDevelopersTile(
-    {
-      developersWithSignal: result.activeCount,
-      trackedDevelopers: result.rosterCount,
-    },
-    [],
-  );
+  const tile = activeDevelopersTile({
+    developersWithSignal: result.activeCount,
+    trackedDevelopers: result.rosterCount,
+  });
   return `${tile.label}: ${tile.value} · ${tile.hint}`;
 }

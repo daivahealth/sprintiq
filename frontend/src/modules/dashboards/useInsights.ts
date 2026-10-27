@@ -960,8 +960,6 @@ export interface DeveloperOverviewView {
    * cannot disagree about the same window.
    */
   activeDevelopers: ActiveDeveloper[];
-  /** Active people not on the Tracked Developers list (2026-10-27). Absent from an older API. */
-  notTracked?: { developer: string; displayName: string }[];
   /** Absent from an API that predates the Copilot column. */
   copilot?: CopilotCoverage;
   days: ActivityDay[];
