@@ -101,6 +101,10 @@ export interface RunDigestResult {
   incomplete: { developer: string; displayName: string }[];
   detail: string | null;
   dryRun: boolean;
+  /** Active Tracked Developers entries. Absent from an older API. */
+  rosterCount?: number;
+  /** Tracked developers with a signal; null when the run withheld before evaluating anyone. Absent from an older API. */
+  activeCount?: number | null;
   unattributedCommits: number;
 }
 

@@ -286,6 +286,18 @@ describe('NoCommitDetectionService audit-sync coverage gate', () => {
     expect(result.evaluation.flagged.map((f) => f.developer)).toEqual(['erin']);
   });
 
+  it('reports how many tracked developers were active, and no count when the roster was never evaluated', async () => {
+    // Finn opened a PR, Erin did nothing: "active 1 / 2 tracked".
+    const evaluated = await harness().service.detect('tenant_a', DAY);
+    expect(evaluated.rosterCount).toBe(2);
+    expect(evaluated.activeCount).toBe(1);
+
+    // Withheld before the roster is read: unknown, not zero.
+    const audit = coverage({ applies: true, ok: false, reasons: ['x'] });
+    const withheld = await harness({ audit }).service.detect('tenant_a', DAY);
+    expect(withheld.activeCount).toBeUndefined();
+  });
+
   it('is unchanged when the service is absent (positional 4-arg construction)', async () => {
     const result = await harness({ audit: null }).service.detect(
       'tenant_a',

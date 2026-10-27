@@ -63,6 +63,14 @@ export interface RunDigestResult {
   incomplete: NamedDeveloper[];
   detail: string | null;
   dryRun: boolean;
+  /** Active entries on the Tracked Developers list. */
+  rosterCount: number;
+  /**
+   * Tracked developers with a signal on the day — "active N / rosterCount",
+   * the figure the Activity Overview leads with (2026-10-27). Null when the
+   * run withheld before evaluating the roster: unknown, never zero.
+   */
+  activeCount: number | null;
   /**
    * Counter-evidence to a name on `flagged` — see
    * `DigestDetection.unattributedCommits`. Populated on every path, including
@@ -183,6 +191,8 @@ export class NotificationsService {
       incomplete: evaluation.incomplete,
       detail,
       dryRun,
+      rosterCount: detected.rosterCount,
+      activeCount: detected.activeCount ?? null,
       unattributedCommits: detected.unattributedCommits,
     };
 

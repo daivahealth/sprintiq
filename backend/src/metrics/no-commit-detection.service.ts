@@ -218,6 +218,15 @@ export interface DigestDetection {
    * in a channel.
    */
   evaluation: RosterEvaluation;
+  /**
+   * Tracked developers WITH a signal on the day — the same "active N of M
+   * tracked" figure the Activity Overview leads with (2026-10-27), M being
+   * `rosterCount`. Set whenever the roster was actually evaluated (gates 3
+   * and 4 included, so a withheld day still says how many were active);
+   * absent when a gate returned before evaluating anyone, because an
+   * unevaluated roster has no active count, not a zero one.
+   */
+  activeCount?: number;
   /** Non-null when the names must not be sent, with the reason to record. */
   withhold: { outcome: DigestOutcome; detail: string } | null;
   /**
@@ -570,6 +579,10 @@ export class NoCommitDetectionService {
       roster.length -
       evaluation.unresolved.length -
       evaluation.suppressed.length;
+    // Everyone evaluated who is neither flagged nor incomplete had a signal —
+    // `evaluateRoster` only lets an active developer through silently.
+    const activeCount =
+      evaluated - evaluation.flagged.length - evaluation.incomplete.length;
 
     // Gate 3: a non-empty roster that resolved and suppressed away to
     // nothing evaluable is not the same claim as "everyone had activity".
@@ -599,6 +612,7 @@ export class NoCommitDetectionService {
         // gate 4 below. `unresolved`/`incomplete`/`suppressed` survive, same
         // as every other gate.
         evaluation,
+        activeCount,
         withhold: {
           outcome: 'withheld_unevaluable',
           detail: `None of the ${roster.length} tracked developers could be evaluated for ${reportedDay} — every roster entry is unresolved or suppressed. The roster likely needs re-seeding or identity resolution to catch up. Names withheld.`,
@@ -625,6 +639,9 @@ export class NoCommitDetectionService {
         // when names are withheld, and emptying the whole evaluation here
         // (matching gates 1 and 2) would silently discard it.
         evaluation: { ...evaluation, flagged: [] },
+        // From the real evaluation, before `flagged` was emptied: "3 of 66
+        // tracked developers were active" is the point of this gate.
+        activeCount,
         withhold: {
           outcome: 'withheld_implausible',
           detail,
@@ -638,6 +655,7 @@ export class NoCommitDetectionService {
       reportedDay,
       rosterCount: roster.length,
       evaluation,
+      activeCount,
       withhold: null,
       lastSyncAt: freshness.lastSyncAt,
       unattributedCommits,

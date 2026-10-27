@@ -15,6 +15,7 @@ import {
   isAlreadySentConflict,
   nonZeroCounts,
   outcomeLabel,
+  previewActiveLine,
   sendConfirmationCopy,
 } from './notification-test-panel-logic';
 
@@ -221,5 +222,23 @@ describe('panel command gating', () => {
     onConfirmSendClick();
     expect(sendCall).toHaveBeenCalledTimes(1);
     expect(forceCall).not.toHaveBeenCalled();
+  });
+});
+
+describe('previewActiveLine', () => {
+  it('reads like the Overview tile: active tracked developers out of the list', () => {
+    expect(previewActiveLine({ rosterCount: 66, activeCount: 40 })).toBe(
+      'Active developers: 40 / 66 · tracked developers with a commit or PR',
+    );
+  });
+
+  it('says "not evaluated" — never 0 — when the run withheld before reading the roster', () => {
+    expect(previewActiveLine({ rosterCount: 66, activeCount: null })).toBe(
+      'Active developers: not evaluated (66 tracked)',
+    );
+  });
+
+  it('shows nothing on an older API that sends no counts', () => {
+    expect(previewActiveLine({})).toBeNull();
   });
 });
