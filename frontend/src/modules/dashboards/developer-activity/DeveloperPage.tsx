@@ -41,7 +41,9 @@ export function DeveloperPage() {
   const developer = params.get('developer');
   const search = params.get('q') ?? '';
 
-  const catalog = useDeveloperCatalog(search);
+  // Tracked developers only (2026-10-27): the picker never offers a profile
+  // the page would refuse to show.
+  const catalog = useDeveloperCatalog(search, true);
   const developers = catalog.data?.items ?? [];
   const query = useDeveloperActivity(developer, range);
   const d = query.data;

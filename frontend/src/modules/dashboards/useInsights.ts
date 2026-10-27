@@ -791,13 +791,23 @@ export interface DeveloperCatalogItem {
   lastActiveAt?: string | null;
 }
 
-export function useDeveloperCatalog(search: string) {
+/**
+ * `trackedOnly` is for Engineering Activity, which shows tracked developers
+ * only (2026-10-27). The Tracked Developers page's add search leaves it off:
+ * it has to find people who are not tracked yet.
+ */
+export function useDeveloperCatalog(search: string, trackedOnly = false) {
   return useQuery({
-    queryKey: ['catalog', 'developers', search],
-    queryFn: () =>
-      api.get<{ items: DeveloperCatalogItem[] }>(
-        `/api/catalog/developers${search ? `?search=${encodeURIComponent(search)}` : ''}`,
-      ),
+    queryKey: ['catalog', 'developers', search, trackedOnly],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (search) params.set('search', search);
+      if (trackedOnly) params.set('tracked', 'true');
+      const qs = params.toString();
+      return api.get<{ items: DeveloperCatalogItem[] }>(
+        `/api/catalog/developers${qs ? `?${qs}` : ''}`,
+      );
+    },
     staleTime: 60_000,
   });
 }

@@ -650,6 +650,14 @@ export class InsightsController {
   ) {
     const range = resolveActivityRange(window, from, to);
     const who = requireParam(developer, 'developer');
+    // Engineering Activity profiles tracked developers only, once a list
+    // exists (2026-10-27). The person's data stays in the database; the page
+    // just doesn't show it.
+    if (!(await this.devActivity.isDisplayable(who))) {
+      throw new NotFoundException(
+        `${who} is not on the Tracked Developers list. Add them there to see their activity.`,
+      );
+    }
     // Fetched alongside rather than folded into `developerActivity`: reviews
     // given and assigned Jira work are BC-5/BC-6 facts about the person, not
     // commit-history facts, and keeping them separate leaves the older read

@@ -261,12 +261,6 @@ export interface OverviewView {
    */
   activeDevelopers: ActiveDeveloper[];
   /**
-   * People with a signal in the window who are NOT on the Tracked Developers
-   * list, alphabetical — disclosed beside the headline rather than silently
-   * dropped. Empty when the list is empty (then they are all on the roster).
-   */
-  notTracked: { developer: string; displayName: string }[];
-  /**
    * Freshness for the roster's Copilot column. `collected: false` means no
    * report has ever been collected for this tenant (the column is hidden).
    * GitHub publishes a day's report ~2 days after it closes, so
@@ -458,7 +452,7 @@ export class DeveloperActivityService {
       copilotRows,
       copilotSeats,
       copilotCoverage,
-      trackedRows,
+      trackedScope,
     ] = await Promise.all([
       this.code.listCommitsPage(tenantId, {
         ...(repos.length > 0 ? { repos } : {}),
@@ -480,10 +474,7 @@ export class DeveloperActivityService {
       this.code.copilotUsageRows(tenantId, fromDay, toDay),
       this.code.copilotSeatLogins(tenantId),
       this.code.copilotCoverage(tenantId, fromDay, toDay),
-      this.prisma.trackedDeveloper.findMany({
-        where: { tenantId, active: true },
-        select: { canonicalDeveloperId: true },
-      }),
+      this.trackedDevelopers(tenantId),
     ]);
     const { truncated } = page;
     // A commit held by several repositories (a repo created from another's
@@ -571,24 +562,15 @@ export class DeveloperActivityService {
       !isAnonymizedAccount(developer) &&
       !index.excluded.has(developer);
 
-    // The headline and the roster count the Tracked Developers list only
-    // (product decision 2026-10-27): the team the board is about, not every
-    // identity GitHub has ever shown. Active people outside it are disclosed
-    // in `notTracked`, never dropped silently. With no list configured yet,
-    // everyone counts, as before.
-    const tracked = new Set(trackedRows.map((r) => r.canonicalDeveloperId));
-    const scoped = tracked.size > 0;
+    // Every per-person figure on the board — the headline, the roster, the
+    // day drill-down, the planning-gap count — covers the Tracked Developers
+    // list only (product decision 2026-10-27): untracked people are never
+    // named or counted here, though their work stays in every team total.
+    // With no list configured yet, everyone counts, as before.
+    const tracked = trackedScope;
+    const inScope = (developer: string) => !tracked || tracked.has(developer);
     const counted = (developer: string) =>
-      isPerson(developer) && (!scoped || tracked.has(developer));
-    const notTracked = scoped
-      ? [...withSignal]
-          .filter((d) => isPerson(d) && !tracked.has(d))
-          .map((developer) => ({
-            developer,
-            displayName: index.displayNames.get(developer) ?? developer,
-          }))
-          .sort((a, b) => a.displayName.localeCompare(b.displayName))
-      : [];
+      isPerson(developer) && inScope(developer);
 
     // Same definition the Watchlist reports, via the same function — these two
     // numbers are the same claim on two pages and disagreed on real data while
@@ -612,7 +594,7 @@ export class DeveloperActivityService {
             committers,
             new Set(assignees.byDeveloper.keys()),
             openAssigned,
-          ).length;
+          ).filter(inScope).length;
 
     return {
       totals: {
@@ -620,7 +602,7 @@ export class DeveloperActivityService {
         mergeCommitsExcluded,
         sharedCommitsCollapsed,
         developersWithSignal: [...withSignal].filter(counted).length,
-        trackedDevelopers: scoped ? tracked.size : null,
+        trackedDevelopers: tracked ? tracked.size : null,
         developersKnown: index.displayNames.size,
         prsOpened: prs.length,
         prsMerged,
@@ -637,9 +619,13 @@ export class DeveloperActivityService {
           ? copilotLookup(copilotRows, copilotSeats, index.byLogin)
           : null,
       ).filter((row) => counted(row.developer)),
-      notTracked,
       copilot: copilotCoverage,
-      days: commitDays(commits, index),
+      // Day totals (commits, LOC) keep all work; the contributors named under
+      // each day are tracked developers only.
+      days: commitDays(commits, index).map((day) => ({
+        ...day,
+        developers: day.developers.filter((d) => inScope(d.developer)),
+      })),
       attribution: {
         commitsInScope: attribution.commitsInScope,
         commitsUnattributed: attribution.commitsUnattributed,
@@ -753,13 +739,46 @@ export class DeveloperActivityService {
    * Monday, and a calendar-day threshold silently makes every weekend look
    * like a two-day lull across the whole roster.
    */
+  /**
+   * Who Engineering Activity may show per-person data about: the active
+   * entries of the admin-editable Tracked Developers list, read live so an
+   * edit takes effect on the next load (product decision 2026-10-27).
+   * Untracked people stay in the database and in every team total; they are
+   * only never named, listed or profiled on these pages. `null` when the list
+   * is empty — then nothing is scoped, as before the decision.
+   */
+  async trackedDevelopers(tenantId: string): Promise<Set<string> | null> {
+    const rows = await this.prisma.trackedDeveloper.findMany({
+      where: { tenantId, active: true },
+      select: { canonicalDeveloperId: true },
+    });
+    return rows.length > 0
+      ? new Set(rows.map((r) => r.canonicalDeveloperId))
+      : null;
+  }
+
+  /**
+   * Whether the Developer page may show this person: always when nothing is
+   * tracked, else only a tracked developer — the id the page links with, or
+   * a login of theirs.
+   */
+  async isDisplayable(developer: string): Promise<boolean> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const scope = await this.trackedDevelopers(tenantId);
+    if (!scope) return true;
+    if (scope.has(developer)) return true;
+    const index = await this.identities.attributionIndex(tenantId);
+    const canonical = index.byLogin.get(developer);
+    return canonical !== undefined && scope.has(canonical);
+  }
+
   async watchlist(
     from: Date,
     to: Date,
     windowDays: number,
   ): Promise<WatchlistView> {
     const tenantId = this.tenantContext.requireTenantId();
-    const [index, assignees, exclusionRows, roles] = await Promise.all([
+    const [index, assignees, exclusionRows, roles, scope] = await Promise.all([
       this.identities.attributionIndex(tenantId),
       this.identities.jiraAssigneeIndex(tenantId),
       this.prisma.watchlistExclusion.findMany({
@@ -767,6 +786,7 @@ export class DeveloperActivityService {
         where: { tenantId, expiresAt: { gt: new Date() } },
       }),
       this.rolesByDeveloper(tenantId),
+      this.trackedDevelopers(tenantId),
     ]);
 
     // Everything on this page describes ONE moment. For a preset that moment
@@ -797,6 +817,12 @@ export class DeveloperActivityService {
     const anonymized: string[] = [];
     const developers: WatchlistDeveloper[] = [];
     for (const [developer, displayName] of index.displayNames) {
+      // Tracked developers only, once a list exists (2026-10-27): every list
+      // on this page — buckets, planning gap, unlinked, inactive — is built
+      // from this loop, so this one check scopes them all.
+      if (scope && !scope.has(developer)) {
+        continue;
+      }
       if (excludedIds.has(developer)) {
         continue;
       }
@@ -914,6 +940,7 @@ export class DeveloperActivityService {
         return developers.filter((dev) => gap.has(dev.developer));
       })(),
       excluded: exclusionRows
+        .filter((row) => !scope || scope.has(row.canonicalDeveloperId))
         .map((row) => ({
           developer: row.canonicalDeveloperId,
           displayName:
@@ -956,7 +983,7 @@ export class DeveloperActivityService {
     const tenantId = this.tenantContext.requireTenantId();
     const repoFilter = repos.length > 0 ? { repoFullName: { in: repos } } : {};
 
-    const [openPrs, windowPrs, index] = await Promise.all([
+    const [openPrs, windowPrs, index, scope] = await Promise.all([
       // Open PRs are NOT windowed: a PR opened four months ago and still
       // unreviewed is the single most actionable row this page can carry, and
       // a `from` filter is exactly what would hide it.
@@ -970,7 +997,12 @@ export class DeveloperActivityService {
         select: { authorLogin: true },
       }),
       this.identities.attributionIndex(tenantId),
+      this.trackedDevelopers(tenantId),
     ]);
+    // Totals count every PR; rows name tracked developers only, once a list
+    // exists (2026-10-27). A PR with no known author names nobody tracked.
+    const shown = (person: string | null) =>
+      !scope || (person !== null && scope.has(person));
 
     const reviews = await this.prisma.prReview.findMany({
       where: { tenantId, ...repoFilter, submittedAt: { gte: from, lte: to } },
@@ -1012,6 +1044,7 @@ export class DeveloperActivityService {
             Math.max(oldestWaitByDeveloper.get(person) ?? 0, waitingHours),
           );
         }
+        if (!shown(person)) continue;
         waiting.push({
           ref: `${pr.repoFullName}#${pr.externalNumber}`,
           repo: pr.repoFullName,
@@ -1064,6 +1097,7 @@ export class DeveloperActivityService {
       ...oldestWaitByDeveloper.keys(),
     ]);
     const reviewLoad: ReviewLoadRow[] = [...people]
+      .filter(shown)
       .map((developer) => ({
         developer,
         displayName: index.displayNames.get(developer) ?? developer,

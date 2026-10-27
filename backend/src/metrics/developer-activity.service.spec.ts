@@ -888,12 +888,14 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
     expect(view.totals.developersWithSignal).toBe(view.activeDevelopers.length);
     // …but their commits still count as work.
     expect(view.totals.commits).toBe(5);
-    // Nobody tracked yet: no denominator, nobody set aside.
+    // Nobody tracked yet: no denominator, nobody left out.
     expect(view.totals.trackedDevelopers).toBeNull();
-    expect(view.notTracked).toEqual([]);
+    expect(
+      view.days.flatMap((d) => d.developers.map((x) => x.developer)),
+    ).toEqual(expect.arrayContaining(['asha', 'ravi']));
   });
 
-  it('counts tracked developers only once a list exists, and discloses the rest', async () => {
+  it('shows tracked developers only once a list exists, and keeps all work in the totals', async () => {
     const view = await service(true, ['asha', 'meera']).overview(
       [],
       from,
@@ -904,13 +906,18 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
     expect(view.totals.developersWithSignal).toBe(1);
     expect(view.totals.trackedDevelopers).toBe(2);
     expect(view.activeDevelopers.map((d) => d.developer)).toEqual(['asha']);
-    // Ravi was active but is not tracked: named beside the tile, not dropped.
-    // Bots and excluded accounts are still not people, tracked or not.
-    expect(view.notTracked).toEqual([
-      { developer: 'ravi', displayName: 'Ravi Kumar' },
-    ]);
-    // Work volume is never scoped: every commit still counts.
+    // Ravi was active but is not tracked: not named anywhere on the board —
+    // not on the roster, not in any day's contributors — and not sent.
+    const named = view.days.flatMap((d) =>
+      d.developers.map((x) => x.developer),
+    );
+    expect(named).toContain('asha');
+    expect(named).not.toContain('ravi');
+    expect(JSON.stringify(view)).not.toContain('Ravi Kumar');
+    // Work volume is never scoped: every commit still counts, in the totals
+    // and in each day's commit count.
     expect(view.totals.commits).toBe(5);
+    expect(view.days.reduce((n, d) => n + d.totalCommits, 0)).toBe(5);
   });
 
   it('attaches the Copilot cell and the freshness when reports were collected', async () => {
@@ -931,5 +938,138 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
     const view = await service(false).overview([], from, to, 14);
     expect(view.activeDevelopers[0].copilot).toBeNull();
     expect(view.copilot.collected).toBe(false);
+  });
+});
+
+describe('Engineering Activity shows tracked developers only (2026-10-27)', () => {
+  const from = new Date('2026-10-20T00:00:00+05:30');
+  const to = new Date('2026-10-26T23:59:59+05:30');
+  const index = {
+    byLogin: new Map([
+      ['asha', 'asha'],
+      ['ravi', 'ravi'],
+    ]),
+    byEmail: new Map(),
+    displayNames: new Map([
+      ['asha', 'Asha Rao'],
+      ['ravi', 'Ravi Kumar'],
+    ]),
+    excluded: new Set<string>(),
+  };
+
+  function build(tracked: string[], extra: Record<string, unknown> = {}) {
+    const prisma = {
+      trackedDeveloper: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue(
+            tracked.map((canonicalDeveloperId) => ({ canonicalDeveloperId })),
+          ),
+      },
+      watchlistExclusion: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            canonicalDeveloperId: 'ravi',
+            reason: 'on leave',
+            expiresAt: new Date('2026-11-30T00:00:00Z'),
+          },
+        ]),
+      },
+      developerRole: { findMany: jest.fn().mockResolvedValue([]) },
+      ...extra,
+    };
+    const identities = {
+      attributionIndex: jest.fn().mockResolvedValue(index),
+      jiraAssigneeIndex: jest.fn().mockResolvedValue({
+        byDeveloper: new Map(),
+        assignees: { matched: 0 },
+      }),
+      suggestionsFor: jest.fn().mockResolvedValue(new Map()),
+      bridgeCoverage: jest.fn().mockReturnValue({}),
+    };
+    const svc = new DeveloperActivityService(
+      { requireTenantId: () => 'tenant-a' } as never,
+      prisma as never,
+      {} as never,
+      identities as never,
+    );
+    // The recency/assignment reads are their own tested queries; here they
+    // only need to say both people were active.
+    const s = svc as unknown as Record<string, jest.Mock>;
+    s.lastSignalPerDeveloper = jest.fn().mockResolvedValue(
+      new Map([
+        ['asha', { type: 'commit', at: new Date('2026-10-26T06:00:00Z') }],
+        ['ravi', { type: 'commit', at: new Date('2026-10-26T06:00:00Z') }],
+      ]),
+    );
+    s.openAssignedByDeveloper = jest.fn().mockResolvedValue(new Map());
+    s.committersBetween = jest
+      .fn()
+      .mockResolvedValue(new Set(['asha', 'ravi']));
+    return { svc, prisma };
+  }
+
+  it('Watchlist: lists, counts and exclusions cover tracked developers only', async () => {
+    const view = await build(['asha']).svc.watchlist(from, to, 7);
+    expect(view.developers.map((d) => d.developer)).toEqual(['asha']);
+    expect(view.counts.active + view.counts.quiet + view.counts.no_signal).toBe(
+      1,
+    );
+    expect(view.unlinked.map((d) => d.developer)).toEqual(['asha']);
+    // Ravi's exclusion is his data too.
+    expect(view.excluded).toEqual([]);
+    expect(JSON.stringify(view)).not.toContain('Ravi Kumar');
+  });
+
+  it('Watchlist: everyone, as before, while nobody is tracked', async () => {
+    const view = await build([]).svc.watchlist(from, to, 7);
+    // Ravi is under a live Watchlist exclusion, so he is listed there instead.
+    expect(view.developers.map((d) => d.developer)).toEqual(['asha']);
+    expect(view.excluded.map((e) => e.developer)).toEqual(['ravi']);
+  });
+
+  it('PR Status: totals count every PR; rows name tracked developers only', async () => {
+    const open = (n: string, author: string) => ({
+      repoFullName: 'org/repo',
+      externalNumber: n,
+      title: `PR ${n}`,
+      authorLogin: author,
+      additions: 1,
+      deletions: 0,
+      openedAt: new Date('2026-10-20T06:00:00Z'),
+      reviewsFetchedAt: new Date('2026-10-26T06:00:00Z'),
+      firstReviewAt: null,
+    });
+    const { svc } = build(['asha'], {
+      pullRequest: {
+        findMany: jest.fn(async (args: { where: { state?: string } }) =>
+          args.where.state === 'open'
+            ? [open('1', 'asha'), open('2', 'ravi')]
+            : [{ authorLogin: 'asha' }, { authorLogin: 'ravi' }],
+        ),
+      },
+      prReview: {
+        findMany: jest.fn().mockResolvedValue([
+          { reviewerLogin: 'ravi', isBot: false },
+          { reviewerLogin: 'asha', isBot: false },
+        ]),
+      },
+    });
+    const view = await svc.prStatus([], from, to, 7);
+    // All work in the totals…
+    expect(view.totals.open).toBe(2);
+    expect(view.totals.neverReviewed).toBe(2);
+    expect(view.totals.reviewsGiven).toBe(2);
+    // …but only tracked people's PRs and rows are shown.
+    expect(view.waiting.map((w) => w.author)).toEqual(['asha']);
+    expect(view.reviewLoad.map((r) => r.developer)).toEqual(['asha']);
+  });
+
+  it('Developer page: an untracked developer is not displayable; a tracked one is, by id or login', async () => {
+    const { svc } = build(['asha']);
+    await expect(svc.isDisplayable('asha')).resolves.toBe(true);
+    await expect(svc.isDisplayable('ravi')).resolves.toBe(false);
+    const { svc: open } = build([]);
+    await expect(open.isDisplayable('ravi')).resolves.toBe(true);
   });
 });
