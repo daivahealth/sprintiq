@@ -481,6 +481,9 @@ describe('implausible-share gate', () => {
     // the real count lives only in the detail message now.
     expect(result.evaluation.flagged).toEqual([]);
     expect(result.withhold?.detail).toContain('5 of 5');
+    // The roster WAS evaluated, so the active count is still reported:
+    // "0 of 5 tracked developers active" is the finding this gate surfaces.
+    expect(result.activeCount).toBe(0);
   });
 
   it('does not withhold at exactly the threshold share — the comparison is strictly greater-than, not greater-or-equal', async () => {

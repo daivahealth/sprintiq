@@ -79,7 +79,8 @@ export function PrStatusPage() {
         are the queue as it stands now</span> — not limited to the selected
         window, because a change opened months ago and still unreviewed is the
         most actionable row here and a date filter is exactly what would hide
-        it. Reviews given and review load do use the window.
+        it. Reviews given and review load do use the window. The tiles count
+        every pull request; the tables below list tracked developers only.
       </p>
 
       <CurrentLensNote

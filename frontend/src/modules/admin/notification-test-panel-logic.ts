@@ -1,4 +1,5 @@
 import type { DigestOutcome, RunDigestPayload } from '../../lib/api/types';
+import { activeDevelopersTile } from '../dashboards/developer-activity/active-developers-tile';
 
 /**
  * Pure decision logic behind the "Test the notification" panel on the Tracked
@@ -198,4 +199,29 @@ export function nonZeroCounts(result: {
     counts.push({ label: 'unattributed commits', value: result.unattributedCommits });
   }
   return counts;
+}
+
+/**
+ * The preview's headline (2026-10-27): "Active developers N / M" — tracked
+ * developers with a commit or PR on the reported day, out of the Tracked
+ * Developers list — worded exactly like the Activity Overview's tile so the
+ * two read as the same figure. Null on an older API (no counts sent); "not
+ * evaluated" when the run withheld before reading the roster, because an
+ * unevaluated roster has no active count, not a zero one.
+ */
+export function previewActiveLine(result: {
+  rosterCount?: number;
+  activeCount?: number | null;
+}): string | null {
+  if (result.rosterCount === undefined || result.activeCount === undefined) {
+    return null;
+  }
+  if (result.activeCount === null) {
+    return `Active developers: not evaluated (${result.rosterCount} tracked)`;
+  }
+  const tile = activeDevelopersTile({
+    developersWithSignal: result.activeCount,
+    trackedDevelopers: result.rosterCount,
+  });
+  return `${tile.label}: ${tile.value} · ${tile.hint}`;
 }

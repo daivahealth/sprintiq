@@ -3,6 +3,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
+import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { CodeService } from '../../modules/code/code.service';
 import { PlanningService } from '../../modules/planning/planning.service';
 
@@ -19,6 +20,7 @@ export class CatalogController {
     private readonly code: CodeService,
     private readonly correlation: CorrelationService,
     private readonly identities: DeveloperIdentityService,
+    private readonly devActivity: DeveloperActivityService,
   ) {}
 
   @Get('projects')
@@ -91,17 +93,26 @@ export class CatalogController {
    * the login-only catalog could not list them, which is precisely why their
    * work looked like nobody's. Falls back to the raw logins before the first
    * resolution pass has run.
+   *
+   * `tracked=true` narrows to the Tracked Developers list — the Engineering
+   * Activity Developer picker, which profiles tracked developers only
+   * (2026-10-27). Without it, everyone: the Tracked Developers page's own
+   * add search must still find people who are not tracked yet.
    */
   @Get('developers')
   async developers(
     @CurrentUser() user: AuthUser,
     @Query('search') search?: string,
+    @Query('tracked') tracked?: string,
   ) {
-    const resolved = await this.identities.listDevelopers(
-      user.tenantId,
-      search,
-    );
-    if (resolved.length > 0) {
+    const scope =
+      tracked === 'true'
+        ? await this.devActivity.trackedDevelopers(user.tenantId)
+        : null;
+    const resolved = (
+      await this.identities.listDevelopers(user.tenantId, search)
+    ).filter((d) => !scope || scope.has(d.canonicalDeveloperId));
+    if (resolved.length > 0 || scope) {
       return {
         items: resolved.map((d) => ({
           login: d.canonicalDeveloperId,

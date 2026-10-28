@@ -34,6 +34,7 @@ import {
   showCopilotColumn,
 } from './copilot-column';
 import { CurrentLensNote } from './CurrentLensNote';
+import { activeDevelopersTile } from './active-developers-tile';
 import { hasDailyLoc, timelineMetric } from './timeline-metric';
 import {
   EmptyWindowNote,
@@ -70,7 +71,7 @@ function developerHref(developer: string, range: ActivityRange): string {
  * This one is a different question and stays on the near side of that line.
  * The Watchlist asks **who to go ask about** — recency buckets, assignment
  * gaps, people you may need to check on. This asks **who was working**, and is
- * simply the names behind the "Developers with a signal" tile it sits above.
+ * simply the names behind the "Active developers" tile it sits above.
  * Same window, same set, one is the count and the other the list.
  *
  * It is not a ranking. Alphabetical by default, with "Most commits" as the
@@ -108,11 +109,7 @@ export function OverviewPage() {
             .filter(Boolean)
             .join(' · ')}
         />
-        <Stat
-          label="Developers with a signal"
-          value={`${totals.developersWithSignal} / ${totals.developersKnown}`}
-          hint="commit, PR or review"
-        />
+        <Stat {...activeDevelopersTile(totals)} />
         <Stat
           label="PRs opened"
           value={totals.prsOpened}
@@ -257,8 +254,9 @@ export function OverviewPage() {
 /**
  * Who was working in this window, and what they did.
  *
- * The names behind the "Developers with a signal" tile — the union of commit
- * authors and PR authors, which is exactly what that tile counts. Every row
+ * The names behind the "Active developers" tile — the tracked developers
+ * among commit and PR authors (2026-10-27), which is exactly what that tile
+ * counts. Every row
  * opens that person's page with the window carried across.
  *
  * Sorting by commits is available and is never the default: the API hands this

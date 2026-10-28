@@ -255,6 +255,26 @@ describe('NotificationsService.runNoCommitDigest', () => {
     expect(result.unattributedCommits).toBe(7);
   });
 
+  it('returns the tracked roster size and how many were active, for the preview headline', async () => {
+    const { service } = build({
+      detect: { ...detection, rosterCount: 66, activeCount: 40 },
+    });
+    const result = await service.runNoCommitDigest('tenant_a', {
+      dryRun: true,
+    });
+    expect(result.rosterCount).toBe(66);
+    expect(result.activeCount).toBe(40);
+
+    // Not evaluated (a gate withheld first): null, never 0.
+    const { service: early } = build({
+      detect: { ...detection, activeCount: undefined },
+    });
+    const withheld = await early.runNoCommitDigest('tenant_a', {
+      dryRun: true,
+    });
+    expect(withheld.activeCount).toBeNull();
+  });
+
   it('refuses to re-send a day already sent', async () => {
     const { service, teams } = build({ existing: { outcome: 'sent' } });
 

@@ -20,6 +20,7 @@ import {
   isAlreadySentConflict,
   nonZeroCounts,
   outcomeLabel,
+  previewActiveLine,
   sendConfirmationCopy,
   type PanelPhase,
   type PanelPhaseState,
@@ -34,12 +35,14 @@ type SendOutcomeState =
 
 function DigestResultSummary({ result }: { result: RunDigestResult }) {
   const counts = nonZeroCounts(result);
+  const active = previewActiveLine(result);
   return (
     <div className="space-y-1.5">
       <p className="text-sm text-fg">
         <span className="font-medium">{result.reportedDay}</span> —{' '}
         {outcomeLabel(result.outcome)}
       </p>
+      {active ? <p className="text-sm text-fg-secondary">{active}</p> : null}
       {result.detail ? (
         <p className="text-sm font-medium text-warning-fg">{result.detail}</p>
       ) : null}
