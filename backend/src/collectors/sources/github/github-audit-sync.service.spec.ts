@@ -557,6 +557,85 @@ describe('GithubAuditSyncService.runTenant (discovery)', () => {
     ).toBe('main');
   });
 
+  it('in ingest mode, reads every non-default branch of a never-seen touched repo (branch history on registration)', async () => {
+    const { svc, prisma, audit, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/new']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      pages: 1,
+      nextTraversals: 0,
+      events: [push('e1', 'acme/new')],
+    });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['main', 'n1'],
+        ['b', 'n2'],
+      ]),
+    });
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 1,
+      truncated: false,
+    });
+    const ingest = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
+    const r = await svc.runTenant('t1', ingest, NOW);
+    expect(r.counters).toMatchObject({
+      reposSeeded: 1,
+      historyRangesPlanned: 1,
+    });
+    // One range, for the non-default branch only; the push is its evidence.
+    expect(prisma.githubPushRange.rows).toHaveLength(1);
+    expect(prisma.githubPushRange.rows[0]).toMatchObject({
+      tenantId: 't1',
+      repoFullName: 'acme/new',
+      ref: 'b',
+      kind: 'new_ref',
+      headSha: 'n2',
+      auditDocumentIds: ['e1'],
+    });
+    // Executed in the same run: the branch's own history was read.
+    expect(client.listBranchCommits).toHaveBeenCalledWith(
+      'acme/new',
+      expect.any(String),
+      'n2',
+      expect.any(Date),
+      expect.any(Number),
+    );
+  });
+
+  it('seeds only, and says so, when a never-seen repo has more branches than the cap', async () => {
+    const { svc, prisma, audit, client } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/new']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      pages: 1,
+      nextTraversals: 0,
+      events: [push('e1', 'acme/new')],
+    });
+    client.listHeadRefs.mockResolvedValue({
+      tips: new Map([
+        ['main', 'n1'],
+        ['b', 'n2'],
+        ['c', 'n3'],
+      ]),
+    });
+    client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '2',
+    });
+    const r = await svc.runTenant('t1', cfg, NOW);
+    expect(r.counters.reposSeeded).toBe(1);
+    expect(r.counters.historyRangesPlanned).toBe(0);
+    expect(prisma.githubPushRange.rows).toHaveLength(0);
+    expect(prisma.githubAuditRun.rows[0].error).toMatch(
+      /existing branch history is not read.*acme\/new/,
+    );
+  });
+
   it('flags a checkpoint older than six days as a retention risk', async () => {
     const { svc, prisma, audit } = setup();
     seedTenant(prisma, 't1', ['acme/ehr']);
@@ -2315,5 +2394,87 @@ describe('GithubAuditSyncService.runTenant (auto-registering unregistered repos)
       reposUnregistered: 1,
     });
     expect(connections.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('GithubAuditSyncService.rereadBranchHistory', () => {
+  const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
+
+  it('clears the stored tips of the named repos only, so the next sweep reads their branches again', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/n8n']);
+    seeded(prisma, 't1', {
+      'acme/ehr': { master: 'm1' },
+      'acme/n8n': { master: 'm2', dev: 'd2' },
+    });
+    prisma.githubRefTip.rows.push({
+      id: 'other-tenant',
+      tenantId: 't2',
+      repoFullName: 'acme/n8n',
+      ref: 'dev',
+      sha: 'x',
+      seenAt: NOW,
+    });
+    const r = await svc.rereadBranchHistory(
+      't1',
+      ['acme/n8n', 'acme/gone'],
+      INGEST,
+    );
+    expect(r).toEqual({
+      status: 'scheduled',
+      repos: ['acme/n8n'],
+      unknown: ['acme/gone'],
+      readOnNextPushOnly: false,
+    });
+    const left = prisma.githubRefTip.rows.map(
+      (t) => `${t.tenantId}:${t.repoFullName}@${t.ref}`,
+    );
+    expect(left).toEqual(
+      expect.arrayContaining(['t1:acme/ehr@HEAD', 't1:acme/ehr@master']),
+    );
+    expect(left.filter((l) => l.startsWith('t1:acme/n8n'))).toEqual([]);
+    // Another tenant's tips are never touched.
+    expect(left).toContain('t2:acme/n8n@dev');
+  });
+
+  it('covers every active repo when none are named', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr', 'acme/n8n']);
+    seeded(prisma, 't1', {
+      'acme/ehr': { master: 'm1' },
+      'acme/n8n': { master: 'm2' },
+    });
+    const r = await svc.rereadBranchHistory('t1', undefined, INGEST);
+    expect([...r.repos].sort()).toEqual(['acme/ehr', 'acme/n8n']);
+    expect(
+      prisma.githubRefTip.rows.filter((t) => t.tenantId === 't1'),
+    ).toHaveLength(0);
+  });
+
+  it('changes nothing outside ingest mode or before the seeding pass', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    expect(
+      (await svc.rereadBranchHistory('t1', undefined, INGEST)).status,
+    ).toBe('not_seeded');
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const before = prisma.githubRefTip.rows.length;
+    expect(
+      (await svc.rereadBranchHistory('t1', undefined, SHADOW)).status,
+    ).toBe('not_ingest');
+    expect(prisma.githubRefTip.rows).toHaveLength(before);
+  });
+
+  it('says the reading waits for a push when the full sweep is off', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['acme/ehr']);
+    seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      GITHUB_AUDIT_FULL_SWEEP_MINUTES: '0',
+    });
+    expect(
+      (await svc.rereadBranchHistory('t1', undefined, cfg)).readOnNextPushOnly,
+    ).toBe(true);
   });
 });

@@ -26,6 +26,7 @@ import {
   DEFAULT_BRANCH_MARKER,
   dedupePushes,
   diffTips,
+  PlannedRange,
   pushesByRepo,
 } from './github-audit-push-planner';
 import {
@@ -81,6 +82,8 @@ export interface AuditRunCounters {
   commitsWithoutLogin: number;
   /** Commit-on-branch links recorded this run (branch tracking, ingest mode). */
   branchLinks: number;
+  /** `new_ref` ranges planned to read the branches of a repo seen for the first time (branch history on registration). */
+  historyRangesPlanned: number;
   truncatedRanges: number;
   failedRanges: number;
   pendingRanges: number;
@@ -351,6 +354,7 @@ export function emptyCounters(): AuditRunCounters {
     wouldIngest: 0,
     commitsWithoutLogin: 0,
     branchLinks: 0,
+    historyRangesPlanned: 0,
     truncatedRanges: 0,
     failedRanges: 0,
     pendingRanges: 0,
@@ -550,6 +554,51 @@ export class GithubAuditSyncService {
       linksAccepted,
       done,
       nextCursor: done ? null : ranges[ranges.length - 1].id,
+    };
+  }
+
+  /**
+   * Re-reads the branch history of repos the route has already seeded
+   * (branch history on registration, 2026-10-26): their stored tips are
+   * cleared, so the next full sweep — or the next push to one — sees each as
+   * never seen, seeds it again and plans a `new_ref` range per non-default
+   * branch. For repos seeded before history was read on first sight, such as
+   * every repo of the initial seeding pass. `repos` omitted = every active
+   * GitHub repo. Changes nothing outside ingest mode or before the route's
+   * own seeding pass; the history reaches back
+   * GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS. Idempotent: re-ingested commits
+   * and re-emitted links are no-ops.
+   */
+  async rereadBranchHistory(
+    tenantId: string,
+    repos?: string[],
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+  ): Promise<{
+    status: 'scheduled' | 'not_ingest' | 'not_seeded';
+    repos: string[];
+    unknown: string[];
+    readOnNextPushOnly: boolean;
+  }> {
+    const empty = { repos: [], unknown: [], readOnNextPushOnly: false };
+    if (cfg.mode !== 'ingest') return { status: 'not_ingest', ...empty };
+    const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+      where: { tenantId },
+    });
+    if (!checkpoint?.seededAt) return { status: 'not_seeded', ...empty };
+    const registered = await this.registeredRepos(tenantId);
+    const wanted = repos && repos.length > 0 ? repos : [...registered.keys()];
+    const targets = wanted.filter((r) => registered.has(r));
+    const unknown = wanted.filter((r) => !registered.has(r));
+    if (targets.length > 0) {
+      await this.prisma.githubRefTip.deleteMany({
+        where: { tenantId, repoFullName: { in: targets } },
+      });
+    }
+    return {
+      status: 'scheduled',
+      repos: targets,
+      unknown,
+      readOnNextPushOnly: cfg.fullSweepMinutes === 0,
     };
   }
 
@@ -1138,7 +1187,7 @@ export class GithubAuditSyncService {
     }
     const { overCap, noTokenRef } = ctx.registration;
     if (overCap.length > 0) {
-      const note = `${overCap.length} auto-registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so they were seeded only — their non-default-branch pushes in this window are left to the regular collector: ${nameRepos(overCap)}.`;
+      const note = `${overCap.length} newly registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so they were seeded only — their existing branch history is not read, and their non-default-branch pushes in this window are left to the regular collector: ${nameRepos(overCap)}.`;
       error = error ? `${error} ${note}` : note;
     }
     if (ctx.registration.wouldRegister.length > 0) {
@@ -1304,6 +1353,11 @@ export class GithubAuditSyncService {
     if (ctx.unseedable.length > 0) {
       notes.push(
         `${ctx.unseedable.length} repo(s) skipped as unseedable (GitHub answered 404/403 — deleted, renamed or no access): ${nameRepos(ctx.unseedable)}.`,
+      );
+    }
+    if (ctx.registration.overCap.length > 0) {
+      notes.push(
+        `${ctx.registration.overCap.length} newly registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so their existing branch history was not read: ${nameRepos(ctx.registration.overCap)}.`,
       );
     }
     const error = notes.length > 0 ? notes.join(' ') : undefined;
@@ -1520,10 +1574,21 @@ export class GithubAuditSyncService {
     ctx.unseedable.push(repo);
   }
 
+  /**
+   * Stores a repo's branch tips. With `history` (ingest mode, a repo first
+   * seen after the route's own seeding pass — org-synced, registered by hand,
+   * or re-read by an admin), also plans a `new_ref` range per non-default
+   * branch, exactly as auto-registration does, so the branches' existing
+   * commits are read and linked (branch history on registration,
+   * 2026-10-26). Without it a repo registered any other way showed no
+   * branches until its next push. The initial `seedAll` pass never plans
+   * history: that is every repo at once, and its own push ranges follow.
+   */
   private async seedRepo(
     ctx: RunContext,
     repo: string,
     connection: Connection,
+    history?: { documentIds: string[] },
   ): Promise<SeedOutcome> {
     if (ctx.stopForBudget) return 'budget';
     const token = await this.collectorToken(ctx, connection);
@@ -1534,6 +1599,18 @@ export class GithubAuditSyncService {
     const refs = await this.client.listHeadRefs(repo, token);
     this.chargeCore(ctx, refs.rateLimit);
     if (!refs.tips) return this.seedFailure(ctx, repo, refs.failure);
+    let ranges: PlannedRange[] = [];
+    if (history && ctx.cfg.mode === 'ingest') {
+      if (refs.tips.size <= ctx.cfg.newRepoMaxBranches) {
+        ranges = diffTips(repo, new Map(), refs.tips, branch.name).ranges;
+        const c = countRanges(ranges);
+        ctx.counters.compareRequestsPlanned += c.compareRequestsPlanned;
+        ctx.counters.refsNew += c.refsNew;
+        ctx.counters.historyRangesPlanned += ranges.length;
+      } else {
+        ctx.registration.overCap.push(repo);
+      }
+    }
     const rows = [
       { ref: DEFAULT_BRANCH_MARKER, sha: branch.name },
       ...[...refs.tips].map(([ref, sha]) => ({ ref, sha })),
@@ -1549,6 +1626,24 @@ export class GithubAuditSyncService {
         where: { tenantId: ctx.tenantId, repoFullName: repo },
       });
       await tx.githubRefTip.createMany({ data: rows });
+      for (const r of ranges) {
+        await tx.githubPushRange.create({
+          data: {
+            id: newId(),
+            tenantId: ctx.tenantId,
+            runId: ctx.runId,
+            connectionId: connection.id,
+            repoFullName: repo,
+            ref: r.ref,
+            baseSha: r.baseSha ?? null,
+            baseRef: r.baseRef ?? null,
+            headSha: r.headSha ?? null,
+            kind: r.kind,
+            auditDocumentIds: history?.documentIds ?? [],
+            status: 'pending',
+          },
+        });
+      }
     });
     return 'seeded';
   }
@@ -1825,8 +1920,12 @@ export class GithubAuditSyncService {
     });
     const marker = stored.find((t) => t.ref === DEFAULT_BRANCH_MARKER);
     if (!marker) {
-      // Never seen: seed only. Its first push stays with the existing routes (spec §10).
-      const outcome = await this.seedRepo(ctx, repo, connection);
+      // Never seen (org-synced, registered by hand, or cleared for a history
+      // re-read): seed, and in ingest mode read each branch's own history —
+      // which also covers the push that revealed it.
+      const outcome = await this.seedRepo(ctx, repo, connection, {
+        documentIds,
+      });
       if (outcome === 'seeded') ctx.counters.reposSeeded++;
       if (outcome === 'seeded' || outcome === 'unseedable') return { ok: true };
       return {
