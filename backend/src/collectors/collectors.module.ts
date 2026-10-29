@@ -6,6 +6,7 @@ import { IngestionService } from './ingestion/ingestion.service';
 import { CollectionProgressService } from './scheduler/collection-progress.service';
 import { BackfillSchedulerService } from './scheduler/backfill-scheduler.service';
 import { CollectorSchedulerService } from './scheduler/collector-scheduler.service';
+import { GithubActivityVerifyService } from './sources/github/github-activity-verify.service';
 import { GithubAuditLogClient } from './sources/github/github-audit-log.client';
 import { GithubAuditReportService } from './sources/github/github-audit-report.service';
 import { GithubAuditSyncService } from './sources/github/github-audit-sync.service';
@@ -83,6 +84,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubCopilotMetricsClient,
     GithubCopilotUsageSyncService,
     GithubCopilotSchedulerService,
+    GithubActivityVerifyService,
     JiraClient,
     JiraCollector,
     JiraSprintReconcilerService,
@@ -105,6 +107,8 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubReviewReconcilerService,
     GithubCopilotUsageSyncService,
     GithubCopilotSchedulerService,
+    // Read-only re-collection for the activity verifier (BC-13 reconciles).
+    GithubActivityVerifyService,
     JiraSprintReconcilerService,
     JiraStoryDateReconcilerService,
     JiraAssigneeEmailReconcilerService,

@@ -88,7 +88,7 @@ interface GraphqlResponse<T> {
 }
 
 /** Outcome of one GraphQL POST, keeping "refused" distinct from "empty". */
-interface GraphqlResult<T> {
+export interface GraphqlResult<T> {
   data?: T;
   /** Paths named in `errors[]`, joined with `.` — anything under one is NOT trustworthy. */
   erroredPaths: Set<string>;
@@ -1003,6 +1003,24 @@ query CommitParents($owner: String!, $name: String!) {
       return { ...result, failed: true };
     }
     return result;
+  }
+
+  /**
+   * One query through the same transport, with the same three-state handling
+   * (`failed` / `rateLimitedUntil` / `tooComplex`) and the same partial-error
+   * paths. For BC-1 callers whose query has no `GithubSourceClient` method —
+   * the activity verifier (`GithubActivityVerifyService`). The query must ask
+   * for `rateLimit { cost remaining resetAt }` for `rateLimit` to be filled.
+   */
+  query<T>(
+    token: string,
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<GraphqlResult<T>> {
+    if (!token) {
+      return Promise.resolve({ erroredPaths: new Set(), failed: true });
+    }
+    return this.post<T>(token, query, variables);
   }
 
   private async post<T>(

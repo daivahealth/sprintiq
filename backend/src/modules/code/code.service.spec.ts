@@ -479,3 +479,73 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
     });
   });
 });
+
+/**
+ * Activity verification's identity lookups deliberately drop the author and
+ * date predicates — which makes the tenant predicate the only thing standing
+ * between one tenant's verification and another tenant's rows.
+ */
+describe('CodeService — verification lookups are tenant-scoped', () => {
+  function setup() {
+    const commit = { findMany: jest.fn().mockResolvedValue([]) };
+    const pullRequest = { findMany: jest.fn().mockResolvedValue([]) };
+    const prReview = { findMany: jest.fn().mockResolvedValue([]) };
+    const prisma = {
+      commit,
+      pullRequest,
+      prReview,
+    } as unknown as PrismaService;
+    const eventBus = { subscribe: jest.fn() } as unknown as EventBus;
+    return {
+      service: new CodeService(prisma, eventBus),
+      commit,
+      pullRequest,
+      prReview,
+    };
+  }
+
+  it('findCommitsByShas filters by tenant and de-duplicates SHAs', async () => {
+    const { service, commit } = setup();
+    await service.findCommitsByShas('tenant-a', ['s1', 's1', 's2']);
+    expect(commit.findMany).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', sha: { in: ['s1', 's2'] } },
+    });
+  });
+
+  it('findPullRequestsByNumbers filters by tenant, grouped by repo', async () => {
+    const { service, pullRequest } = setup();
+    await service.findPullRequestsByNumbers('tenant-a', [
+      { repoFullName: 'acme/api', externalNumber: '1' },
+      { repoFullName: 'acme/api', externalNumber: '2' },
+    ]);
+    expect(pullRequest.findMany).toHaveBeenCalledWith({
+      where: {
+        tenantId: 'tenant-a',
+        OR: [{ repoFullName: 'acme/api', externalNumber: { in: ['1', '2'] } }],
+      },
+    });
+    await expect(
+      service.findPullRequestsByNumbers('tenant-a', []),
+    ).resolves.toEqual([]);
+  });
+
+  it('findReviewsByExternalIds and listReviewsByReviewer filter by tenant', async () => {
+    const { service, prReview } = setup();
+    await service.findReviewsByExternalIds('tenant-a', ['r1']);
+    expect(prReview.findMany).toHaveBeenCalledWith({
+      where: { tenantId: 'tenant-a', externalId: { in: ['r1'] } },
+    });
+    const from = new Date('2026-10-01T00:00:00Z');
+    const to = new Date('2026-10-28T00:00:00Z');
+    await service.listReviewsByReviewer('tenant-a', ['dev'], from, to);
+    expect(prReview.findMany).toHaveBeenLastCalledWith({
+      where: {
+        tenantId: 'tenant-a',
+        isBot: false,
+        reviewerLogin: { in: ['dev'] },
+        submittedAt: { gte: from, lte: to },
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+  });
+});

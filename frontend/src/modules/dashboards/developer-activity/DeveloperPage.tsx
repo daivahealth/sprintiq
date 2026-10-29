@@ -9,6 +9,7 @@ import {
   TableHeadRow,
 } from '../../../components/ui';
 import { SearchSelect } from '../../../components/search-select';
+import { useAuthStore } from '../../../lib/stores/auth-store';
 import { timeAgo } from '../../../lib/utils';
 import { CommitChart, type DailyMetric } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
@@ -16,6 +17,7 @@ import { BarList, ErrorCard, LoadingCard, Stat, TypeBadge } from '../widgets';
 import { mergeExclusionNote } from '../merge-commits';
 import { BranchesSection } from './BranchesSection';
 import { CurrentLensNote } from './CurrentLensNote';
+import { VerifyActivityCard } from './VerifyActivityCard';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
 /**
@@ -51,6 +53,8 @@ export function DeveloperPage() {
   // in ADR-0011, under its conditions: the caveat below the chart, the
   // missing-stats disclosure, and no comparison with anyone else on this page.
   const [chartMetric, setChartMetric] = useState<DailyMetric>('loc');
+  const isAdmin =
+    useAuthStore((s) => s.user?.roles.includes('admin')) ?? false;
 
   const setDeveloper = (login: string | null) => {
     const next = new URLSearchParams(params);
@@ -225,6 +229,16 @@ export function DeveloperPage() {
               </ProvenanceNote>
             </div>
           </Card>
+
+          {/* Keyed by person and range: a report never outlives the
+              selection it was run for. */}
+          {isAdmin && developer && (
+            <VerifyActivityCard
+              key={`${developer} ${JSON.stringify(range)}`}
+              developer={developer}
+              range={range}
+            />
+          )}
 
           <CurrentLensNote range={range} lens="Assigned Jira work" />
           <AssignedWork view={d} />
