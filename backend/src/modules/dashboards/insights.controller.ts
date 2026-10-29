@@ -1,10 +1,13 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
+  HttpCode,
   Inject,
   NotFoundException,
   Optional,
+  Post,
   Query,
 } from '@nestjs/common';
 import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
@@ -20,6 +23,7 @@ import {
   previousWorkingDayKey,
 } from '../../common/time';
 import { CorrelationService } from '../../correlation/correlation.service';
+import { ActivityVerificationService } from '../../metrics/activity-verification.service';
 import { DeveloperActivityService } from '../../metrics/developer-activity.service';
 import { InsightsService } from '../../metrics/insights.service';
 import { NoCommitDetectionService } from '../../metrics/no-commit-detection.service';
@@ -34,6 +38,12 @@ import {
 import { parseList } from './catalog.controller';
 
 const ALL_ROLES = Object.values(Role);
+
+/**
+ * Longest range one verification may cover. Bounds the GitHub read (branch
+ * histories scale with the range), and a month is the unit admins check in.
+ */
+export const VERIFY_MAX_DAYS = 31;
 
 /**
  * The COMMON dashboards (not persona pages): every dashboard is metric-centric
@@ -246,8 +256,81 @@ export class InsightsController {
     private readonly connections: ConnectionsService,
     // The digest's own detection, for the admin-only previous-day view.
     private readonly noCommit: NoCommitDetectionService,
+    private readonly verification: ActivityVerificationService,
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
+
+  /**
+   * Developer activity verification — what SprintIQ stored for one developer
+   * and range, reconciled record by record against an independent GitHub read
+   * (docs/features/DASHBOARDS.md §4.4.3).
+   *
+   * **Admins only**: it is a data-quality tool for whoever runs collection,
+   * and it spends the tenant's GitHub quota. POST because each call is an
+   * action against GitHub, not a cacheable read — but it is read-only: nothing
+   * is written to activity tables. Every run is audit-logged with its outcome.
+   */
+  @Roles(Role.ADMIN)
+  @Post('developer-activity/verify')
+  @HttpCode(200)
+  async verifyDeveloperActivity(
+    @CurrentUser() user: AuthUser,
+    @Body()
+    body: { developer?: string; from?: string; to?: string; scope?: string },
+  ) {
+    const developer = body?.developer?.trim();
+    if (!developer) {
+      throw new BadRequestException('developer is required.');
+    }
+    const scope = body.scope ?? 'active';
+    if (scope !== 'active' && scope !== 'all') {
+      throw new BadRequestException('scope must be "active" or "all".');
+    }
+    const fromKey = parseDateKeyParam(body.from, 'from');
+    const toKey = parseDateKeyParam(body.to, 'to');
+    if (!fromKey || !toKey) {
+      throw new BadRequestException(
+        'from and to are required IST dates (YYYY-MM-DD).',
+      );
+    }
+    if (fromKey > istDateKey(new Date())) {
+      throw new BadRequestException('from cannot be in the future.');
+    }
+    const range = resolveActivityRange('custom', fromKey, toKey);
+    if (range.windowDays > VERIFY_MAX_DAYS) {
+      throw new BadRequestException(
+        `A verification covers at most ${VERIFY_MAX_DAYS} days.`,
+      );
+    }
+
+    const report = await this.verification.verify(
+      user.tenantId,
+      developer,
+      range.from,
+      range.to,
+      scope,
+    );
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'dashboards.developer_activity.verify',
+      targetType: 'developer',
+      targetId: developer,
+      metadata: {
+        from: fromKey,
+        to: toKey,
+        scope,
+        status: report.status,
+        discrepancies: report.items.filter((i) => i.category !== 'unverifiable')
+          .length,
+        unverifiedScopes: report.unverified.length,
+        reposScanned: report.coverage.reposScanned.length,
+        durationMs: report.coverage.durationMs,
+      },
+    });
+    return report;
+  }
 
   /**
    * Tracked developers with no delivery signal on one IST working day — the

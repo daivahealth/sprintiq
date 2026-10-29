@@ -454,6 +454,91 @@ export class CodeService implements OnModuleInit {
   }
 
   /**
+   * Human reviews one developer submitted in a window — the same predicate as
+   * the Developer page's "PRs reviewed" (`DeveloperActivityService
+   * .developerContext`), as rows rather than a count, for activity
+   * verification.
+   */
+  listReviewsByReviewer(
+    tenantId: string,
+    reviewerLogins: string[],
+    from: Date,
+    to: Date,
+  ): Promise<PrReview[]> {
+    if (reviewerLogins.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.prisma.prReview.findMany({
+      where: {
+        tenantId,
+        isBot: false,
+        reviewerLogin: { in: reviewerLogins },
+        submittedAt: { gte: from, lte: to },
+      },
+      orderBy: { submittedAt: 'desc' },
+    });
+  }
+
+  /**
+   * Stored rows by identity alone — no author or date predicate. Activity
+   * verification asks "do we hold this record at all", which is a different
+   * question from "do we count it for this person in this range", and the
+   * difference is exactly what separates a mis-attributed record from an
+   * uncollected one.
+   */
+  async findCommitsByShas(tenantId: string, shas: string[]): Promise<Commit[]> {
+    const out: Commit[] = [];
+    for (const chunk of chunks([...new Set(shas)], 1000)) {
+      out.push(
+        ...(await this.prisma.commit.findMany({
+          where: { tenantId, sha: { in: chunk } },
+        })),
+      );
+    }
+    return out;
+  }
+
+  /** See `findCommitsByShas`. */
+  async findPullRequestsByNumbers(
+    tenantId: string,
+    refs: { repoFullName: string; externalNumber: string }[],
+  ): Promise<PullRequest[]> {
+    const byRepo = new Map<string, string[]>();
+    for (const r of refs) {
+      byRepo.set(r.repoFullName, [
+        ...(byRepo.get(r.repoFullName) ?? []),
+        r.externalNumber,
+      ]);
+    }
+    if (byRepo.size === 0) return [];
+    return this.prisma.pullRequest.findMany({
+      where: {
+        tenantId,
+        OR: [...byRepo.entries()].map(([repoFullName, numbers]) => ({
+          repoFullName,
+          externalNumber: { in: numbers },
+        })),
+      },
+    });
+  }
+
+  /** See `findCommitsByShas`. */
+  async findReviewsByExternalIds(
+    tenantId: string,
+    externalIds: string[],
+  ): Promise<PrReview[]> {
+    const out: PrReview[] = [];
+    for (const chunk of chunks([...new Set(externalIds)], 1000)) {
+      out.push(
+        ...(await this.prisma.prReview.findMany({
+          where: { tenantId, externalId: { in: chunk } },
+        })),
+      );
+    }
+    return out;
+  }
+
+  /**
    * Commit activity read (project/developer activity boards).
    *
    * Returns whether the read hit its ceiling, because these rows are summed
@@ -896,6 +981,14 @@ function authorPredicate(filters: CommitFilters): Prisma.CommitWhereInput {
     });
   }
   return arms.length === 1 ? arms[0] : { OR: arms };
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
 }
 
 function toDate(value?: string): Date | null {

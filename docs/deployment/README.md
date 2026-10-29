@@ -181,6 +181,14 @@ Execution also respects the existing `GITHUB_BACKFILL_RATE_RESERVE` ([api/README
 
 **Prerequisite outside SprintIQ:** the org's (or enterprise's) **"Copilot usage metrics" policy must be enabled**. Otherwise GitHub refuses the report and the sync records `lastStatus: forbidden`.
 
+### 5.3 Developer activity verification (`GITHUB_VERIFY_*`, [DASHBOARDS.md §4.4.3](../features/DASHBOARDS.md))
+
+| Variable | Default | Values | Purpose |
+|---|---|---|---|
+| `GITHUB_VERIFY_TIME_BUDGET_MS` (2026-10-29) | `120000` | positive integer (ms) | Wall-clock ceiling for one verification run's GitHub read. Whatever is still unread when it expires is reported as unverified (`time_budget`), never as missing. Keep it below any proxy/ingress timeout in front of the API, because the request is synchronous. |
+
+A run always uses the **GraphQL** transport, whatever `GITHUB_COLLECTION_MODE` is, with each repository's own connection token. It draws on the GraphQL points bucket, which is separate from REST's `core` bucket. It stops at `GITHUB_BACKFILL_RATE_RESERVE` like the reconcilers, so verification cannot starve scheduled collection. By the query shapes, and not yet measured on the reference org, a run costs about one point per repository read plus one per 10 active branches. "Where they worked" reads only a developer's repositories. "All repositories" reads every collected one.
+
 ---
 
 ## 6. Collector operations

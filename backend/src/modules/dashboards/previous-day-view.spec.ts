@@ -29,6 +29,7 @@ describe('InsightsController.previousDayInactive', () => {
       {} as never,
       {} as never,
       noCommit as never,
+      {} as never,
       audit as never,
     );
     return { controller, noCommit, audit };
