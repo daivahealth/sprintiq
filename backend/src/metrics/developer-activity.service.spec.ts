@@ -947,6 +947,8 @@ describe('Engineering Activity shows tracked developers only (2026-10-27)', () =
   const index = {
     byLogin: new Map([
       ['asha', 'asha'],
+      // An older login an admin merged into Asha's identity.
+      ['asha-old', 'asha'],
       ['ravi', 'ravi'],
     ]),
     byEmail: new Map(),
@@ -1028,8 +1030,33 @@ describe('Engineering Activity shows tracked developers only (2026-10-27)', () =
     expect(view.excluded.map((e) => e.developer)).toEqual(['ravi']);
   });
 
-  it('PR Status: totals count every PR; rows name tracked developers only', async () => {
-    const open = (n: string, author: string) => ({
+  describe('PR Status', () => {
+    const now = new Date('2026-10-27T06:00:00Z');
+    beforeEach(() => jest.useFakeTimers().setSystemTime(now));
+    afterEach(() => jest.useRealTimers());
+
+    type OpenPr = {
+      repoFullName: string;
+      externalNumber: string;
+      title: string;
+      authorLogin: string | null;
+      additions: number;
+      deletions: number;
+      openedAt: Date | null;
+      reviewsFetchedAt: Date | null;
+    };
+    type Review = {
+      repoFullName: string;
+      externalNumber: string;
+      reviewerLogin: string | null;
+      isBot: boolean;
+    };
+
+    const open = (
+      n: string,
+      author: string | null,
+      overrides: Partial<OpenPr> = {},
+    ): OpenPr => ({
       repoFullName: 'org/repo',
       externalNumber: n,
       title: `PR ${n}`,
@@ -1038,31 +1065,201 @@ describe('Engineering Activity shows tracked developers only (2026-10-27)', () =
       deletions: 0,
       openedAt: new Date('2026-10-20T06:00:00Z'),
       reviewsFetchedAt: new Date('2026-10-26T06:00:00Z'),
-      firstReviewAt: null,
+      ...overrides,
     });
-    const { svc } = build(['asha'], {
-      pullRequest: {
-        findMany: jest.fn(async (args: { where: { state?: string } }) =>
-          args.where.state === 'open'
-            ? [open('1', 'asha'), open('2', 'ravi')]
-            : [{ authorLogin: 'asha' }, { authorLogin: 'ravi' }],
-        ),
-      },
-      prReview: {
-        findMany: jest.fn().mockResolvedValue([
-          { reviewerLogin: 'ravi', isBot: false },
-          { reviewerLogin: 'asha', isBot: false },
-        ]),
-      },
+    const review = (n: string, reviewer: string, isBot = false): Review => ({
+      repoFullName: 'org/repo',
+      externalNumber: n,
+      reviewerLogin: reviewer,
+      isBot,
     });
-    const view = await svc.prStatus([], from, to, 7);
-    // All work in the totals…
-    expect(view.totals.open).toBe(2);
-    expect(view.totals.neverReviewed).toBe(2);
-    expect(view.totals.reviewsGiven).toBe(2);
-    // …but only tracked people's PRs and rows are shown.
-    expect(view.waiting.map((w) => w.author)).toEqual(['asha']);
-    expect(view.reviewLoad.map((r) => r.developer)).toEqual(['asha']);
+
+    /**
+     * Routes each read the way the service issues it: open PRs by `state`,
+     * PRs raised by `openedAt`, the window's reviews by `submittedAt`; the
+     * remaining two are the open PRs' reviews and the reviewed PRs' authors.
+     */
+    function prStatusOf(
+      tracked: string[],
+      data: {
+        openPrs: OpenPr[];
+        raised?: string[];
+        windowReviews?: Review[];
+        openReviews?: Review[];
+      },
+    ) {
+      const { svc } = build(tracked, {
+        pullRequest: {
+          findMany: jest.fn(
+            async (args: { where: { state?: string; openedAt?: unknown } }) => {
+              if (args.where.state === 'open') return data.openPrs;
+              if (args.where.openedAt) {
+                return (data.raised ?? []).map((authorLogin) => ({
+                  authorLogin,
+                }));
+              }
+              return data.openPrs;
+            },
+          ),
+        },
+        prReview: {
+          findMany: jest.fn(
+            async (args: { where: { submittedAt?: unknown } }) =>
+              args.where.submittedAt
+                ? (data.windowReviews ?? [])
+                : (data.openReviews ?? []),
+          ),
+        },
+      });
+      return svc.prStatus([], from, to, 7);
+    }
+
+    it('totals count every PR; rows name tracked developers only', async () => {
+      const view = await prStatusOf(['asha'], {
+        openPrs: [open('1', 'asha'), open('2', 'ravi')],
+        raised: ['asha', 'ravi'],
+        windowReviews: [review('9', 'ravi'), review('9', 'asha')],
+      });
+      // All work in the totals…
+      expect(view.totals.open).toBe(2);
+      expect(view.totals.neverReviewed).toBe(2);
+      expect(view.totals.reviewsGiven).toBe(2);
+      // …the subset the tables list, counted beside them…
+      expect(view.tracked).toEqual({
+        open: 1,
+        neverReviewed: 1,
+        waitingOverThreshold: 1,
+      });
+      // …and only tracked people's PRs and rows shown.
+      expect(view.waiting.map((w) => w.author)).toEqual(['asha']);
+      expect(view.reviewLoad.map((r) => r.developer)).toEqual(['asha']);
+    });
+
+    it('the queue is PRs opened in the range; the rest are counted, not listed', async () => {
+      const view = await prStatusOf([], {
+        openPrs: [
+          // Before the range: still open and unreviewed, but outside it.
+          open('1', 'asha', { openedAt: new Date('2026-07-01T06:00:00Z') }),
+          // In the range.
+          open('2', 'asha'),
+          // After the range ends (a custom range in the past).
+          open('3', 'ravi', { openedAt: new Date('2026-10-27T01:00:00Z') }),
+          // Automation outside the range is in neither count.
+          open('4', 'dependabot', {
+            openedAt: new Date('2026-07-01T06:00:00Z'),
+          }),
+        ],
+      });
+      expect(view.waiting.map((w) => w.number)).toEqual(['2']);
+      expect(view.totals.open).toBe(1);
+      expect(view.totals.neverReviewed).toBe(1);
+      expect(view.totals.botAuthored).toBe(0);
+      expect(view.openOutsideRange).toBe(2);
+      // A person's oldest wait is the range's too: the July PR is not it.
+      const asha = view.reviewLoad.find((r) => r.developer === 'asha');
+      expect(asha?.oldestWaitingHours).toBe(168);
+    });
+
+    it('no tracked subset while nobody is tracked', async () => {
+      const view = await prStatusOf([], { openPrs: [open('1', 'asha')] });
+      expect(view.tracked).toBeNull();
+    });
+
+    it('a PR only a bot reviewed is still waiting on a person', async () => {
+      const view = await prStatusOf([], {
+        openPrs: [open('1', 'asha'), open('2', 'ravi')],
+        openReviews: [
+          review('1', 'copilot-pull-request-reviewer', true),
+          review('2', 'asha'),
+        ],
+      });
+      expect(view.waiting.map((w) => w.number)).toEqual(['1']);
+      expect(view.totals.neverReviewed).toBe(1);
+      expect(view.totals.botReviewedOnly).toBe(1);
+    });
+
+    it("an author's own review neither reviews their PR nor counts as review given", async () => {
+      const view = await prStatusOf([], {
+        openPrs: [open('1', 'asha')],
+        openReviews: [review('1', 'asha')],
+        windowReviews: [review('1', 'asha'), review('1', 'ravi')],
+      });
+      expect(view.waiting.map((w) => w.number)).toEqual(['1']);
+      expect(view.totals.reviewsGiven).toBe(1);
+      expect(view.totals.selfReviews).toBe(1);
+      const asha = view.reviewLoad.find((r) => r.developer === 'asha');
+      expect(asha?.prsReviewed).toBe(0);
+    });
+
+    it('PRs raised by automation are counted apart, not as the queue', async () => {
+      const view = await prStatusOf([], {
+        // GraphQL collects Dependabot without its `[bot]` suffix.
+        openPrs: [
+          open('1', 'dependabot'),
+          open('2', 'renovate[bot]'),
+          open('3', 'asha'),
+        ],
+        raised: ['dependabot', 'asha'],
+      });
+      expect(view.totals.open).toBe(1);
+      expect(view.totals.botAuthored).toBe(2);
+      expect(view.totals.neverReviewed).toBe(1);
+      expect(view.reviewLoad.map((r) => r.developer)).toEqual(['asha']);
+    });
+
+    it('the threshold is 48 calendar hours, inclusive', async () => {
+      const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000);
+      const view = await prStatusOf([], {
+        openPrs: [
+          open('1', 'asha', { openedAt: hoursAgo(48) }),
+          open('2', 'asha', { openedAt: hoursAgo(47.8) }),
+        ],
+      });
+      expect(view.thresholdHours).toBe(48);
+      expect(view.totals.waitingOverThreshold).toBe(1);
+    });
+
+    it('lists the 50 longest waits and says how many there are', async () => {
+      const openPrs = Array.from({ length: 60 }, (_, i) =>
+        open(String(i + 1), 'asha', {
+          // Anchored to the range's end, so all 60 were opened inside it.
+          openedAt: new Date(to.getTime() - (i + 1) * 3_600_000),
+        }),
+      );
+      const view = await prStatusOf([], { openPrs });
+      expect(view.waiting).toHaveLength(50);
+      expect(view.waitingTotal).toBe(60);
+      expect(view.waiting[0].number).toBe('60');
+      expect(view.totals.neverReviewed).toBe(60);
+    });
+
+    it('counts PRs it cannot measure instead of dropping them', async () => {
+      const view = await prStatusOf([], {
+        openPrs: [
+          open('1', 'asha', { openedAt: null }),
+          open('2', 'asha', { reviewsFetchedAt: null }),
+          open('3', 'asha', {
+            reviewsFetchedAt: new Date('2026-10-01T00:00:00Z'),
+          }),
+        ],
+      });
+      // No opened date: no range can place it, so it is counted apart.
+      expect(view.totals.open).toBe(2);
+      expect(view.excludedNoOpenedDate).toBe(1);
+      expect(view.excludedNoReviewData).toBe(1);
+      expect(view.reviewsFetchedOldestAt).toBe('2026-10-01T00:00:00.000Z');
+    });
+
+    it('names an author by their canonical id and display name, not the raw login', async () => {
+      const view = await prStatusOf([], {
+        openPrs: [open('1', 'asha-old')],
+      });
+      expect(view.waiting[0]).toMatchObject({
+        author: 'asha-old',
+        authorDeveloper: 'asha',
+        authorDisplayName: 'Asha Rao',
+      });
+    });
   });
 
   it('Developer page: an untracked developer is not displayable; a tracked one is, by id or login', async () => {

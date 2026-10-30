@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import { NavLink, Outlet, useSearchParams } from 'react-router-dom';
+import { NavLink, Outlet, useMatch, useSearchParams } from 'react-router-dom';
 import { FilterBar } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { FreshnessNote } from '../FreshnessNote';
@@ -57,6 +57,7 @@ const TABS = [
 export function DeveloperActivitySection() {
   const [params, setParams] = useSearchParams();
   const range = parseRange(params);
+  const onQueuePage = useMatch('/engineering-activity/pr-status') !== null;
 
   const setRange = (next: ActivityRange) => {
     const updated = new URLSearchParams(params);
@@ -123,8 +124,15 @@ export function DeveloperActivitySection() {
       <FilterBar>
         <RangeToggle value={range} onChange={setRange} />
         {/* One freshness signal for the whole section. Mounted here rather
-            than per page: it judges the window, and the window is the shell's. */}
-        <FreshnessNote windowFrom={rangeFrom(range)} windowTo={rangeTo(range)} />
+            than per page: it judges the window, and the window is the shell's.
+            Except on PR Status, whose queue is the present whatever the
+            range: an ended range must not suppress "collection is behind"
+            there, because the open PRs it shows are only as current as the
+            last collection. */}
+        <FreshnessNote
+          windowFrom={rangeFrom(range)}
+          windowTo={onQueuePage ? undefined : rangeTo(range)}
+        />
       </FilterBar>
 
       <Outlet context={{ range, setRange }} />
