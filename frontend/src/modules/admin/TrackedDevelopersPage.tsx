@@ -69,7 +69,9 @@ export function TrackedDevelopersPage() {
         <div>
           {/* A tab under Engineering Activity (2026-10-30), whose shell owns
               the page title — so a section heading here, not a second h2. */}
-          <h3 className="font-semibold text-fg">Tracked Developers</h3>
+          <h3 className="font-semibold text-fg">
+            Developers with No GH-Recorded Activity
+          </h3>
           <p className="mt-1 text-sm text-fg-subtle">
             Who Engineering Activity shows per person, and who the daily
             no-activity digest reports on. Every weekday at 10:30 IST, a Teams

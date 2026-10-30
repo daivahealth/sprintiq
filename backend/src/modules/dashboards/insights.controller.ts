@@ -133,7 +133,7 @@ export const DASHBOARD_REGISTRY: {
       // every subpage above shows, so it lives beside them. Still admin-only.
       {
         key: 'developer-activity-tracked-developers',
-        title: 'Tracked Developers',
+        title: 'Developers with No GH-Recorded Activity',
         path: '/engineering-activity/tracked-developers',
         description:
           'Who Engineering Activity shows per person, and who the daily no-activity digest reports on.',
@@ -759,7 +759,7 @@ export class InsightsController {
     // just doesn't show it.
     if (!(await this.devActivity.isDisplayable(who))) {
       throw new NotFoundException(
-        `${who} is not on the Tracked Developers list. Add them there to see their activity.`,
+        `${who} is not on the Developers with No GH-Recorded Activity list. Add them there to see their activity.`,
       );
     }
     // Fetched alongside rather than folded into `developerActivity`: reviews

@@ -30,7 +30,8 @@ import {
  * link to a subpage carries the range it was read at (§3, "every granularity
  * queryable").
  *
- * Admins get a fifth tab, Tracked Developers (2026-10-30): the list that
+ * Admins get a fifth tab, Developers with No GH-Recorded Activity (named
+ * Tracked Developers until 2026-10-30): the list that
  * decides who the other four show per person. It reads no window, so the
  * range bar is hidden there.
  */
@@ -59,7 +60,7 @@ const TABS = [
   },
   {
     to: 'tracked-developers',
-    label: 'Tracked Developers',
+    label: 'Developers with No GH-Recorded Activity',
     title:
       'Who Engineering Activity shows per person, and who the daily digest reports on.',
     adminOnly: true,
