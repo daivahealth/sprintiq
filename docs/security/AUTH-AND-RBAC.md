@@ -103,9 +103,10 @@ Nothing infers a role. SprintIQ cannot distinguish a QA engineer from a backend 
 The tracked-roster inactivity digest to Microsoft Teams (BC-15, [features/NOTIFICATIONS.md](../features/NOTIFICATIONS.md)) is the second exception to §5, decided independently under [ADR-0009](../ADR/0009-attributed-commit-digest.md) — it does not inherit the Watchlist's or the Sprint Health board's cover, and its own decision does not extend to any other notification.
 
 - **`{GET,PUT,DELETE} /dashboards/tracked-developers[/{developer}]`** — admin-only, audited by the global mutating-request interceptor, same pattern as watchlist exclusions and developer roles above. `DELETE` deactivates rather than deletes, for the same accountability reason: a roster with no record of who removed an entry, and when, is unauditable.
-- **`POST /admin/notifications/no-commit-digest/run`** — admin-only. Triggers detection (and, unless `dryRun`, delivery) for the caller's own tenant only; the tenant is taken from the JWT, never a request field.
+- **`POST /admin/notifications/no-commit-digest/run`** — admin-only. Triggers detection (and, unless `dryRun`, delivery) for the caller's own tenant only; the tenant is taken from the JWT, never a request field. Since 2026-10-30 the run's own `notification.no_commit_digest.*` audit entry names the calling admin (`actorType: 'user'`, `actorId`); only the unattended cron audits as `system`.
+- **`GET /admin/notifications/no-commit-digest/runs`** (2026-10-30) — admin-only, caller's tenant only. Run outcomes and counts, **no names** — which is why, like other admin reads, it is not separately audit-logged.
 - **`GET /dashboards/developer-activity/watchlist/previous-day`** (2026-10-19) — admin-only. The digest's list for one day, in the app (ADR-0009 amendment). Read-only, and every view is audit-logged (`dashboards.watchlist.previous_day.view`), since unlike the routes above it is a read that names people.
-- All three routes are guarded server-side by `@Roles(Role.ADMIN)`, the same enforcement point as every other admin-only route in this document — no client-side gate is trusted.
+- All four routes are guarded server-side by `@Roles(Role.ADMIN)`, the same enforcement point as every other admin-only route in this document — no client-side gate is trusted.
 
 ---
 

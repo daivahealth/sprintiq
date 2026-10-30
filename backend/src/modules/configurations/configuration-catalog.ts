@@ -218,7 +218,7 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         label: 'Daily activity digest enabled',
         kind: 'boolean',
         helper:
-          'Arms the unattended 10:30 IST weekday cron, which names tracked ' +
+          'Arms the unattended 09:30 IST weekday cron, which names tracked ' +
           'developers with no delivery activity in a Teams channel. Seed the ' +
           'roster before enabling. A manual digest run works regardless of ' +
           'this flag. DIGEST_CRON_ENABLED can disarm the cron deployment-wide ' +

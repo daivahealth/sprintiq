@@ -108,6 +108,24 @@ export interface RunDigestResult {
   unattributedCommits: number;
 }
 
+/** What started a digest run — mirrors backend `DigestTrigger`. */
+export type DigestTrigger = "cron" | "manual";
+
+/**
+ * One row of GET /api/admin/notifications/no-commit-digest/runs — mirrors
+ * backend `DigestRunSummary`. Carries no names by design.
+ */
+export interface DigestRunSummary {
+  reportedDay: string;
+  outcome: DigestOutcome;
+  trigger: DigestTrigger;
+  rosterCount: number;
+  flaggedCount: number;
+  deliveredAt: string | null;
+  createdAt: string;
+  detail: string | null;
+}
+
 export type ConfigurationNamespace =
   | "github"
   | "jira"

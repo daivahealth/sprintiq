@@ -1107,6 +1107,10 @@ model NoCommitDigestRun {
   /// or withhold — a person named above may be the author of one of these.
   /// Zero for the gates that return before the commit read runs.
   unattributedCommits Int @default(0)
+  /// What started the run: `cron` (the unattended 09:30 IST weekday sweep) or
+  /// `manual` (an admin through POST /admin/notifications/no-commit-digest/run).
+  /// Rows from before 2026-10-30 default to `manual` — every one of them was.
+  trigger      String    @default("manual")
   createdAt    DateTime  @default(now())
 
   @@unique([tenantId, reportedDay])

@@ -1,4 +1,9 @@
-import type { DigestOutcome, RunDigestPayload } from '../../lib/api/types';
+import type {
+  DigestOutcome,
+  DigestTrigger,
+  RunDigestPayload,
+  TenantConfiguration,
+} from '../../lib/api/types';
 import { activeDevelopersTile } from '../dashboards/developer-activity/active-developers-tile';
 
 /**
@@ -41,6 +46,35 @@ export function outcomeLabel(outcome: DigestOutcome): string {
     default:
       return outcome;
   }
+}
+
+/** Who started a recorded run, in the words the runs list shows. */
+export function triggerLabel(trigger: DigestTrigger): string {
+  return trigger === 'cron' ? 'Automatic (09:30 IST)' : 'Manual';
+}
+
+/**
+ * Whether the tenant has armed the unattended weekday send — the
+ * `notifications` configuration's `dailyDigestEnabled`, the same flag the
+ * backend's `tenantsToDigest()` reads. `null` when the configurations could
+ * not be read, so the panel says "unknown" rather than guessing "off".
+ */
+export function automaticSendEnabled(
+  configurations: TenantConfiguration[] | undefined,
+): boolean | null {
+  if (!configurations) return null;
+  const row = configurations.find((c) => c.namespace === 'notifications');
+  return row?.status === 'active' && row.values.dailyDigestEnabled === true;
+}
+
+/** The status line above the runs list. */
+export function automaticSendLine(enabled: boolean | null): string {
+  if (enabled === null) {
+    return 'Automatic weekday send: unknown — the configuration could not be read.';
+  }
+  return enabled
+    ? 'Automatic weekday send: on — every Monday to Friday at 09:30 IST.'
+    : 'Automatic weekday send: off — turn on "Daily activity digest enabled" in Configuration → Notifications.';
 }
 
 /**

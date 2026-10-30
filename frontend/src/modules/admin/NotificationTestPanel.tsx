@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api/client';
 import type { RunDigestResult } from '../../lib/api/types';
 import { previousWorkingDayKey } from '../../lib/utils';
 import { Badge, Button, Card } from '../../components/ui';
+import { DIGEST_RUNS_QUERY_KEY } from './DigestRunsPanel';
 import {
   FORCE_BODY,
   INITIAL_PANEL_PHASE,
@@ -127,9 +128,9 @@ export function NotificationTestPanelView({
         <p className="text-sm font-semibold text-fg">Test the notification</p>
         <p className="mt-1 text-xs text-fg-subtle">
           Trigger the weekday no-activity digest immediately, instead of
-          waiting for the 10:30 IST cron. This works regardless of the daily
+          waiting for the 09:30 IST cron. This works regardless of the daily
           schedule switch in Configuration — that switch only arms the
-          unattended 10:30 IST run, not this panel.
+          unattended 09:30 IST run, not this panel.
         </p>
       </div>
 
@@ -282,14 +283,23 @@ export function NotificationTestPanel() {
     mutationFn: () => api.post<RunDigestResult>(RUN_URL, FORCE_BODY),
   });
 
-  const recordOutcome = (result: RunDigestResult) =>
+  const queryClient = useQueryClient();
+  // A send writes a run row (even a failed one), so the runs list refreshes
+  // after it either way.
+  const refreshRuns = () =>
+    void queryClient.invalidateQueries({ queryKey: DIGEST_RUNS_QUERY_KEY });
+  const recordOutcome = (result: RunDigestResult) => {
     setSendOutcome({ kind: 'result', result });
-  const recordError = (error: unknown) =>
+    refreshRuns();
+  };
+  const recordError = (error: unknown) => {
+    refreshRuns();
     setSendOutcome(
       error instanceof ApiError
         ? { kind: 'error', status: error.status, message: error.message }
         : { kind: 'error', status: 0, message: 'Could not reach the server.' },
     );
+  };
 
   const handlePreviewClick = () => {
     const command = clickPreview();

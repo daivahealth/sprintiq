@@ -17,7 +17,54 @@ import {
   outcomeLabel,
   previewActiveLine,
   sendConfirmationCopy,
+  automaticSendEnabled,
+  automaticSendLine,
+  triggerLabel,
 } from './notification-test-panel-logic';
+import type { TenantConfiguration } from '../../lib/api/types';
+
+describe('automatic weekday send', () => {
+  function notificationsRow(
+    values: Record<string, unknown>,
+    status: 'active' | 'disabled' = 'active',
+  ): TenantConfiguration {
+    return {
+      id: 'c1',
+      namespace: 'notifications',
+      key: 'default',
+      values,
+      secretRefs: {},
+      status,
+      updatedAt: '2026-10-30T00:00:00Z',
+      connection: null,
+      secretsConfigured: {},
+    };
+  }
+
+  it('is on only when dailyDigestEnabled is true on an active notifications row', () => {
+    expect(automaticSendEnabled([notificationsRow({ dailyDigestEnabled: true })])).toBe(true);
+    expect(automaticSendEnabled([notificationsRow({ dailyDigestEnabled: false })])).toBe(false);
+    expect(
+      automaticSendEnabled([notificationsRow({ dailyDigestEnabled: true }, 'disabled')]),
+    ).toBe(false);
+    expect(automaticSendEnabled([])).toBe(false);
+  });
+
+  it('is unknown, not off, when the configurations were not read', () => {
+    expect(automaticSendEnabled(undefined)).toBeNull();
+    expect(automaticSendLine(null)).toMatch(/unknown/);
+  });
+
+  it('names the 09:30 IST schedule when on', () => {
+    expect(automaticSendLine(true)).toContain('09:30 IST');
+    expect(automaticSendLine(false)).toMatch(/off/);
+  });
+
+  it('labels cron runs as automatic', () => {
+    expect(triggerLabel('cron')).toBe('Automatic (09:30 IST)');
+    expect(triggerLabel('manual')).toBe('Manual');
+  });
+});
 
 describe('request bodies', () => {
   // Pins the exact wire shape each action is allowed to send — a body drifting

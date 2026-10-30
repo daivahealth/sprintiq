@@ -34,7 +34,7 @@ export const IMPLAUSIBLE_FLAGGED_SHARE = 0.8;
  * gate 1 treats the pipeline as stalled rather than merely lagging.
  *
  * The digest's schedule — not a completeness watermark — is what guarantees
- * the reported day's commits are in: the cron runs at 10:30 IST, ~10.5 hours
+ * the reported day's commits are in: the cron runs at 09:30 IST, ~9.5 hours
  * after the previous day closed, ample time for an overnight poll to have
  * collected it. Measured on the hosted tenant via `GET
  * /api/dashboards/freshness`, the oldest sync on a healthy deployment sits a
@@ -108,7 +108,7 @@ export interface PreviousDayView {
   /**
    * Named on that day's Teams card but no longer on the list now — usually
    * because they pushed that day's work after the digest ran (it reads at
-   * 10:30 IST). Shown so the card's mistake is visible where admins look,
+   * 09:30 IST). Shown so the card's mistake is visible where admins look,
    * without posting a second message to the channel.
    */
   namedThenNowActive: NamedDeveloper[];
@@ -402,7 +402,7 @@ export class NoCommitDetectionService {
 
     // Gate 1: is the pipeline visibly broken? The digest's SCHEDULE is what
     // guarantees the reported day's commits are in, not a completeness
-    // watermark: the cron runs at 10:30 IST, ~10.5 hours after the previous
+    // watermark: the cron runs at 09:30 IST, ~9.5 hours after the previous
     // day closed — ample time for an overnight poll to have collected it.
     // This gate therefore does not try to PROVE the day is complete; it only
     // refuses when collection is visibly broken:

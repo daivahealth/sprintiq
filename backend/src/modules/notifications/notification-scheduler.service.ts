@@ -1,26 +1,31 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { AppRole, roleRunsScheduler } from '../../config/app-role';
 import { IST_TIMEZONE } from '../../common/time';
 import { NotificationsService } from './notifications.service';
 
+/** 09:30 IST, Monday to Friday — pinned to `IST_TIMEZONE` at the decorator. */
+export const DAILY_DIGEST_CRON = '30 9 * * 1-5';
+
 /**
- * Fires the daily digest at 10:30 IST, Monday to Friday.
+ * Fires the daily digest at 09:30 IST, Monday to Friday.
  *
  * Mon–Fri, not daily: a Monday run reporting Sunday would name nearly the
  * whole roster for a day nobody was expected to work, and a notification that
  * is mostly noise stops being read. `previousWorkingDayKey` makes Monday
  * report Friday.
  *
- * 10:30 rather than at the day's close also buys the poll-based collectors
- * roughly ten hours to bring in late commits before anyone is named.
+ * 09:30 rather than at the day's close also buys the poll-based collectors
+ * roughly nine and a half hours to bring in late commits before anyone is
+ * named — after the 22:00 IST day-close pass, and after the 09:02 IST full
+ * branch sweep that the audit-sync coverage gate (1b) waits for.
  *
  * This class holds no digest logic deliberately — it decides only *when*, and
  * (see `shouldSweep`) *whether this process is the one that should*.
  */
 @Injectable()
-export class NotificationSchedulerService {
+export class NotificationSchedulerService implements OnModuleInit {
   private readonly logger = new Logger(NotificationSchedulerService.name);
 
   constructor(
@@ -28,7 +33,28 @@ export class NotificationSchedulerService {
     private readonly config: ConfigService,
   ) {}
 
-  @Cron('30 10 * * 1-5', { timeZone: IST_TIMEZONE })
+  /**
+   * One line at boot saying whether this process will send the 09:30 digest
+   * and, if not, why — so a quiet channel on the hosted site is diagnosable
+   * from the startup log, not discovered the morning after. Per-tenant opt-in
+   * (`dailyDigestEnabled`) is read fresh at each sweep and not reported here.
+   */
+  onModuleInit(): void {
+    if (!this.shouldSweep()) {
+      this.logger.log(
+        'Daily digest cron (09:30 IST, Mon–Fri) will not fire in this process: ' +
+          'in production only APP_ROLE=worker sends it.',
+      );
+      return;
+    }
+    this.logger.log(
+      this.envArmed()
+        ? 'Daily digest cron armed: 09:30 IST, Mon–Fri, for tenants with dailyDigestEnabled on.'
+        : 'Daily digest cron disarmed by DIGEST_CRON_ENABLED — it will not fire.',
+    );
+  }
+
+  @Cron(DAILY_DIGEST_CRON, { timeZone: IST_TIMEZONE })
   async sendDailyDigest(): Promise<void> {
     if (!this.shouldSweep()) {
       // The same image runs as api | collector | worker via APP_ROLE, all
@@ -57,7 +83,9 @@ export class NotificationSchedulerService {
       // Per-tenant isolation: one tenant's rotated webhook or empty roster
       // must not cancel the sweep for the others.
       try {
-        const result = await this.notifications.runNoCommitDigest(tenantId);
+        const result = await this.notifications.runNoCommitDigest(tenantId, {
+          trigger: 'cron',
+        });
         this.logger.log(
           `Daily digest for ${tenantId} (${result.reportedDay}): ${result.outcome}, ${result.flagged.length} named.`,
         );
