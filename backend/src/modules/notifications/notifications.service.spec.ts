@@ -44,6 +44,7 @@ function build(overrides: { detect?: unknown; existing?: unknown } = {}) {
       findUnique: jest.fn().mockResolvedValue(overrides.existing ?? null),
       create: jest.fn().mockResolvedValue({}),
       update: jest.fn().mockResolvedValue({}),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     tenantConfiguration: {
       findUnique: jest.fn().mockResolvedValue({
@@ -490,6 +491,92 @@ describe('NotificationsService.runNoCommitDigest', () => {
       ][0];
     expect(finalUpdateCall.data.outcome).toBe('failed');
     expect(finalUpdateCall.data.deliveredAt).toBeNull();
+  });
+});
+
+describe('NotificationsService run trigger and actor', () => {
+  it('records a cron run as `cron`, audited as the system', async () => {
+    const { service, prisma, audit } = build();
+
+    await service.runNoCommitDigest('tenant_a', { trigger: 'cron' });
+
+    expect(prisma.noCommitDigestRun.create.mock.calls[0][0].data.trigger).toBe(
+      'cron',
+    );
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.actorType).toBe('system');
+    expect(entry.actorId).toBeUndefined();
+    expect(entry.metadata.trigger).toBe('cron');
+  });
+
+  it('defaults to `manual` and names the admin who asked for the run', async () => {
+    const { service, prisma, audit } = build();
+
+    await service.runNoCommitDigest('tenant_a', { actorUserId: 'user_1' });
+
+    expect(prisma.noCommitDigestRun.create.mock.calls[0][0].data.trigger).toBe(
+      'manual',
+    );
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: 'user',
+        actorId: 'user_1',
+        metadata: expect.objectContaining({ trigger: 'manual' }),
+      }),
+    );
+  });
+
+  it('overwrites the trigger when a manual re-run replaces an earlier row', async () => {
+    // A forced re-send of a cron-sent day is the admin's send now; the row
+    // must say so rather than keep claiming the cron posted it.
+    const { service, prisma } = build({ existing: { outcome: 'sent' } });
+
+    await service.runNoCommitDigest('tenant_a', {
+      force: true,
+      actorUserId: 'user_1',
+    });
+
+    expect(prisma.noCommitDigestRun.update.mock.calls[0][0].data.trigger).toBe(
+      'manual',
+    );
+  });
+
+  it('writes no row and no trigger on a dry run', async () => {
+    const { service, prisma } = build();
+
+    await service.runNoCommitDigest('tenant_a', {
+      dryRun: true,
+      trigger: 'cron',
+    });
+
+    expect(prisma.noCommitDigestRun.create).not.toHaveBeenCalled();
+    expect(prisma.noCommitDigestRun.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('NotificationsService.listRuns', () => {
+  it('reads only the given tenant, newest first, without the named list', async () => {
+    const { service, prisma } = build();
+
+    await service.listRuns('tenant_a', 5);
+
+    const args = prisma.noCommitDigestRun.findMany.mock.calls[0][0];
+    expect(args.where).toEqual({ tenantId: 'tenant_a' });
+    expect(args.orderBy).toEqual({ createdAt: 'desc' });
+    expect(args.take).toBe(5);
+    expect(args.select.trigger).toBe(true);
+    expect(args.select.flagged).toBeUndefined();
+  });
+
+  it.each([
+    [0, 1],
+    [500, 30],
+  ])('clamps a limit of %d to %d', async (limit, take) => {
+    const { service, prisma } = build();
+
+    await service.listRuns('tenant_a', limit);
+
+    expect(prisma.noCommitDigestRun.findMany.mock.calls[0][0].take).toBe(take);
   });
 });
 

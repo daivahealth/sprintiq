@@ -35,7 +35,7 @@ It inherits this ADR's three conditions unchanged, and they are enforced the sam
 2. **Suppressions are honoured.** The card is computed by `NoCommitDetectionService.detect`, the digest's own detection, including every withhold gate, so it names exactly who the digest would name and withholds whenever the digest would. Unresolved and incomplete roster entries are reported, never named.
 3. **Every view is recorded.** `GET /dashboards/developer-activity/watchlist/previous-day` is `@Roles(Role.ADMIN)`, read-only (no run row, no message), and writes an `AuditLog` row (`dashboards.watchlist.previous_day.view`) for every view.
 
-It adds one thing the channel cannot do: when a Teams card was sent for the day, the view lists anyone that card named who **now** shows a signal for that day — usually work pushed after the digest's 10:30 IST read. The correction is visible to admins without posting a second message to the channel.
+It adds one thing the channel cannot do: when a Teams card was sent for the day, the view lists anyone that card named who **now** shows a signal for that day — usually work pushed after the digest's 09:30 IST read (10:30 until 2026-10-30, when the send moved an hour earlier — a schedule change only, not a new decision). The correction is visible to admins without posting a second message to the channel.
 
 Scope stays narrow. This amendment covers one admin view of this one list. Showing it to any other role, on any other board, or in another channel needs the decision taken again; it does not extend to the Watchlist's recency buckets, which remain a separate, earlier surface.
 

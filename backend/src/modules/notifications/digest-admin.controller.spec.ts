@@ -1,6 +1,47 @@
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { RunDigestDto } from './digest-admin.controller';
+import {
+  DigestAdminController,
+  ListDigestRunsDto,
+  RunDigestDto,
+} from './digest-admin.controller';
+
+describe('DigestAdminController', () => {
+  const admin = {
+    userId: 'user_1',
+    tenantId: 'tenant_a',
+    email: 'a@example.com',
+    roles: ['admin'],
+  };
+
+  it('runs as a manual run attributed to the calling admin, in their tenant', async () => {
+    const notifications = {
+      runNoCommitDigest: jest.fn().mockResolvedValue({}),
+    };
+    const controller = new DigestAdminController(notifications as never);
+
+    await controller.run(admin, { dryRun: true });
+
+    expect(notifications.runNoCommitDigest).toHaveBeenCalledWith('tenant_a', {
+      dryRun: true,
+      trigger: 'manual',
+      actorUserId: 'user_1',
+    });
+  });
+
+  it("lists runs for the caller's tenant only, ten by default", async () => {
+    const notifications = { listRuns: jest.fn().mockResolvedValue([]) };
+    const controller = new DigestAdminController(notifications as never);
+
+    await expect(controller.runs(admin, {})).resolves.toEqual({ runs: [] });
+    expect(notifications.listRuns).toHaveBeenCalledWith('tenant_a', 10);
+  });
+
+  it.each([0, 31, 2.5])('rejects a runs limit of %s', (limit) => {
+    const dto = plainToInstance(ListDigestRunsDto, { limit });
+    expect(validateSync(dto)).toHaveLength(1);
+  });
+});
 
 function errorsFor(day: unknown) {
   const dto = plainToInstance(RunDigestDto, { day });

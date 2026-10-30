@@ -1,6 +1,87 @@
-import { NotificationSchedulerService } from './notification-scheduler.service';
+import { Logger } from '@nestjs/common';
+import { SCHEDULE_CRON_OPTIONS } from '@nestjs/schedule/dist/schedule.constants';
+import {
+  DAILY_DIGEST_CRON,
+  NotificationSchedulerService,
+} from './notification-scheduler.service';
 
 describe('NotificationSchedulerService', () => {
+  it('fires at 09:30 IST, Monday to Friday', () => {
+    // The schedule is the product contract (NOTIFICATIONS.md §1): read it off
+    // the decorator itself, so changing the expression or dropping the
+    // timezone — which would make it 09:30 in the host's zone — fails here.
+    const options = Reflect.getMetadata(
+      SCHEDULE_CRON_OPTIONS,
+      NotificationSchedulerService.prototype.sendDailyDigest,
+    );
+    expect(DAILY_DIGEST_CRON).toBe('30 9 * * 1-5');
+    expect(options).toEqual(
+      expect.objectContaining({
+        cronTime: '30 9 * * 1-5',
+        timeZone: 'Asia/Kolkata',
+      }),
+    );
+  });
+
+  it('marks every run it starts as a cron run', async () => {
+    const notifications = {
+      tenantsToDigest: jest.fn().mockResolvedValue(['tenant_a']),
+      runNoCommitDigest: jest.fn().mockResolvedValue({
+        reportedDay: '2026-09-17',
+        outcome: 'sent',
+        flagged: [],
+      }),
+    };
+    const scheduler = new NotificationSchedulerService(
+      notifications as never,
+      { get: jest.fn((key: string) => ({ env: 'development' })[key]) } as never,
+    );
+
+    await scheduler.sendDailyDigest();
+
+    expect(notifications.runNoCommitDigest).toHaveBeenCalledWith('tenant_a', {
+      trigger: 'cron',
+    });
+  });
+
+  describe('boot log line', () => {
+    let log: jest.SpyInstance;
+    beforeEach(() => {
+      log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+    });
+    afterEach(() => log.mockRestore());
+
+    function bootWith(values: Record<string, unknown>) {
+      const scheduler = new NotificationSchedulerService(
+        {} as never,
+        { get: jest.fn((key: string) => values[key]) } as never,
+      );
+      scheduler.onModuleInit();
+      return String(log.mock.calls[0][0]);
+    }
+
+    it('says the cron is armed when this process sweeps', () => {
+      expect(bootWith({ appRole: 'worker', env: 'production' })).toContain(
+        'armed: 09:30 IST',
+      );
+    });
+
+    it('says an api process in production will not fire it', () => {
+      expect(bootWith({ appRole: 'api', env: 'production' })).toContain(
+        'will not fire in this process',
+      );
+    });
+
+    it('says DIGEST_CRON_ENABLED disarmed it', () => {
+      expect(
+        bootWith({
+          env: 'development',
+          'notifications.digestCronEnabled': false,
+        }),
+      ).toContain('disarmed by DIGEST_CRON_ENABLED');
+    });
+  });
+
   // Realistic RunDigestResult shape returned by the service at runtime.
   const mockDigestResult = {
     reportedDay: '2026-09-17',

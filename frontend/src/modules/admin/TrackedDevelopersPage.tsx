@@ -5,6 +5,7 @@ import type { TrackedDeveloper } from '../../lib/api/types';
 import { SearchSelect } from '../../components/search-select';
 import { Badge, Button, Card, Spinner } from '../../components/ui';
 import { useDeveloperCatalog } from '../dashboards/useInsights';
+import { DigestRunsPanel } from './DigestRunsPanel';
 import { NotificationTestPanel } from './NotificationTestPanel';
 import { resolutionBadge, sortByDisplayName } from './tracked-developers-logic';
 
@@ -19,7 +20,7 @@ function useTrackedDevelopers() {
 }
 
 /**
- * Admin roster for the weekday no-activity digest (10:30 IST → Teams).
+ * Admin roster for the weekday no-activity digest (09:30 IST → Teams).
  *
  * Adding is deliberately search-then-select only — there is no free-text
  * entry field. A typed login that matches nobody would create an entry that
@@ -74,7 +75,7 @@ export function TrackedDevelopersPage() {
           </h3>
           <p className="mt-1 text-sm text-fg-subtle">
             Who Engineering Activity shows per person, and who the daily
-            no-activity digest reports on. Every weekday at 10:30 IST, a Teams
+            no-activity digest reports on. Every weekday at 09:30 IST, a Teams
             card names anyone below with no delivery activity the previous
             working day.
           </p>
@@ -216,6 +217,7 @@ export function TrackedDevelopersPage() {
       ) : null}
 
       <NotificationTestPanel />
+      <DigestRunsPanel />
     </section>
   );
 }
