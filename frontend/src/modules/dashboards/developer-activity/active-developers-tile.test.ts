@@ -18,7 +18,7 @@ describe('activeDevelopersTile', () => {
       trackedDevelopers: null,
     });
     expect(tile.value).toBe('12');
-    expect(tile.hint).toMatch(/Tracked Developers/);
+    expect(tile.hint).toMatch(/Developers with No GH-Recorded Activity/);
   });
 
   it('never invents a denominator for an older API', () => {

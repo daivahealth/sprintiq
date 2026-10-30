@@ -289,13 +289,22 @@ export interface WaitingPr {
   repo: string;
   number: string;
   title: string;
+  /** The GitHub login, as collected. */
   author: string | null;
+  /**
+   * The canonical developer id the login resolves to — what the Developer
+   * page is addressed by. A raw login of someone an admin merged into another
+   * identity opens a partial profile, so links use this, never `author`.
+   */
+  authorDeveloper: string | null;
+  /** What every other people table on these pages calls this person. */
+  authorDisplayName: string | null;
   projects: string[];
   additions: number;
   deletions: number;
   openedAt: string;
   waitingHours: number;
-  /** No review of any kind yet — distinct from "reviewed, still open". */
+  /** No human review yet — distinct from "reviewed, still open". */
   neverReviewed: boolean;
 }
 
@@ -303,31 +312,80 @@ export interface ReviewLoadRow {
   developer: string;
   displayName: string;
   prsRaised: number;
+  /** Reviews submitted, not distinct PRs; self-reviews and bots excluded. */
   prsReviewed: number;
   /** Hours their oldest unreviewed PR has waited. A fact, not an average. */
   oldestWaitingHours: number | null;
 }
 
 export interface PrStatusView {
+  /**
+   * The queue figures (`open`, `waitingOverThreshold`, `neverReviewed`,
+   * `botReviewedOnly`, `botAuthored`) cover PRs OPENED IN THE RANGE that are
+   * still open now, waits measured to now. `reviewsGiven` and its exclusions
+   * count reviews submitted in the range.
+   */
   totals: {
+    /** Open PRs by people — automation-authored ones are in `botAuthored`. */
     open: number;
     waitingOverThreshold: number;
     neverReviewed: number;
+    /**
+     * Of `neverReviewed`, PRs a bot DID review. GitHub shows them as reviewed;
+     * this page does not, because no person has looked at the change yet.
+     */
+    botReviewedOnly: number;
     reviewsGiven: number;
     /** Automated reviews, excluded from `reviewsGiven` and every row below. */
     botReviews: number;
+    /** An author reviewing their own PR — not a review given to the team. */
+    selfReviews: number;
+    /** Open PRs raised by automation (Dependabot, Renovate…), not counted above. */
+    botAuthored: number;
   };
+  /**
+   * The same three queue figures over tracked developers' PRs only — the
+   * subset the tables list. `null` while nobody is tracked, when the tables
+   * and the tiles already cover the same PRs.
+   */
+  tracked: {
+    open: number;
+    waitingOverThreshold: number;
+    neverReviewed: number;
+  } | null;
+  /** Oldest first, at most `WAITING_ROWS`; `waitingTotal` is the uncut count. */
   waiting: WaitingPr[];
+  waitingTotal: number;
   reviewLoad: ReviewLoadRow[];
   /**
    * Open PRs whose review timeline was never fetched. They cannot be called
    * unreviewed — that would indict collection lag as a review failure.
    */
   excludedNoReviewData: number;
+  /** Open PRs with no opened date: no range can place them, no wait to measure. */
+  excludedNoOpenedDate: number;
+  /**
+   * Open PRs by people that were opened before or after the range. The queue
+   * covers PRs opened in the range; these are what a wider range brings in,
+   * and the page states the number so an old unreviewed change never vanishes
+   * without a trace.
+   */
+  openOutsideRange: number;
+  /**
+   * When the stalest review timeline among the open PRs was fetched.
+   *
+   * Open PRs are not re-asked for reviews once collected (api/README.md §12),
+   * so a review submitted after this instant may not be reflected yet. The
+   * page states it rather than presenting the queue as live.
+   */
+  reviewsFetchedOldestAt: string | null;
   thresholdHours: number;
   windowDays: number;
   computedAt: string;
 }
+
+/** Rows on the PR Status waiting table; the rest are counted, not listed. */
+export const WAITING_ROWS = 50;
 
 /** Months on the Overview trend. A year, fixed — not the section's window. */
 export const TREND_MONTHS = 12;
@@ -983,44 +1041,195 @@ export class DeveloperActivityService {
     const tenantId = this.tenantContext.requireTenantId();
     const repoFilter = repos.length > 0 ? { repoFullName: { in: repos } } : {};
 
-    const [openPrs, windowPrs, index, scope] = await Promise.all([
-      // Open PRs are NOT windowed: a PR opened four months ago and still
-      // unreviewed is the single most actionable row this page can carry, and
-      // a `from` filter is exactly what would hide it.
-      this.prisma.pullRequest.findMany({
-        where: { tenantId, ...repoFilter, state: 'open' },
-        orderBy: { openedAt: 'asc' },
-        take: 500,
-      }),
-      this.prisma.pullRequest.findMany({
-        where: { tenantId, ...repoFilter, openedAt: { gte: from, lte: to } },
-        select: { authorLogin: true },
-      }),
-      this.identities.attributionIndex(tenantId),
-      this.trackedDevelopers(tenantId),
-    ]);
+    const [openPrs, windowPrs, windowReviews, index, scope] = await Promise.all(
+      [
+        // Every open PR, not just the range's: the ones opened outside it are
+        // still counted (`openOutsideRange`), because an old unreviewed change
+        // is the most actionable thing here and must never vanish silently.
+        // Uncapped: this read used to stop at the 500 oldest, so "Open PRs"
+        // silently topped out and every count beneath it covered only part of
+        // the queue.
+        this.prisma.pullRequest.findMany({
+          where: { tenantId, ...repoFilter, state: 'open' },
+          select: {
+            repoFullName: true,
+            externalNumber: true,
+            title: true,
+            authorLogin: true,
+            additions: true,
+            deletions: true,
+            openedAt: true,
+            reviewsFetchedAt: true,
+          },
+          orderBy: { openedAt: 'asc' },
+        }),
+        this.prisma.pullRequest.findMany({
+          where: { tenantId, ...repoFilter, openedAt: { gte: from, lte: to } },
+          select: { authorLogin: true },
+        }),
+        this.prisma.prReview.findMany({
+          where: {
+            tenantId,
+            ...repoFilter,
+            submittedAt: { gte: from, lte: to },
+          },
+          select: {
+            repoFullName: true,
+            externalNumber: true,
+            reviewerLogin: true,
+            isBot: true,
+          },
+        }),
+        this.identities.attributionIndex(tenantId),
+        this.trackedDevelopers(tenantId),
+      ],
+    );
+
+    const prKey = (r: { repoFullName: string; externalNumber: string }) =>
+      `${r.repoFullName}#${r.externalNumber}`;
+    const personOf = (login: string) => index.byLogin.get(login) ?? login;
+    // Automation is not a colleague whose change is waiting on the team, and
+    // an entity an admin has ruled is not a person is the same judgement made
+    // by hand (DASHBOARDS.md §4.4.4). Checked on the raw login as well as the
+    // canonical id: GraphQL collects Dependabot as a bare `dependabot`, which
+    // only the known-login list catches, and an unresolved login IS its id.
+    const isAutomation = (login: string) =>
+      isBotDeveloper(login) ||
+      isBotDeveloper(personOf(login)) ||
+      index.excluded.has(personOf(login));
     // Totals count every PR; rows name tracked developers only, once a list
     // exists (2026-10-27). A PR with no known author names nobody tracked.
     const shown = (person: string | null) =>
       !scope || (person !== null && scope.has(person));
 
-    const reviews = await this.prisma.prReview.findMany({
-      where: { tenantId, ...repoFilter, submittedAt: { gte: from, lte: to } },
-      select: { reviewerLogin: true, isBot: true },
-    });
+    // The queue is the open PRs OPENED IN THE RANGE (product decision
+    // 2026-10-30, replacing "open PRs are not windowed"): of the changes raised
+    // in the window, which are still waiting today. The rest are counted, not
+    // hidden — `openOutsideRange` is what a wider range would bring in, and
+    // `excludedNoOpenedDate` what no range can place. Automation is left out
+    // of both, as it is out of the queue.
+    let openOutsideRange = 0;
+    let excludedNoOpenedDate = 0;
+    const queuePrs: ((typeof openPrs)[number] & { openedAt: Date })[] = [];
+    for (const pr of openPrs) {
+      const automated = !!pr.authorLogin && isAutomation(pr.authorLogin);
+      if (!pr.openedAt) {
+        // No opened date: neither placeable in a range nor a wait to measure.
+        // Not dated from `createdAt`, which is when WE inserted the row.
+        if (!automated) excludedNoOpenedDate += 1;
+        continue;
+      }
+      if (pr.openedAt < from || pr.openedAt > to) {
+        if (!automated) openOutsideRange += 1;
+        continue;
+      }
+      queuePrs.push({ ...pr, openedAt: pr.openedAt });
+    }
+
+    // Reviews on the queue's PRs, of any date, and the authors of the PRs
+    // reviewed in the window — both needed to tell a review by a PERSON OTHER
+    // THAN THE AUTHOR from the rest. Fetched as repo × number supersets and
+    // narrowed by key below: one query each rather than one per PR.
+    const [openReviews, reviewedPrs] = await Promise.all([
+      queuePrs.length === 0
+        ? Promise.resolve([])
+        : this.prisma.prReview.findMany({
+            where: {
+              tenantId,
+              repoFullName: {
+                in: [...new Set(queuePrs.map((p) => p.repoFullName))],
+              },
+              externalNumber: {
+                in: [...new Set(queuePrs.map((p) => p.externalNumber))],
+              },
+            },
+            select: {
+              repoFullName: true,
+              externalNumber: true,
+              reviewerLogin: true,
+              isBot: true,
+            },
+          }),
+      windowReviews.length === 0
+        ? Promise.resolve([])
+        : this.prisma.pullRequest.findMany({
+            where: {
+              tenantId,
+              repoFullName: {
+                in: [...new Set(windowReviews.map((r) => r.repoFullName))],
+              },
+              externalNumber: {
+                in: [...new Set(windowReviews.map((r) => r.externalNumber))],
+              },
+            },
+            select: {
+              repoFullName: true,
+              externalNumber: true,
+              authorLogin: true,
+            },
+          }),
+    ]);
+
+    const authorOfOpen = new Map(
+      queuePrs.map((pr) => [prKey(pr), pr.authorLogin] as const),
+    );
+    const authorOfReviewed = new Map(
+      reviewedPrs.map((pr) => [prKey(pr), pr.authorLogin] as const),
+    );
+    const isBotReview = (r: { isBot: boolean; reviewerLogin: string | null }) =>
+      r.isBot || (r.reviewerLogin !== null && isAutomation(r.reviewerLogin));
+    const isSelfReview = (
+      reviewerLogin: string,
+      authorLogin: string | null | undefined,
+    ) => !!authorLogin && personOf(reviewerLogin) === personOf(authorLogin);
+
+    // Reviewed = reviewed by a person other than the author. The stored
+    // `firstReviewAt` can't answer that: the collector derives it from every
+    // review, bots and the author's own reply-in-thread included, so a single
+    // Copilot review took a PR out of this queue while nobody had looked at it
+    // — the reason Efficiency stopped reading it too (insights.service.ts).
+    // Any state counts, dismissed included: a dismissed review was still read.
+    const humanReviewed = new Set<string>();
+    const botReviewed = new Set<string>();
+    for (const review of openReviews) {
+      const key = prKey(review);
+      if (!authorOfOpen.has(key)) {
+        continue; // the superset's cross-product, not one of ours
+      }
+      if (isBotReview(review)) {
+        botReviewed.add(key);
+      } else if (
+        review.reviewerLogin &&
+        !isSelfReview(review.reviewerLogin, authorOfOpen.get(key))
+      ) {
+        humanReviewed.add(key);
+      }
+    }
 
     const now = new Date();
     const waiting: WaitingPr[] = [];
+    let open = 0;
+    let botAuthored = 0;
     let neverReviewed = 0;
+    let botReviewedOnly = 0;
     let waitingOverThreshold = 0;
     let excludedNoReviewData = 0;
+    let reviewsFetchedOldest: Date | null = null;
+    const tracked = scope
+      ? { open: 0, waitingOverThreshold: 0, neverReviewed: 0 }
+      : null;
     const oldestWaitByDeveloper = new Map<string, number>();
 
-    for (const pr of openPrs) {
-      if (!pr.openedAt) {
-        // No opened date, no wait to measure. Excluded rather than dated from
-        // `createdAt`, which is when WE inserted the row, not when it opened.
+    for (const pr of queuePrs) {
+      if (pr.authorLogin && isAutomation(pr.authorLogin)) {
+        botAuthored += 1;
         continue;
+      }
+      open += 1;
+      const person = pr.authorLogin ? personOf(pr.authorLogin) : null;
+      const isTracked = person !== null && !!scope?.has(person);
+      if (tracked && isTracked) {
+        tracked.open += 1;
       }
       if (!pr.reviewsFetchedAt) {
         // "Never asked" is not "never reviewed" — the discriminator the
@@ -1028,37 +1237,52 @@ export class DeveloperActivityService {
         excludedNoReviewData += 1;
         continue;
       }
-      const isUnreviewed = !pr.firstReviewAt;
-      const waitingHours = hoursBetween(pr.openedAt, now);
-      if (isUnreviewed) {
-        neverReviewed += 1;
-        if (waitingHours >= REVIEW_WAIT_ALERT_HOURS) {
-          waitingOverThreshold += 1;
-        }
-        const person = pr.authorLogin
-          ? (index.byLogin.get(pr.authorLogin) ?? pr.authorLogin)
-          : null;
-        if (person) {
-          oldestWaitByDeveloper.set(
-            person,
-            Math.max(oldestWaitByDeveloper.get(person) ?? 0, waitingHours),
-          );
-        }
-        if (!shown(person)) continue;
-        waiting.push({
-          ref: `${pr.repoFullName}#${pr.externalNumber}`,
-          repo: pr.repoFullName,
-          number: pr.externalNumber,
-          title: pr.title,
-          author: pr.authorLogin,
-          projects: [],
-          additions: pr.additions,
-          deletions: pr.deletions,
-          openedAt: pr.openedAt.toISOString(),
-          waitingHours,
-          neverReviewed: true,
-        });
+      if (!reviewsFetchedOldest || pr.reviewsFetchedAt < reviewsFetchedOldest) {
+        reviewsFetchedOldest = pr.reviewsFetchedAt;
       }
+      const key = prKey(pr);
+      if (humanReviewed.has(key)) {
+        continue;
+      }
+      if (botReviewed.has(key)) {
+        botReviewedOnly += 1;
+      }
+      const waitingHours = hoursBetween(pr.openedAt, now);
+      const overThreshold = waitingHours >= REVIEW_WAIT_ALERT_HOURS;
+      neverReviewed += 1;
+      if (overThreshold) {
+        waitingOverThreshold += 1;
+      }
+      if (tracked && isTracked) {
+        tracked.neverReviewed += 1;
+        if (overThreshold) {
+          tracked.waitingOverThreshold += 1;
+        }
+      }
+      if (person) {
+        oldestWaitByDeveloper.set(
+          person,
+          Math.max(oldestWaitByDeveloper.get(person) ?? 0, waitingHours),
+        );
+      }
+      if (!shown(person)) continue;
+      waiting.push({
+        ref: key,
+        repo: pr.repoFullName,
+        number: pr.externalNumber,
+        title: pr.title,
+        author: pr.authorLogin,
+        authorDeveloper: person,
+        authorDisplayName: person
+          ? (index.displayNames.get(person) ?? person)
+          : null,
+        projects: [],
+        additions: pr.additions,
+        deletions: pr.deletions,
+        openedAt: pr.openedAt.toISOString(),
+        waitingHours,
+        neverReviewed: true,
+      });
     }
 
     // Ordered by how long the CHANGE has waited — a property of the pull
@@ -1067,17 +1291,19 @@ export class DeveloperActivityService {
 
     const raised = new Map<string, number>();
     for (const pr of windowPrs) {
-      if (!pr.authorLogin) {
+      if (!pr.authorLogin || isAutomation(pr.authorLogin)) {
         continue;
       }
-      const person = index.byLogin.get(pr.authorLogin) ?? pr.authorLogin;
+      const person = personOf(pr.authorLogin);
       raised.set(person, (raised.get(person) ?? 0) + 1);
     }
 
     const reviewed = new Map<string, number>();
+    let reviewsGiven = 0;
     let botReviews = 0;
-    for (const review of reviews) {
-      if (review.isBot) {
+    let selfReviews = 0;
+    for (const review of windowReviews) {
+      if (isBotReview(review)) {
         // A bot approving in seconds flatters both coverage and latency while
         // no human has looked at the change (METRICS.md §0).
         botReviews += 1;
@@ -1086,8 +1312,16 @@ export class DeveloperActivityService {
       if (!review.reviewerLogin) {
         continue;
       }
-      const person =
-        index.byLogin.get(review.reviewerLogin) ?? review.reviewerLogin;
+      // An author answering a thread on their own PR files a COMMENTED review
+      // under their own name. That is not review given to the team.
+      if (
+        isSelfReview(review.reviewerLogin, authorOfReviewed.get(prKey(review)))
+      ) {
+        selfReviews += 1;
+        continue;
+      }
+      reviewsGiven += 1;
+      const person = personOf(review.reviewerLogin);
       reviewed.set(person, (reviewed.get(person) ?? 0) + 1);
     }
 
@@ -1111,15 +1345,23 @@ export class DeveloperActivityService {
 
     return {
       totals: {
-        open: openPrs.length,
+        open,
         waitingOverThreshold,
         neverReviewed,
-        reviewsGiven: reviews.length - botReviews,
+        botReviewedOnly,
+        reviewsGiven,
         botReviews,
+        selfReviews,
+        botAuthored,
       },
-      waiting: waiting.slice(0, 50),
+      tracked,
+      waiting: waiting.slice(0, WAITING_ROWS),
+      waitingTotal: waiting.length,
       reviewLoad,
       excludedNoReviewData,
+      excludedNoOpenedDate,
+      openOutsideRange,
+      reviewsFetchedOldestAt: reviewsFetchedOldest?.toISOString() ?? null,
       thresholdHours: REVIEW_WAIT_ALERT_HOURS,
       windowDays,
       computedAt: new Date().toISOString(),

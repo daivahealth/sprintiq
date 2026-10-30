@@ -67,13 +67,16 @@ export function TrackedDevelopersPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-[-0.035em] text-fg">
-            Tracked Developers
-          </h2>
+          {/* A tab under Engineering Activity (2026-10-30), whose shell owns
+              the page title — so a section heading here, not a second h2. */}
+          <h3 className="font-semibold text-fg">
+            Developers with No GH-Recorded Activity
+          </h3>
           <p className="mt-1 text-sm text-fg-subtle">
-            Who the daily no-activity digest reports on. Every weekday at
-            10:30 IST, a Teams card names anyone below with no delivery
-            activity the previous working day.
+            Who Engineering Activity shows per person, and who the daily
+            no-activity digest reports on. Every weekday at 10:30 IST, a Teams
+            card names anyone below with no delivery activity the previous
+            working day.
           </p>
         </div>
         {roster.isLoading && <Spinner />}

@@ -17,6 +17,7 @@ import { ErrorCard, LoadingCard } from '../widgets';
 import { useAuthStore } from '../../../lib/stores/auth-store';
 import { CurrentLensNote } from './CurrentLensNote';
 import { PreviousDayCard } from './PreviousDayCard';
+import { developerHref } from './developer-href';
 import { useSectionRange } from './window';
 
 /**
@@ -176,9 +177,10 @@ function BucketColumn({
  * is when we last heard anything, not how much of it there was.
  */
 function DeveloperCard({ dev }: { dev: WatchlistDeveloper }) {
+  const { range } = useSectionRange();
   return (
     <Link
-      to={`../developer?developer=${encodeURIComponent(dev.developer)}`}
+      to={developerHref(dev.developer, range)}
       className="block rounded-md border border-border p-2.5 transition hover:bg-subtle"
     >
       <div className="flex items-baseline justify-between gap-2">
@@ -230,6 +232,7 @@ function PlanningGap({ view }: { view: WatchlistView }) {
   const { committingWithoutAssignedWork: rows, assigneeCoverage } = view;
   const bridgeUnusable = assigneeCoverage.assigneesMatched === 0;
   const unlinked = assigneeCoverage.unlinkedDevelopers ?? [];
+  const { range } = useSectionRange();
 
   return (
     <Card className="space-y-3">
@@ -255,7 +258,7 @@ function PlanningGap({ view }: { view: WatchlistView }) {
             {rows.map((dev) => (
               <Link
                 key={dev.developer}
-                to={`../developer?developer=${encodeURIComponent(dev.developer)}`}
+                to={developerHref(dev.developer, range)}
                 className="rounded-md border border-warning-border bg-warning-bg px-2 py-1 text-xs text-warning-fg hover:opacity-80"
               >
                 {dev.displayName}

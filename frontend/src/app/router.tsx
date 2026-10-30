@@ -115,6 +115,14 @@ export function AppRouter() {
         <Route path="watchlist" element={<WatchlistPage />} />
         <Route path="developer" element={<DeveloperPage />} />
         <Route path="pr-status" element={<PrStatusPage />} />
+        <Route
+          path="tracked-developers"
+          element={
+            <RequireRole role="admin">
+              <TrackedDevelopersPage />
+            </RequireRole>
+          }
+        />
       </Route>
       {/* The section was called Developer Activity until 2026-08-31. Every link
           to the old path still resolves — including the subpage and the query
@@ -168,15 +176,10 @@ export function AppRouter() {
           </Page>
         }
       />
+      {/* Moved under Engineering Activity on 2026-10-30; old links still land. */}
       <Route
         path="/admin/tracked-developers"
-        element={
-          <Page>
-            <RequireRole role="admin">
-              <TrackedDevelopersPage />
-            </RequireRole>
-          </Page>
-        }
+        element={<Navigate to="/engineering-activity/tracked-developers" replace />}
       />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
