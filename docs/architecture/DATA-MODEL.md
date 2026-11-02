@@ -270,6 +270,23 @@ A `graph_node` references an existing entity (no data duplication): `(node_id, t
 
 **Jira-key extraction** runs `regex` (e.g. `[A-Z][A-Z0-9]+-\d+`) over branch, PR title, and commit messages, validates the project key against known `project.external_key`s, and falls back to heuristics/ML for near-misses. Confidence reflects match strength and validation. Coverage = linked / total per repo/team → a first-class **metric health** signal on dashboards.
 
+### 8.4 The in-memory projection (BC-10, 2026-11-02)
+
+The knowledge graph ([features/ANALYTICS.md](../features/ANALYTICS.md), [ADR-0013](../ADR/0013-in-memory-knowledge-graph.md)) projects the tables above, plus `code_commit`, `code_pull_request`, `code_pr_review`, `planning_story` and `correlation_developer_identity`, into an in-process graph per tenant. It adds **no tables, no columns and no migrations**; Postgres stays the source of truth.
+
+It projects only what is stored:
+- `pr_implements_story` links, as `REFERENCES`, with their confidence.
+- `commit_in_repo` / `pr_in_repo`, as `BELONGS_TO`.
+- `developer_authored`, as `CREATED`. It is resolved at build time through the same `developer_identity` read path as the boards.
+
+The edges in §8.2 that are not yet written are left out rather than synthesised: `commit_implements_story`, `pr_contains_commit` and the planning hierarchy.
+
+Two access-path facts shape its full load:
+- `code_pull_request` has no index on `opened_at`/`merged_at`.
+- `correlation_link` has none on `from_id`.
+
+So each rebuild reads the tenant's rows in one pass. That took 3 s on the reference tenant at a 90-day window.
+
 ---
 
 ## 9. Metrics context (BC-8)

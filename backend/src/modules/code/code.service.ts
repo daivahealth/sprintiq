@@ -3,10 +3,12 @@ import { Commit, PrReview, Prisma, PullRequest } from '@prisma/client';
 import {
   CodeCommitBranchObservedPayload,
   CodeCommitPayload,
+  CodeCommitPersistedPayload,
   CodeCopilotReportDayPayload,
   CodeCopilotSeatsPayload,
   CodeCopilotUsagePayload,
   CodePullRequestPayload,
+  CodePullRequestPersistedPayload,
 } from '../../common/events/contracts';
 import {
   CODE_PR_EVENT_TYPES,
@@ -158,6 +160,11 @@ export class CodeService implements OnModuleInit {
       update: fields,
     });
     this.logger.debug(`upserted commit ${c.repoFullName}@${c.sha.slice(0, 7)}`);
+    await this.publishPersisted<CodeCommitPersistedPayload>(
+      event,
+      EventTypes.CODE_COMMIT_PERSISTED,
+      { repoFullName: c.repoFullName, sha: c.sha },
+    );
   }
 
   private async handlePullRequest(
@@ -240,6 +247,32 @@ export class CodeService implements OnModuleInit {
     this.logger.debug(
       `upserted PR ${p.repoFullName}#${p.externalNumber} (${p.state})`,
     );
+    await this.publishPersisted<CodePullRequestPersistedPayload>(
+      event,
+      EventTypes.CODE_PR_PERSISTED,
+      { repoFullName: p.repoFullName, externalNumber: p.externalNumber },
+    );
+  }
+
+  /**
+   * Announces a write that has succeeded (`*.persisted`, api/README.md §6.2).
+   * Reached only after the upserts above resolved, so a failed write never
+   * announces anything; the payload is the natural key alone, and consumers
+   * re-read the row.
+   */
+  private async publishPersisted<T>(
+    event: DomainEvent<unknown>,
+    type: string,
+    payload: T,
+  ): Promise<void> {
+    await this.eventBus.publish<T>({
+      type,
+      tenantId: event.tenantId,
+      connectionId: event.connectionId,
+      sourceEventIds: event.sourceEventIds,
+      occurredAt: new Date(),
+      payload,
+    });
   }
 
   /**

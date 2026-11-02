@@ -73,6 +73,7 @@ describe('PlanningService — status-transition timeline', () => {
       e: DomainEvent<PlanningStoryPayload>,
     ) => Promise<void>)[] = [];
     const bus = {
+      publish: jest.fn(),
       subscribe: jest.fn((_type: string, fn: never) => handlers.push(fn)),
     } as unknown as EventBus;
 
@@ -270,6 +271,7 @@ describe('PlanningService — version projection', () => {
       e: DomainEvent<PlanningVersionPayload>,
     ) => Promise<void>)[] = [];
     const bus = {
+      publish: jest.fn(),
       subscribe: jest.fn((type: string, fn: never) => {
         if (type === EventTypes.PLANNING_VERSION_UPSERTED) {
           versionHandlers.push(fn);
@@ -394,7 +396,7 @@ describe('PlanningService — sprints belong to every project with items in them
     };
     service = new PlanningService(
       prisma as unknown as PrismaService,
-      { subscribe: jest.fn() } as unknown as EventBus,
+      { subscribe: jest.fn(), publish: jest.fn() } as unknown as EventBus,
     );
   });
 

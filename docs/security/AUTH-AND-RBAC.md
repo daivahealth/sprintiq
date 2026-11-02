@@ -108,6 +108,22 @@ The tracked-roster inactivity digest to Microsoft Teams (BC-15, [features/NOTIFI
 - **`GET /dashboards/developer-activity/watchlist/previous-day`** (2026-10-19) — admin-only. The digest's list for one day, in the app (ADR-0009 amendment). Read-only, and every view is audit-logged (`dashboards.watchlist.previous_day.view`), since unlike the routes above it is a read that names people.
 - All four routes are guarded server-side by `@Roles(Role.ADMIN)`, the same enforcement point as every other admin-only route in this document — no client-side gate is trusted.
 
+### 5.3 The knowledge graph
+
+The knowledge-graph reads (`/api/knowledge-graph/*`, [features/ANALYTICS.md](../features/ANALYTICS.md)) are the fourth exception to §5. They were decided independently under [ADR-0013](../ADR/0013-in-memory-knowledge-graph.md) and inherit nothing from §5.1, §5.2 or the Sprint Health board. They name developers beside per-repository commit, PR and review counts, so:
+
+- **Every route is `@Roles(Role.ADMIN)`,** server-side. There is no UI.
+- **Reads that return names are audit-logged on every call:**
+  - `analytics.knowledge_graph.repository_developers.view`
+  - `analytics.knowledge_graph.developer_repositories.view`
+  - `analytics.knowledge_graph.repository_activities.view`
+
+  `status` and repository `search` return no names and, like the other admin reads in §5.2, are not separately audited.
+- **People are ordered alphabetically, never by a count,** and the rule text ships with every named-person response.
+- **Bots, anonymized accounts and admin-excluded identities (`DeveloperIdentity.excluded`) are never named.** Their work is reported only as `withheld` totals, and a direct lookup of one is a `404`.
+- **Tenant isolation is structural.** Each tenant has its own in-memory graph object, chosen by the JWT's tenant only. Every Postgres read behind it filters by `tenantId`, which `graph-source.reader.spec.ts` asserts for every query.
+- Any other role, any UI, or any figure derived from these counts (ownership share, bus factor, "top contributor") needs the decision taken again.
+
 ---
 
 ## 6. Agent authorization & governance

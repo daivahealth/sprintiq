@@ -13,7 +13,10 @@ describe('CodeService.listCommits', () => {
   it('windows by committedAt (not authoredAt) and orders by committedAt desc', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const prisma = { commit: { findMany } } as unknown as PrismaService;
-    const eventBus = { subscribe: jest.fn() } as unknown as EventBus;
+    const eventBus = {
+      subscribe: jest.fn(),
+      publish: jest.fn(),
+    } as unknown as EventBus;
     const service = new CodeService(prisma, eventBus);
 
     const from = new Date('2026-06-01T00:00:00.000Z');
@@ -48,6 +51,7 @@ describe('CodeService — PR commit messages', () => {
       e: DomainEvent<CodePullRequestPayload>,
     ) => Promise<void>)[] = [];
     const eventBus = {
+      publish: jest.fn(),
       subscribe: jest.fn((_t: string, fn: never) => handlers.push(fn)),
     } as unknown as EventBus;
     const service = new CodeService(prisma, eventBus);
@@ -117,6 +121,7 @@ describe('CodeService — commit parent count', () => {
       (e: DomainEvent<CodeCommitPayload>) => Promise<void>
     >();
     const eventBus = {
+      publish: jest.fn(),
       subscribe: jest.fn((t: string, fn: never) => handlers.set(t, fn)),
     } as unknown as EventBus;
     new CodeService(prisma, eventBus).onModuleInit();
@@ -177,6 +182,7 @@ describe('CodeService — branch tracking', () => {
       (e: DomainEvent<CodeCommitBranchObservedPayload>) => Promise<void>
     >();
     const eventBus = {
+      publish: jest.fn(),
       subscribe: jest.fn((t: string, fn: never) => handlers.set(t, fn)),
     } as unknown as EventBus;
     const service = new CodeService(prisma, eventBus);
@@ -314,6 +320,7 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
       (e: DomainEvent<never>) => Promise<void>
     >();
     const eventBus = {
+      publish: jest.fn(),
       subscribe: jest.fn((t: string, fn: never) => handlers.set(t, fn)),
     } as unknown as EventBus;
     const service = new CodeService(prisma, eventBus);
@@ -495,7 +502,10 @@ describe('CodeService — verification lookups are tenant-scoped', () => {
       pullRequest,
       prReview,
     } as unknown as PrismaService;
-    const eventBus = { subscribe: jest.fn() } as unknown as EventBus;
+    const eventBus = {
+      subscribe: jest.fn(),
+      publish: jest.fn(),
+    } as unknown as EventBus;
     return {
       service: new CodeService(prisma, eventBus),
       commit,
@@ -547,5 +557,112 @@ describe('CodeService — verification lookups are tenant-scoped', () => {
       },
       orderBy: { submittedAt: 'desc' },
     });
+  });
+});
+
+describe('CodeService — post-write notifications', () => {
+  function setup(opts: { failWrite?: boolean } = {}) {
+    const order: string[] = [];
+    const write = jest.fn(() => {
+      order.push('write');
+      return opts.failWrite
+        ? Promise.reject(new Error('connection reset'))
+        : Promise.resolve({});
+    });
+    const prisma = {
+      commit: { upsert: write },
+      pullRequest: { upsert: write },
+      prReview: {
+        createMany: jest.fn(() => {
+          order.push('reviews');
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+    } as unknown as PrismaService;
+    const handlers = new Map<
+      string,
+      (e: DomainEvent<never>) => Promise<void>
+    >();
+    const publish = jest.fn((e: DomainEvent<unknown>) => {
+      order.push(e.type);
+      return Promise.resolve();
+    });
+    const eventBus = {
+      publish,
+      subscribe: jest.fn((t: string, fn: never) => handlers.set(t, fn)),
+    } as unknown as EventBus;
+    new CodeService(prisma, eventBus).onModuleInit();
+    return { handlers, publish, order };
+  }
+
+  const base = {
+    tenantId: 'tenant-a',
+    connectionId: 'conn_1',
+    sourceEventIds: ['evt_1'],
+    occurredAt: new Date('2026-10-14T05:00:00.000Z'),
+  };
+
+  it('announces a commit by natural key only after its upsert resolved', async () => {
+    const { handlers, publish, order } = setup();
+    await handlers.get(EventTypes.CODE_COMMIT_PUSHED)!({
+      ...base,
+      type: EventTypes.CODE_COMMIT_PUSHED,
+      payload: {
+        repoFullName: 'acme/payments',
+        sha: 'abc123',
+        message: 'm',
+        authoredAt: '2026-10-14T05:00:00.000Z',
+      } as never,
+    });
+    expect(order).toEqual(['write', EventTypes.CODE_COMMIT_PERSISTED]);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        sourceEventIds: ['evt_1'],
+        payload: { repoFullName: 'acme/payments', sha: 'abc123' },
+      }),
+    );
+  });
+
+  it('announces a PR only after both the PR row and its reviews were written', async () => {
+    const { handlers, order } = setup();
+    await handlers.get(EventTypes.CODE_PR_MERGED)!({
+      ...base,
+      type: EventTypes.CODE_PR_MERGED,
+      payload: {
+        repoFullName: 'acme/payments',
+        externalNumber: '7',
+        title: 't',
+        branch: 'b',
+        state: 'merged',
+        reviews: [
+          {
+            externalId: 'r1',
+            isBot: false,
+            state: 'approved',
+            submittedAt: '2026-10-14T05:00:00.000Z',
+            hasBody: false,
+          },
+        ],
+      } as never,
+    });
+    expect(order).toEqual(['write', 'reviews', EventTypes.CODE_PR_PERSISTED]);
+  });
+
+  it('announces nothing when the write fails', async () => {
+    const { handlers, publish } = setup({ failWrite: true });
+    await expect(
+      handlers.get(EventTypes.CODE_COMMIT_PUSHED)!({
+        ...base,
+        type: EventTypes.CODE_COMMIT_PUSHED,
+        payload: {
+          repoFullName: 'acme/payments',
+          sha: 'abc123',
+          message: 'm',
+          authoredAt: '2026-10-14T05:00:00.000Z',
+        } as never,
+      }),
+    ).rejects.toThrow('connection reset');
+    expect(publish).not.toHaveBeenCalled();
   });
 });

@@ -19,6 +19,14 @@ export const EventTypes = {
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
   PLANNING_VERSION_UPSERTED: 'planning.version.upserted',
+  // Post-write notifications: published only AFTER the owning context's write
+  // succeeded, carrying the row's natural key and nothing else. Subscribers
+  // re-read Postgres, so a failed write can never reach them. These are what
+  // a transactional outbox would carry later (docs/api/README.md §6.2).
+  CODE_COMMIT_PERSISTED: 'code.commit.persisted',
+  CODE_PR_PERSISTED: 'code.pull_request.persisted',
+  PLANNING_ISSUE_PERSISTED: 'planning.issue.persisted',
+  CORRELATION_LINK_PERSISTED: 'correlation.link.persisted',
 } as const;
 
 export const CODE_PR_EVENT_TYPES: string[] = [

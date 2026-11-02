@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Release, Sprint, Story } from '@prisma/client';
 import {
+  PlanningIssuePersistedPayload,
   PlanningSprintChangeRef,
   PlanningSprintRef,
   PlanningStoryPayload,
@@ -8,6 +9,7 @@ import {
   PlanningVersionPayload,
 } from '../../common/events/contracts';
 import {
+  EventTypes,
   PLANNING_STORY_EVENT_TYPES,
   PLANNING_VERSION_EVENT_TYPES,
 } from '../../common/events/event-types';
@@ -157,6 +159,17 @@ export class PlanningService implements OnModuleInit {
     });
 
     this.logger.debug(`upserted ${fields.type} ${p.externalKey} (${p.status})`);
+
+    // Post-write notification (api/README.md §6.2): reached only once the
+    // upsert above resolved; consumers re-read the row by its key.
+    await this.eventBus.publish<PlanningIssuePersistedPayload>({
+      type: EventTypes.PLANNING_ISSUE_PERSISTED,
+      tenantId: event.tenantId,
+      connectionId: event.connectionId,
+      sourceEventIds: event.sourceEventIds,
+      occurredAt: new Date(),
+      payload: { externalKey: p.externalKey },
+    });
   }
 
   /**

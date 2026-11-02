@@ -268,8 +268,28 @@ A second case no ordering fixes: Jira's floor is `updated >= backfillSince`, so 
 
 **`CorrelationSchedulerService` sweeps every tenant's unresolved orphans on a 30-minute cron**, which closes the race by construction instead of depending on an admin noticing. It is pure in-DB matching (no external calls, so the collector boundary is untouched), idempotent, per-tenant, and one tenant's failure never aborts the sweep for the rest. The manual endpoint remains for on-demand runs.
 
+### 6.2 Post-write notifications (`*.persisted`, added 2026-11-02)
+
+The ingestion events above are delivered to every subscriber **concurrently** (`EventBus.publish` runs handlers with `Promise.all`). A consumer that subscribes to them therefore races the projection that writes the row, and may see an event whose write later fails. Consumers that need a committed row subscribe to a post-write notification instead:
+
+| Event type | Published by | When | Payload (natural key only) |
+|---|---|---|---|
+| `code.commit.persisted` | `CodeService` (BC-4) | after the `code_commit` upsert resolves | `{ repoFullName, sha }` |
+| `code.pull_request.persisted` | `CodeService` (BC-4) | after the `code_pull_request` upsert **and** its `code_pr_review` rows | `{ repoFullName, externalNumber }` |
+| `planning.issue.persisted` | `PlanningService` (BC-3) | after the `planning_story` upsert resolves | `{ externalKey }` |
+| `correlation.link.persisted` | `CorrelationService` (BC-5) | after a `correlation_link` create or re-score | `{ edgeType, fromType, fromId, toType, toId }` |
+
+The contract:
+- **A failed write publishes nothing.** The publish is the statement after the awaited write, so a throw skips it.
+- **The payload is a key, never a copy of the row.** Consumers re-read Postgres, so what they act on is what was committed.
+- **At-least-once and unordered, like the bus itself.** Consumers must be idempotent; the knowledge graph re-reads and replaces.
+- **Not every write announces itself.** The reconcilers (§9 *Data reconcilers*) and identity re-resolution write directly, without an event, so a consumer still needs a periodic full pass. This is why the knowledge graph also rebuilds on a timer ([features/ANALYTICS.md §4](../features/ANALYTICS.md)).
+- **In-process only.** These events reach subscribers in the same process. In production, ingestion runs in `collector`/`worker` pods, so an `api` pod never sees them. A transactional outbox or CDC feed carrying the same payloads is the planned replacement, and consumers would not change ([ADR-0013](../ADR/0013-in-memory-knowledge-graph.md)).
+
+Current consumer: the knowledge-graph updater (BC-10). Contracts: `backend/src/common/events/contracts.ts`.
+
 ### Internal event-type families
-Normalized `event_type`s are grouped by domain context (source-agnostic): `planning.*` (BC-3), `code.*` (BC-4, including `code.copilot.*` for Copilot usage, §3.3), `ci.*` (BC-6), `quality.* / security.*` (BC-7). The same family is produced regardless of which source (GitHub vs GitLab vs ADO) emitted it.
+Normalized `event_type`s are grouped by domain context (source-agnostic): `planning.*` (BC-3), `code.*` (BC-4, including `code.copilot.*` for Copilot usage, §3.3), `correlation.*` (BC-5, post-write only, §6.2), `ci.*` (BC-6), `quality.* / security.*` (BC-7). The same family is produced regardless of which source (GitHub vs GitLab vs ADO) emitted it. `*.persisted` types (§6.2) are internal post-write notifications, not collector output.
 
 ---
 
@@ -440,6 +460,32 @@ The frontend talks to a read-optimized BFF (BC-13), separate from collectors.
 - **Collection progress:** `GET /api/admin/configurations/collection-progress` (admin role, tenant-scoped) returns `{ reconcilers[], caughtUp, estimatedMinutesRemaining, estimateIsBestCase }` — the outstanding backfill backlog per reconciler (`remaining`, `perTick`, `ticksRemaining`) and a best-case time until the last queue drains. Read-only and cheap (one COUNT per reconciler); it starts no work. It lives on the configuration surface rather than on `sync-status` because the backlog is collector state (BC-1) and BC-0's `ConnectionsService` must not depend on the context that already depends on it. Rendered as the Sync Status **Convergence** card (§7.1).
 - **Force a sync:** `POST /api/admin/connections/{id}/sync-now` (admin role) queues one connection for the next sweep ahead of the regular queue and regardless of its interval (§3), returning `{ queued, connectionId, sourceSystem, startsWithinSeconds }`. Tenant-scoped by explicit check — the id arrives in the URL, so without it an admin could queue a sync on another tenant's connection. Rejects a disabled connection rather than silently queueing work that will never run. Audit-logged as `connection.sync_requested`. Surfaced as the per-row **Sync now** button on the Sync Status screen (§7.1).
 - Current catalog endpoints: `GET /api/catalog/projects?search=` and `GET /api/catalog/repos?search=&projects=&page=`; repo catalogs can be cross-filtered through the delivery graph.
+- **Knowledge graph** (BC-10, added 2026-11-02, **admin only**, [ADR-0013](../ADR/0013-in-memory-knowledge-graph.md), [features/ANALYTICS.md §5](../features/ANALYTICS.md)). Served from the in-memory graph rather than SQL.
+  - **While the caller's tenant graph is not built,** every route except `status` answers `503` in the standard error envelope. `error` starts with `Knowledge graph initializing`, `Knowledge graph failed` or `Knowledge graph disabled`; `status` has the detail.
+  - **Every named-person response carries `rule` and `freshness`.**
+    - `rule` is the ADR-0013 rule text.
+    - `freshness` is `{ builtAt, windowStart, windowDays, lastIncrementalAt, stale, rebuildMinutes }`.
+  - **`:id` for a repository** is its `owner/name` (URL-encoded: `acme%2Fbilling`, any case), its URL, or a bare name that exactly one loaded repository carries. A bare name shared by several repositories answers `409`, with the candidates listed in `error`; an unknown one, `404`.
+  - **`limit`** defaults to 25 and must be an integer from 1 to 200.
+  - The routes:
+    - **`GET /api/knowledge-graph/status`** — `{ status, enabled, windowDays, rebuildMinutes, tenant: { state, builtAt, windowStart, lastIncrementalAt, stale, error, totalNodes, totalEdges, nodesByType, edgesByType } }`, for the caller's tenant only. No names, so not audited.
+    - **`GET /api/knowledge-graph/repositories/search?q=&limit=`** — `{ items: { id, fullName, url, commitCount, pullRequestCount }[], count, freshness }`, matching on `owner/name` or URL, **alphabetical**. `400` on an empty `q`. No names, so not audited.
+    - **`GET /api/knowledge-graph/repositories/:id/developers`** — `{ repository, developers: { developerId, displayName, commitCount, pullRequestCount, reviewCount, lastContributionAt }[], totals, unattributed, withheld: { commits, pullRequests, reviews, identities }, rule, freshness }`.
+      - `developers` is **alphabetical by `displayName`**, and the ordering is part of the contract: no ordering by any count is offered.
+      - `totals` covers all work.
+      - `unattributed` is work whose author resolves to no developer.
+      - `withheld` is work by bots, anonymized accounts and admin-excluded identities, which are counted but never named.
+      - Audited as `analytics.knowledge_graph.repository_developers.view`.
+    - **`GET /api/knowledge-graph/developers/:id/repositories?limit=`** — `:id` is a canonical developer id (as `/api/catalog/developers` returns).
+      - Returns `{ developer, repositories: { id, fullName, url, commitCount, pullRequestsCreated, pullRequestsReviewed, reviewCount, lastContributionAt, recentCommits: { sha, authoredAt }[], jiraIssues[] }[], assignedIssues[], rule, freshness }`.
+      - `repositories` is alphabetical, and `recentCommits` is newest first, capped at `limit`.
+      - A withheld identity, or one with no activity in the window, answers `404`.
+      - Audited as `analytics.knowledge_graph.developer_repositories.view`.
+    - **`GET /api/knowledge-graph/repositories/:id/activities?limit=`** — `{ repository, commits, pullRequests, reviews, jiraIssues, rule, freshness }`.
+      - Each of the four is a page, `{ total, items[] }`, newest first; `jiraIssues` is ordered by key.
+      - Each commit, PR and review item carries `attribution: 'person' | 'withheld' | 'unattributed'`, and `author` only for `person`.
+      - Jira issues carry their linking PRs with the correlation `confidence` and `method`.
+      - Audited as `analytics.knowledge_graph.repository_activities.view`.
 - Writes are limited to user/governance actions: recommendation decisions, saved views, config, connection management, approving agent actions.
 - Detailed BFF endpoints are specified per-module under `docs/features/` as they are built.
 

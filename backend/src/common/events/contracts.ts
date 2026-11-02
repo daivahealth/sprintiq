@@ -327,3 +327,33 @@ export interface CodeCopilotSeatsPayload {
   observedAt: string;
   seats: CodeCopilotSeatRef[];
 }
+
+/**
+ * Post-write notifications (`*.persisted`, docs/api/README.md §6.2). Each
+ * carries only the natural key of a row its owning context has just written
+ * successfully; a consumer re-reads that row rather than trusting a payload,
+ * so what it sees is what Postgres committed.
+ */
+export interface CodeCommitPersistedPayload {
+  repoFullName: string;
+  sha: string;
+}
+
+/** The PR row and its review rows were written. */
+export interface CodePullRequestPersistedPayload {
+  repoFullName: string;
+  externalNumber: string;
+}
+
+export interface PlanningIssuePersistedPayload {
+  externalKey: string;
+}
+
+/** A `correlation_link` row was created or re-scored. */
+export interface CorrelationLinkPersistedPayload {
+  edgeType: string;
+  fromType: string;
+  fromId: string;
+  toType: string;
+  toId: string;
+}

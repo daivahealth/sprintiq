@@ -1,7 +1,10 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { CodePullRequestPayload } from '../common/events/contracts';
-import { CODE_PR_EVENT_TYPES } from '../common/events/event-types';
+import {
+  CodePullRequestPayload,
+  CorrelationLinkPersistedPayload,
+} from '../common/events/contracts';
+import { CODE_PR_EVENT_TYPES, EventTypes } from '../common/events/event-types';
 import { DomainEvent } from '../common/events/domain-event';
 import { EventBus } from '../common/events/event-bus';
 import { newId } from '../common/id';
@@ -357,10 +360,25 @@ export class CorrelationService implements OnModuleInit {
         where: { id: existing.id },
         data: { confidence: link.confidence, evidence: link.evidence },
       });
-      return;
+    } else {
+      await this.prisma.correlationLink.create({
+        data: { id: newId(), tenantId, ...link },
+      });
     }
-    await this.prisma.correlationLink.create({
-      data: { id: newId(), tenantId, ...link },
+    // Post-write notification (api/README.md §6.2), only once the write above
+    // resolved; consumers re-read the link's endpoints by key.
+    await this.eventBus.publish<CorrelationLinkPersistedPayload>({
+      type: EventTypes.CORRELATION_LINK_PERSISTED,
+      tenantId,
+      sourceEventIds: link.sourceEventId ? [link.sourceEventId] : undefined,
+      occurredAt: new Date(),
+      payload: {
+        edgeType: link.edgeType,
+        fromType: link.fromType,
+        fromId: link.fromId,
+        toType: link.toType,
+        toId: link.toId,
+      },
     });
   }
 
