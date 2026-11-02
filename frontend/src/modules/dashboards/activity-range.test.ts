@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { istTodayKey } from '../../lib/utils';
 import {
   DEFAULT_RANGE,
+  customSeed,
   formatDateKey,
   isValidCustom,
+  normalizeRange,
   parseRange,
   presetDateKeys,
   rangeDays,
@@ -16,6 +18,7 @@ import {
 
 const CUSTOM = { kind: 'custom', from: '2026-04-01', to: '2026-06-30' } as const;
 const WEEK = { kind: 'preset', window: 'week' } as const;
+const TODAY = { kind: 'preset', window: 'day' } as const;
 
 describe('rangeParams', () => {
   it('sends a preset exactly as the boards always have', () => {
@@ -36,6 +39,15 @@ describe('parseRange', () => {
 
   it('round-trips a preset', () => {
     expect(parseRange(rangeParams(WEEK))).toEqual(WEEK);
+  });
+
+  it('opens a shared today-to-today link as the Today window', () => {
+    const today = istTodayKey();
+    expect(
+      parseRange(
+        new URLSearchParams(`window=custom&from=${today}&to=${today}`),
+      ),
+    ).toEqual(TODAY);
   });
 
   it('falls back to the default rather than rendering nothing', () => {
@@ -72,10 +84,42 @@ describe('rangeDays', () => {
 });
 
 describe('presetDateKeys', () => {
-  it('seeds the custom fields with the preset you were already reading', () => {
-    const seeded = presetDateKeys('week');
-    expect(seeded.to).toBe(istTodayKey());
-    expect(rangeDays({ kind: 'custom', ...seeded })).toBe(7);
+  it('gives the date pair a preset resolves to', () => {
+    const keys = presetDateKeys('week');
+    expect(keys.to).toBe(istTodayKey());
+    expect(rangeDays({ kind: 'custom', ...keys })).toBe(7);
+  });
+});
+
+describe('customSeed', () => {
+  it('opens the custom fields on today, never a future day', () => {
+    expect(customSeed()).toEqual({ from: istTodayKey(), to: istTodayKey() });
+  });
+
+  it('is the Today window until the reader moves a date', () => {
+    expect(normalizeRange({ kind: 'custom', ...customSeed() })).toEqual(TODAY);
+  });
+});
+
+describe('normalizeRange', () => {
+  it('names today-to-today as the Today preset', () => {
+    // The backend resolves both to IST midnight → now; one range, one name.
+    expect(
+      normalizeRange({ kind: 'custom', from: istTodayKey(), to: istTodayKey() }),
+    ).toEqual(TODAY);
+  });
+
+  it('leaves every other range as it was picked', () => {
+    const pastDay = { kind: 'custom', from: '2026-06-30', to: '2026-06-30' } as const;
+    const endingToday = {
+      kind: 'custom',
+      from: presetDateKeys('week').from,
+      to: istTodayKey(),
+    } as const;
+    expect(normalizeRange(pastDay)).toEqual(pastDay);
+    expect(normalizeRange(endingToday)).toEqual(endingToday);
+    expect(normalizeRange(CUSTOM)).toEqual(CUSTOM);
+    expect(normalizeRange(WEEK)).toEqual(WEEK);
   });
 });
 

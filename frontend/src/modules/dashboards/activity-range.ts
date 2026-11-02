@@ -52,6 +52,26 @@ export function isValidCustom(from: string, to: string): boolean {
 }
 
 /**
+ * One range, one name: a custom range of exactly today is the Today preset.
+ *
+ * The backend already resolves the two to the same instants — IST midnight to
+ * now — so their numbers were always equal. What differed was everything
+ * around them: the toggle said Custom, the heading said "2 Nov 2026 – 2 Nov
+ * 2026", the empty state said "between" instead of "today". A reader picking
+ * today as a one-day range is asking for the Today window, and should be
+ * shown it, under its own name. Any other range is left exactly as picked.
+ */
+export function normalizeRange(range: ActivityRange): ActivityRange {
+  if (range.kind === 'custom') {
+    const today = istTodayKey();
+    if (range.from === today && range.to === today) {
+      return { kind: 'preset', window: 'day' };
+    }
+  }
+  return range;
+}
+
+/**
  * The range a URL is asking for.
  *
  * Anything unreadable falls back to the default rather than throwing: a
@@ -64,7 +84,7 @@ export function parseRange(params: URLSearchParams): ActivityRange {
     const from = params.get('from') ?? '';
     const to = params.get('to') ?? '';
     return isValidCustom(from, to)
-      ? { kind: 'custom', from, to }
+      ? normalizeRange({ kind: 'custom', from, to })
       : DEFAULT_RANGE;
   }
   return window && window in WINDOW_DAYS
@@ -150,15 +170,24 @@ export function rangeLabel(range: ActivityRange): string {
     : `${formatDateKey(range.from)} – ${formatDateKey(range.to)}`;
 }
 
-/**
- * The date pair equivalent to a preset — what the custom fields are seeded
- * with, so choosing Custom never blanks the board: you start on the range you
- * were already reading.
- */
+/** The date pair equivalent to a preset, inclusive at both ends. */
 export function presetDateKeys(window: ActivityWindow): {
   from: string;
   to: string;
 } {
   const to = istTodayKey();
   return { from: istDayKeyOffset(to, -(WINDOW_DAYS[window] - 1)), to };
+}
+
+/**
+ * What the custom fields open on: today, at both ends, in IST.
+ *
+ * They used to copy the preset being read (7 days → a From six days back),
+ * which never started anywhere a reader expected. Today → today is the Today
+ * window (`normalizeRange`), so choosing Custom never blanks the board — it
+ * shows Today until a date is moved.
+ */
+export function customSeed(): { from: string; to: string } {
+  const today = istTodayKey();
+  return { from: today, to: today };
 }

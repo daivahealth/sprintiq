@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Field, Input, SegmentedControl } from '../../../components/ui';
 import { istTodayKey } from '../../../lib/utils';
 import {
+  customSeed,
   isValidCustom,
-  presetDateKeys,
+  normalizeRange,
   type ActivityRange,
 } from '../activity-range';
 import { WINDOWS } from '../activity-window';
@@ -17,6 +18,16 @@ import type { ActivityWindow } from '../useInsights';
  * focus trap. The date fields appear only when Custom is selected — four tabs
  * carrying two permanently-empty inputs would be paying for the rare case on
  * every visit.
+ *
+ * Whether the fields are showing is this component's own state, not read off
+ * the applied range: today → today is applied as the Today preset
+ * (`normalizeRange`), and the fields must stay open while it is, or picking
+ * today would snatch away the inputs you just used. The segments follow the
+ * applied range, so they say Today whenever Today's numbers are on screen.
+ *
+ * The dates are IST calendar days, and the labels say so: the browser's own
+ * picker marks "today" in the machine's timezone, which west of India can be
+ * a day behind the IST date the board actually reads.
  */
 export function RangeToggle({
   value,
@@ -26,25 +37,23 @@ export function RangeToggle({
   onChange: (range: ActivityRange) => void;
 }) {
   const today = istTodayKey();
-  // Seeded from the preset you were reading, so choosing Custom never blanks
-  // the board: you land on the range you were already looking at.
+  const [open, setOpen] = useState(value.kind === 'custom');
   const [draft, setDraft] = useState(() =>
-    value.kind === 'custom'
-      ? { from: value.from, to: value.to }
-      : presetDateKeys(value.window),
+    value.kind === 'custom' ? { from: value.from, to: value.to } : customSeed(),
   );
+  const showFields = open || value.kind === 'custom';
 
   const select = (key: string) => {
     if (key !== 'custom') {
+      setOpen(false);
       onChange({ kind: 'preset', window: key as ActivityWindow });
       return;
     }
     const seeded =
-      value.kind === 'custom'
-        ? { from: value.from, to: value.to }
-        : presetDateKeys(value.window);
+      value.kind === 'custom' ? { from: value.from, to: value.to } : customSeed();
     setDraft(seeded);
-    onChange({ kind: 'custom', ...seeded });
+    setOpen(true);
+    onChange(normalizeRange({ kind: 'custom', ...seeded }));
   };
 
   const edit = (patch: { from?: string; to?: string }) => {
@@ -54,12 +63,11 @@ export function RangeToggle({
     // the last range they actually fetched — whose interval their own headings
     // still state, so nothing on screen is ever mislabelled.
     if (isValidCustom(next.from, next.to)) {
-      onChange({ kind: 'custom', ...next });
+      onChange(normalizeRange({ kind: 'custom', ...next }));
     }
   };
 
-  const invalid =
-    value.kind === 'custom' && !isValidCustom(draft.from, draft.to);
+  const invalid = showFields && !isValidCustom(draft.from, draft.to);
 
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -73,9 +81,9 @@ export function RangeToggle({
         ]}
       />
 
-      {value.kind === 'custom' && (
+      {showFields && (
         <>
-          <Field label="From">
+          <Field label="From (IST)">
             <Input
               type="date"
               className="w-40"
@@ -84,7 +92,7 @@ export function RangeToggle({
               onChange={(e) => edit({ from: e.target.value })}
             />
           </Field>
-          <Field label="To">
+          <Field label="To (IST)">
             <Input
               type="date"
               className="w-40"
