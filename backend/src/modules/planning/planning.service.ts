@@ -650,6 +650,28 @@ export class PlanningService implements OnModuleInit {
     });
   }
 
+  /** Stories by key, tenant-scoped — keys that match nothing are simply absent. */
+  findByKeys(
+    tenantId: string,
+    externalKeys: string[],
+  ): Promise<
+    Pick<Story, 'externalKey' | 'projectKey' | 'type' | 'status' | 'title'>[]
+  > {
+    if (externalKeys.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.prisma.story.findMany({
+      where: { tenantId, externalKey: { in: externalKeys } },
+      select: {
+        externalKey: true,
+        projectKey: true,
+        type: true,
+        status: true,
+        title: true,
+      },
+    });
+  }
+
   /** Distinct project keys known to this tenant (catalog for pickers/portfolio). */
   async listProjectKeys(tenantId: string, search?: string): Promise<string[]> {
     const rows = await this.prisma.story.findMany({

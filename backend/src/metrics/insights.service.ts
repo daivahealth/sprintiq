@@ -15,6 +15,12 @@ import {
   WorkItemFilters,
 } from '../modules/planning/planning.service';
 import { developerBranches, type DeveloperBranch } from './developer-branches';
+import {
+  candidateTicketKeys,
+  developerTickets,
+  ticketKeysByCommit,
+  type DeveloperTicket,
+} from './developer-tickets';
 import { isMergeCommit, partitionMerges } from './merge-commits';
 import { distinctCommitsBySha } from './commit-dedupe';
 
@@ -453,7 +459,22 @@ export interface DeveloperActivityView {
     sharedCommitsCollapsed: number;
   };
   identity: DeveloperIdentityNote;
-  activeProjects: string[]; // via repo→project graph mapping
+  /**
+   * Projects of the tickets in `tickets` (all of them, beyond the cap) — never
+   * of the repos committed to, which a shared repo would widen to every
+   * project with a PR in it.
+   */
+  activeProjects: string[];
+  /**
+   * Known Jira items this person's authored commits in the window reference,
+   * by a key in the commit message or in a branch the commit was seen on.
+   * Most recent commit first, capped at 50.
+   */
+  tickets: DeveloperTicket[];
+  /** All such tickets, beyond the cap on `tickets`. */
+  ticketsTotal: number;
+  /** Authored commits in the window that reference no known ticket. */
+  commitsWithoutTicket: number;
   byRepo: {
     repo: string;
     commits: number;
@@ -1612,13 +1633,18 @@ export class InsightsService {
       byDay.set(day, d);
     }
 
-    const repoToProjects = await this.repoToProjects(tenantId);
-    const activeProjects = new Set<string>();
-    for (const repo of byRepo.keys()) {
-      for (const project of repoToProjects.get(repo) ?? []) {
-        activeProjects.add(project);
-      }
-    }
+    // Projects and tickets both come from the commits themselves: a key in the
+    // message or the branch, resolved to a story Jira knows. Mapping repos to
+    // projects instead credited a shared repo's every project to everyone who
+    // committed to it.
+    const keysByCommit = ticketKeysByCommit(authored, links);
+    const candidateKeys = candidateTicketKeys(keysByCommit);
+    const stories =
+      candidateKeys.length > 0
+        ? await this.planning.findByKeys(tenantId, candidateKeys)
+        : [];
+    const { tickets, ticketsTotal, commitsWithoutTicket, projects } =
+      developerTickets(authored, keysByCommit, stories);
 
     return {
       developer,
@@ -1645,7 +1671,10 @@ export class InsightsService {
         recoveredEmails: aliases.emails,
         inferred: aliases.emails.length > 0,
       },
-      activeProjects: [...activeProjects].sort(),
+      activeProjects: projects,
+      tickets,
+      ticketsTotal,
+      commitsWithoutTicket,
       byRepo: [...byRepo.entries()]
         .map(([repo, r]) => ({
           repo,

@@ -5,18 +5,16 @@ import {
   Card,
   ProvenanceNote,
   SegmentedControl,
-  TableBodyRow,
-  TableHeadRow,
 } from '../../../components/ui';
 import { SearchSelect } from '../../../components/search-select';
 import { useAuthStore } from '../../../lib/stores/auth-store';
 import { timeAgo } from '../../../lib/utils';
 import { CommitChart, type DailyMetric } from '../CommitChart';
 import { useDeveloperActivity, useDeveloperCatalog } from '../useInsights';
-import { BarList, ErrorCard, LoadingCard, Stat, TypeBadge } from '../widgets';
+import { BarList, ErrorCard, LoadingCard, Stat } from '../widgets';
 import { mergeExclusionNote } from '../merge-commits';
 import { BranchesSection } from './BranchesSection';
-import { CurrentLensNote } from './CurrentLensNote';
+import { TICKETS_SECTION_ID, TicketsSection } from './TicketsSection';
 import { VerifyActivityCard } from './VerifyActivityCard';
 import { rangeDays, rangeEndKey, useSectionRange } from './window';
 
@@ -55,6 +53,28 @@ export function DeveloperPage() {
   const [chartMetric, setChartMetric] = useState<DailyMetric>('loc');
   const isAdmin =
     useAuthStore((s) => s.user?.roles.includes('admin')) ?? false;
+  // The header's project badge narrows the ticket table. Remembered with the
+  // selection it was made on, so it never carries over to another person or
+  // range where that project may mean nothing.
+  const selection = `${developer} ${JSON.stringify(range)}`;
+  const [projectFilter, setProjectFilter] = useState<{
+    selection: string;
+    project: string;
+  } | null>(null);
+  const project =
+    projectFilter?.selection === selection ? projectFilter.project : null;
+  const showProject = (p: string) => {
+    const next = project === p ? null : p;
+    setProjectFilter(next ? { selection, project: next } : null);
+    if (next) {
+      document.getElementById(TICKETS_SECTION_ID)?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          ? 'auto'
+          : 'smooth',
+        block: 'start',
+      });
+    }
+  };
 
   const setDeveloper = (login: string | null) => {
     const next = new URLSearchParams(params);
@@ -121,11 +141,32 @@ export function DeveloperPage() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="font-semibold text-fg">{d.developer}</h3>
               <span className="space-x-1">
-                {d.activeProjects.map((p) => (
-                  <Badge key={p} tone="good">
-                    {p}
-                  </Badge>
-                ))}
+                {/* A badge opens that project's tickets below. Plain text on an
+                    API that predates the ticket table: nothing to open. */}
+                {d.activeProjects.map((p) =>
+                  d.tickets === undefined ? (
+                    <Badge key={p} tone="good">
+                      {p}
+                    </Badge>
+                  ) : (
+                    <button
+                      key={p}
+                      type="button"
+                      aria-pressed={project === p}
+                      title={
+                        project === p
+                          ? 'Show tickets from every project'
+                          : `Show ${p} tickets this developer committed against`
+                      }
+                      onClick={() => showProject(p)}
+                      className="rounded-sm hover:opacity-80"
+                    >
+                      <Badge tone={project && project !== p ? 'neutral' : 'good'}>
+                        {p}
+                      </Badge>
+                    </button>
+                  ),
+                )}
                 {d.activeProjects.length === 0 && (
                   <Badge tone="warn">No linked projects</Badge>
                 )}
@@ -240,8 +281,16 @@ export function DeveloperPage() {
             />
           )}
 
-          <CurrentLensNote range={range} lens="Assigned Jira work" />
-          <AssignedWork view={d} />
+          {/* Keyed like the verify card: opened rows belong to the selection. */}
+          <TicketsSection
+            key={selection}
+            tickets={d.tickets}
+            ticketsTotal={d.ticketsTotal}
+            commitsWithoutTicket={d.commitsWithoutTicket}
+            commits={d.totals.commits}
+            project={project}
+            onClearProject={() => setProjectFilter(null)}
+          />
 
           <Card className="space-y-3">
             <h4 className="text-sm font-medium text-fg-muted">
@@ -313,111 +362,5 @@ export function DeveloperPage() {
         </>
       )}
     </div>
-  );
-}
-
-/**
- * The Jira work assigned to this person — the other half of the planning gap.
- *
- * `assignment === null` is a distinct rendering from an empty list, and the
- * distinction is the whole point: null means the assignee bridge never matched
- * this developer, so we cannot see their tickets. Drawing that as "no assigned
- * work" would assert a finding out of a data gap.
- */
-function AssignedWork({
-  view,
-}: {
-  view: {
-    assignment?: {
-      openItems: {
-        key: string;
-        projectKey: string;
-        type: string;
-        status: string;
-        title: string;
-        inSprint: boolean;
-      }[];
-      jiraRefs: string[];
-    } | null;
-  };
-}) {
-  // `undefined` = this API predates the section; render nothing rather than
-  // claim anything (frontend/backend skew, §4.2).
-  if (view.assignment === undefined) {
-    return null;
-  }
-
-  if (view.assignment === null) {
-    return (
-      <Card className="space-y-2">
-        <h4 className="text-sm font-medium text-fg-muted">Assigned work</h4>
-        <p className="rounded-md border border-border bg-subtle p-2.5 text-sm text-fg-muted">
-          No Jira assignee could be matched to this developer, so their assigned
-          work cannot be shown. This is a gap in identity matching — not a
-          statement that they have nothing assigned.
-        </p>
-      </Card>
-    );
-  }
-
-  const { openItems } = view.assignment;
-  return (
-    <Card className="space-y-3">
-      <div>
-        <h4 className="text-sm font-medium text-fg-muted">
-          Assigned work · {openItems.length} open
-        </h4>
-        <p className="text-xs text-fg-subtle">
-          Open Jira items assigned to this developer right now — not windowed,
-          because an old ticket still assigned is still their work
-        </p>
-      </div>
-
-      {openItems.length === 0 ? (
-        <p className="rounded-md border border-warning-border bg-warning-bg p-2.5 text-sm text-warning-fg">
-          No open Jira item is assigned to this developer. If they have been
-          committing, that work is not represented in the plan.
-        </p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <TableHeadRow>
-                <th className="py-2 pr-4 font-medium">Item</th>
-                <th className="py-2 pr-4 font-medium">Type</th>
-                <th className="py-2 pr-4 font-medium">Status</th>
-                <th className="py-2 font-medium">Title</th>
-              </TableHeadRow>
-            </thead>
-            <tbody>
-              {openItems.map((item) => (
-                <TableBodyRow key={item.key}>
-                  <td className="py-2.5 pr-4 font-medium text-fg-secondary">
-                    {item.key}
-                    {!item.inSprint && (
-                      <span
-                        className="ml-1.5 text-xs text-fg-faint"
-                        title="Assigned but not committed to a sprint"
-                      >
-                        backlog
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-2.5 pr-4">
-                    <TypeBadge type={item.type} />
-                  </td>
-                  <td className="py-2.5 pr-4">
-                    <Badge tone="neutral">{item.status}</Badge>
-                  </td>
-                  <td className="max-w-md truncate py-2.5 text-fg-secondary" title={item.title}>
-                    {item.title}
-                  </td>
-                </TableBodyRow>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Card>
   );
 }
