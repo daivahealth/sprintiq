@@ -763,7 +763,7 @@ export class InsightsController {
       );
     }
     // Fetched alongside rather than folded into `developerActivity`: reviews
-    // given and assigned Jira work are BC-5/BC-6 facts about the person, not
+    // given and Jira bridge coverage are BC-5/BC-6 facts about the person, not
     // commit-history facts, and keeping them separate leaves the older read
     // model untouched for every other caller.
     const [view, context] = await Promise.all([

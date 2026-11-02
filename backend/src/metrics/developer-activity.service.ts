@@ -445,29 +445,9 @@ export function monthCollected(
   return istMonthStart(month).getTime() >= collectedBackTo.getTime();
 }
 
-export interface AssignedItem {
-  key: string;
-  projectKey: string;
-  type: string;
-  status: string;
-  title: string;
-  /** Committed to a sprint, as opposed to sitting in the backlog assigned. */
-  inSprint: boolean;
-}
-
 export interface DeveloperContextView {
   /** Non-bot reviews this person submitted in the window. */
   prsReviewed: number;
-  /**
-   * Null when the Jira bridge never matched this developer. Rendering that as
-   * an empty item list would assert they have no assigned work, which is a
-   * different claim from "we could not tell".
-   */
-  assignment: {
-    openItems: AssignedItem[];
-    /** The Jira account references the items were gathered under. */
-    jiraRefs: string[];
-  } | null;
   assigneeCoverage: JiraAssigneeCoverage;
 }
 
@@ -1370,12 +1350,12 @@ export class DeveloperActivityService {
 
   /**
    * The person-page facts `InsightsService.developerActivity` doesn't carry:
-   * reviews they gave, and the Jira work assigned to them.
+   * reviews they gave, and how far the Jira assignee bridge reaches them.
    *
    * Additive and separately fetched so the existing profile read is untouched.
-   * `assignment: null` means the bridge never matched this person — the page
-   * must say so rather than render an empty list as "nothing assigned"
-   * (DASHBOARDS.md §4.4.3).
+   * The page's ticket list is not here: since 2026-11-02 it is the tickets
+   * their commits reference (`developerActivity.tickets`), not the ones
+   * assigned to them (DASHBOARDS.md §4.4.3).
    */
   async developerContext(
     developer: string,
@@ -1388,59 +1368,17 @@ export class DeveloperActivityService {
       this.identities.jiraAssigneeIndex(tenantId),
     ]);
 
-    const refs = assignees.byDeveloper.get(developer);
-    const [reviewsGiven, assignedItems] = await Promise.all([
-      this.prisma.prReview.count({
-        where: {
-          tenantId,
-          isBot: false,
-          reviewerLogin: { in: aliases.logins },
-          submittedAt: { gte: from, lte: to },
-        },
-      }),
-      refs
-        ? this.prisma.story.findMany({
-            where: {
-              tenantId,
-              NOT: { statusCategory: 'done' },
-              OR: [
-                ...(refs.logins.length > 0
-                  ? [{ assigneeLogin: { in: refs.logins } }]
-                  : []),
-                ...(refs.names.length > 0
-                  ? [{ assigneeName: { in: refs.names } }]
-                  : []),
-              ],
-            },
-            select: {
-              externalKey: true,
-              projectKey: true,
-              type: true,
-              status: true,
-              title: true,
-              sprintExternalId: true,
-            },
-            orderBy: { externalKey: 'asc' },
-            take: 50,
-          })
-        : Promise.resolve([]),
-    ]);
+    const reviewsGiven = await this.prisma.prReview.count({
+      where: {
+        tenantId,
+        isBot: false,
+        reviewerLogin: { in: aliases.logins },
+        submittedAt: { gte: from, lte: to },
+      },
+    });
 
     return {
       prsReviewed: reviewsGiven,
-      assignment: refs
-        ? {
-            openItems: assignedItems.map((item) => ({
-              key: item.externalKey,
-              projectKey: item.projectKey,
-              type: item.type,
-              status: item.status,
-              title: item.title,
-              inSprint: Boolean(item.sprintExternalId),
-            })),
-            jiraRefs: [...refs.logins, ...refs.names],
-          }
-        : null,
       // No exclusion set passed, unlike the roster-wide calls above: this is a
       // drill-down on ONE developer the caller has already named, so the
       // coverage figure is about them. Filtering them out of their own page

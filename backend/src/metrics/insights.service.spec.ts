@@ -83,6 +83,7 @@ describe('InsightsService committer-date windowing', () => {
     } as unknown as jest.Mocked<CodeService>;
     planning = {
       listProjectKeys: jest.fn().mockResolvedValue([]),
+      findByKeys: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<PlanningService>;
     correlation = {
       reposLinkedToProjects: jest.fn().mockResolvedValue([]),
@@ -163,6 +164,95 @@ describe('InsightsService committer-date windowing', () => {
       locChanged: 4,
       commitsWithoutLineChanges: 1,
     });
+  });
+
+  it('developerActivity takes projects from the tickets its commits reference, not from every project sharing the repo', async () => {
+    // The shared-repo case: acme/payments carries PRs for ACT, AS2 and OTHER,
+    // but this developer's commits only ever name ACT tickets.
+    planning.listProjectKeys.mockResolvedValue([
+      'ACT',
+      'AS2',
+      'OTHER',
+    ] as never);
+    correlation.reposLinkedToProjects.mockResolvedValue([
+      'acme/payments',
+    ] as never);
+    code.listCommits.mockResolvedValue([
+      commit({ message: 'ACT-1 fix capture' }),
+    ] as never);
+    planning.findByKeys.mockResolvedValue([
+      {
+        externalKey: 'ACT-1',
+        projectKey: 'ACT',
+        type: 'Story',
+        status: 'In Progress',
+        title: 'Capture',
+      },
+    ] as never);
+
+    const view = await service.developerActivity(
+      'jdoe',
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.activeProjects).toEqual(['ACT']);
+    expect(view.tickets.map((t) => t.key)).toEqual(['ACT-1']);
+    expect(planning.findByKeys).toHaveBeenCalledWith('tenant-a', ['ACT-1']);
+  });
+
+  it('developerActivity links tickets through branch names and never through merge commits', async () => {
+    code.listCommits.mockResolvedValue([
+      commit({ sha: 'aaa', message: 'wip' }),
+      commit({
+        sha: 'mmm',
+        message: "Merge branch 'feature/OTHER-9' into develop",
+        parentCount: 2,
+      }),
+    ] as never);
+    (code.branchesForCommits as jest.Mock).mockResolvedValue([
+      { repoFullName: 'acme/payments', branch: 'feature/AS2-7', sha: 'aaa' },
+    ]);
+    planning.findByKeys.mockImplementation((async (
+      _tenant: string,
+      keys: string[],
+    ) =>
+      keys.map((k) => ({
+        externalKey: k,
+        projectKey: k.split('-')[0],
+        type: 'Story',
+        status: 'Done',
+        title: k,
+      }))) as never);
+
+    const view = await service.developerActivity(
+      'jdoe',
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.tickets).toEqual([
+      expect.objectContaining({
+        key: 'AS2-7',
+        commits: 1,
+        linkedVia: ['branch'],
+      }),
+    ]);
+    expect(view.activeProjects).toEqual(['AS2']);
+    expect(view.ticketsTotal).toBe(1);
+    expect(view.commitsWithoutTicket).toBe(0);
+  });
+
+  it('developerActivity skips the story lookup when no commit names a key', async () => {
+    code.listCommits.mockResolvedValue([commit()] as never);
+
+    const view = await service.developerActivity(
+      'jdoe',
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(planning.findByKeys).not.toHaveBeenCalled();
+    expect(view.tickets).toEqual([]);
+    expect(view.activeProjects).toEqual([]);
+    expect(view.commitsWithoutTicket).toBe(1);
   });
 
   it('projectActivity orders projects by changed LOC, then commits, and discloses commits without line changes', async () => {

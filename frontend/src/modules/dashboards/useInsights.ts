@@ -10,6 +10,7 @@ import { rangeParams, type ActivityRange } from './activity-range';
 import type { DeveloperRoleValue } from './developer-role';
 import type { TrendMonth } from './monthly-trend';
 import type { DeveloperBranchRow } from './developer-activity/BranchesSection';
+import type { DeveloperTicketRow } from './developer-activity/TicketsSection';
 import type { AuditRouteFreshness } from './audit-lag';
 
 // ---- Response types (mirror backend insights.service.ts) -------------------
@@ -315,7 +316,18 @@ export interface DeveloperActivityView {
     recoveredEmails: string[];
     inferred: boolean;
   };
+  /** Projects of the tickets this person's commits reference — not of the repos they touched. */
   activeProjects: string[];
+  /**
+   * Known Jira items their commits in the window reference, by a key in the
+   * commit message or the branch name; most recent commit first, capped.
+   * Optional: an older API omits it — unknown, never "no tickets".
+   */
+  tickets?: DeveloperTicketRow[];
+  /** All such tickets, beyond the cap on `tickets`. */
+  ticketsTotal?: number;
+  /** Authored commits in the window that reference no known ticket. */
+  commitsWithoutTicket?: number;
   byRepo: {
     repo: string;
     commits: number;
@@ -343,22 +355,6 @@ export interface DeveloperActivityView {
    * serving against an API deployed before the section existed.
    */
   prsReviewed?: number;
-  /**
-   * Their assigned Jira work. `null` means the assignee bridge never matched
-   * this person — which the page must SAY, because an empty list rendered
-   * without that caveat asserts they have nothing assigned.
-   */
-  assignment?: {
-    openItems: {
-      key: string;
-      projectKey: string;
-      type: string;
-      status: string;
-      title: string;
-      inSprint: boolean;
-    }[];
-    jiraRefs: string[];
-  } | null;
   assigneeCoverage?: JiraAssigneeCoverage;
 }
 
