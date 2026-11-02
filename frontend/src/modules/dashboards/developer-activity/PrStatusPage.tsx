@@ -5,10 +5,12 @@ import {
   TableBodyRow,
   TableHeadRow,
 } from '../../../components/ui';
-import { timeAgo } from '../../../lib/utils';
-import { usePrStatus } from '../useInsights';
+import { cn, timeAgo } from '../../../lib/utils';
+import { usePrStatus, type PrStatusView } from '../useInsights';
 import { ErrorCard, LoadingCard, Stat } from '../widgets';
 import { CurrentLensNote } from './CurrentLensNote';
+import { developerHref } from './developer-href';
+import { formatWait } from './wait-format';
 import { useSectionRange } from './window';
 
 /**
@@ -19,16 +21,22 @@ import { useSectionRange } from './window';
  * Efficiency's, computed over a merged-only denominator, and restating them
  * here over a different denominator would put two numbers for one concept on
  * two screens and invite the reader to reconcile a gap that is by design.
+ *
+ * "Reviewed" means reviewed by a person other than the author. A bot's review,
+ * or the author replying in their own thread, leaves a PR in the queue.
+ *
+ * Every figure follows the range (2026-10-30). The queue is the PRs OPENED in
+ * the range that are still open today; open PRs from outside it are counted
+ * beside the tiles, so widening the range is the way to an old change, never
+ * a guess that it might be missing.
  */
 
-/** "4d 2h" — a wait is read in days once it passes one. */
-function formatWait(hours: number): string {
-  if (hours < 24) {
-    return `${hours.toFixed(1)}h`;
-  }
-  const days = Math.floor(hours / 24);
-  const rest = Math.round(hours - days * 24);
-  return rest > 0 ? `${days}d ${rest}h` : `${days}d`;
+/** What a tile's hint adds when automation was left out of its figure. */
+function excludedHint(parts: [number, string][]): string {
+  return parts
+    .filter(([n]) => n > 0)
+    .map(([n, label]) => `${n} ${label}`)
+    .join(', ');
 }
 
 export function PrStatusPage() {
@@ -36,56 +44,75 @@ export function PrStatusPage() {
   const query = usePrStatus(range);
   const d = query.data;
 
+  // Only before the first answer: a range change keeps the previous figures
+  // on screen (dimmed) until the new range's arrive, rather than blanking the
+  // page to a spinner.
   if (query.isLoading) return <LoadingCard />;
   if (query.isError) return <ErrorCard error={query.error} />;
   if (!d) return null;
 
+  const reviewsExcluded = excludedHint([
+    [d.totals.botReviews, 'bot'],
+    [d.totals.selfReviews, 'self-reviews'],
+  ]);
+
   return (
-    <div className="space-y-6">
+    <div
+      className={cn(
+        'space-y-6 transition-opacity',
+        query.isPlaceholderData && 'opacity-60',
+      )}
+      aria-busy={query.isPlaceholderData}
+    >
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Open PRs" value={d.totals.open} hint="all repos" />
         <Stat
-          label={`Waiting > ${d.thresholdHours}h`}
+          label="Open PRs"
+          value={d.totals.open}
+          hint={
+            d.totals.botAuthored > 0
+              ? `opened this window · ${d.totals.botAuthored} raised by bots not counted`
+              : 'opened this window, still open'
+          }
+        />
+        {/* `≥` and "calendar": the code compares with >=, and the clock runs
+            through nights and weekends — a PR opened Friday evening is past
+            it by Sunday. Saying so is cheaper than a reader discovering it. */}
+        <Stat
+          label={`Waiting ≥ ${d.thresholdHours}h`}
           value={d.totals.waitingOverThreshold}
-          hint="unreviewed past the threshold"
+          hint="no review yet, calendar hours"
         />
         <Stat
           label="Never reviewed"
           value={d.totals.neverReviewed}
-          hint="open, no review of any kind"
+          hint={
+            d.totals.botReviewedOnly > 0
+              ? `no person has reviewed · ${d.totals.botReviewedOnly} reviewed only by a bot`
+              : 'no person has reviewed'
+          }
         />
-        {/* The only windowed tile of the four, so it is the one that must keep
-            saying so. The bot count used to REPLACE "this window" rather than
-            join it, which dropped the page's single per-tile marker of what the
-            filter touches — and dropped it precisely on the tenants that have
-            bot reviews, which is most of them. */}
+        {/* Windowed by when the review was submitted, not when the PR was
+            opened — the one tile whose window means something different, so
+            its hint keeps saying "this window" whatever else it carries. */}
         <Stat
           label="Reviews given"
           value={d.totals.reviewsGiven}
           hint={
-            d.totals.botReviews > 0
-              ? `this window · ${d.totals.botReviews} bot reviews excluded`
+            reviewsExcluded
+              ? `this window · ${reviewsExcluded} excluded`
               : 'by people, this window'
           }
         />
       </div>
 
-      {/* Sits with the tiles it explains, not at the foot of the page.
-          Three of the four above are the queue as it stands now and do not
-          move when the window changes; without this, changing the range and
-          watching them sit still reads as a broken filter. */}
-      <p className="text-xs text-fg-subtle">
-        <span className="text-fg-secondary">Open, waiting and never-reviewed
-        are the queue as it stands now</span> — not limited to the selected
-        window, because a change opened months ago and still unreviewed is the
-        most actionable row here and a date filter is exactly what would hide
-        it. Reviews given and review load do use the window. The tiles count
-        every pull request; the tables below list tracked developers only.
-      </p>
+      <QueueScopeNote d={d} />
 
+      {/* The range picks WHICH PRs; whether they are still open, reviewed,
+          and how long they have waited is today's answer — there is no
+          collected history of a PR's state to answer for the range's end. */}
       <CurrentLensNote
         range={range}
-        lens="The review queue (open PRs and how long they have waited)"
+        lens="Whether those PRs are still open or reviewed, and how long they have waited,"
       />
 
       <Card className="space-y-3">
@@ -100,7 +127,9 @@ export function PrStatusPage() {
 
         {d.waiting.length === 0 ? (
           <p className="py-4 text-center text-sm text-fg-faint">
-            No open pull request is waiting on a first review.
+            {d.tracked && d.totals.neverReviewed > 0
+              ? 'No tracked developer’s pull request opened in this window is waiting on a first review.'
+              : 'No pull request opened in this window is waiting on a first review.'}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -123,12 +152,15 @@ export function PrStatusPage() {
                       <span className="text-xs text-fg-faint">{pr.ref}</span>
                     </td>
                     <td className="py-2.5 pr-4 text-fg-muted">
-                      {pr.author ? (
+                      {/* Linked by canonical id, named as every other table
+                          names people; the login stays on hover. */}
+                      {pr.authorDeveloper ? (
                         <Link
-                          to={`../developer?developer=${encodeURIComponent(pr.author)}`}
+                          to={developerHref(pr.authorDeveloper, range)}
                           className="hover:text-fg"
+                          title={pr.author ?? undefined}
                         >
-                          {pr.author}
+                          {pr.authorDisplayName ?? pr.authorDeveloper}
                         </Link>
                       ) : (
                         '—'
@@ -156,15 +188,13 @@ export function PrStatusPage() {
           </div>
         )}
 
-        {d.excludedNoReviewData > 0 && (
-          <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
-            <span className="font-medium text-fg">{d.excludedNoReviewData}</span>{' '}
-            open {d.excludedNoReviewData === 1 ? 'PR is' : 'PRs are'} excluded
-            above because their review timeline has not been collected yet.
-            “Never asked” is not “never reviewed”, and counting them as
-            unreviewed would report collection lag as a review failure.
+        {d.waitingTotal > d.waiting.length && (
+          <p className="text-xs text-fg-subtle">
+            Showing the {d.waiting.length} longest waits of {d.waitingTotal}.
           </p>
         )}
+
+        <MeasurementNotes d={d} />
       </Card>
 
       <Card className="space-y-3">
@@ -173,7 +203,7 @@ export function PrStatusPage() {
           <p className="text-xs text-fg-subtle">
             Alphabetical, not by volume — review is a service to the team, and
             ordering people by how much of it they did is a leaderboard from
-            either end
+            either end. Reviews on one’s own pull requests are not counted.
           </p>
         </div>
 
@@ -192,7 +222,7 @@ export function PrStatusPage() {
                 <TableBodyRow key={row.developer}>
                   <td className="py-2.5 pr-4">
                     <Link
-                      to={`../developer?developer=${encodeURIComponent(row.developer)}`}
+                      to={developerHref(row.developer, range)}
                       className="font-medium text-fg-secondary hover:text-fg"
                     >
                       {row.displayName}
@@ -223,8 +253,11 @@ export function PrStatusPage() {
               ))}
               {d.reviewLoad.length === 0 && (
                 <TableBodyRow>
+                  {/* Rows come from the window AND from today's queue, so the
+                      empty state has to rule out both. */}
                   <td colSpan={4} className="py-4 text-center text-sm text-fg-faint">
-                    No pull requests opened or reviewed in this window.
+                    Nobody opened or reviewed a pull request in this window,
+                    and none is waiting.
                   </td>
                 </TableBodyRow>
               )}
@@ -238,16 +271,89 @@ export function PrStatusPage() {
           <Link to="/efficiency" className="text-brand hover:underline">
             Efficiency
           </Link>
-          , measured over merged PRs. This page counts every open one.
+          , measured over merged PRs. This page counts the ones still open.
         </p>
       </Card>
 
-      {/* The windowing explanation moved up to the tiles it describes; keeping
-          a second copy here would be the same sentence twice on one page. */}
       <ProvenanceNote>
         A review-capacity signal, never a measure of the people who opened the
         changes. Computed {timeAgo(d.computedAt)}.
       </ProvenanceNote>
     </div>
+  );
+}
+
+/**
+ * What the tiles cover, what the range left out, and what the tables list.
+ *
+ * Sits with the tiles it explains, not at the foot of the page. The range
+ * picks PRs by when they were OPENED, so a change opened months ago and still
+ * unreviewed — the most actionable row this page can carry — falls outside a
+ * short range. Saying how many did, with the way to bring them in, is what
+ * keeps the filter from hiding them. And the tiles count every PR while the
+ * tables list tracked developers only, so that subset is stated too.
+ */
+function QueueScopeNote({ d }: { d: PrStatusView }) {
+  return (
+    <p className="text-xs text-fg-subtle">
+      <span className="text-fg-secondary">Open, waiting and never-reviewed
+      count pull requests opened in this window that are still open
+      today</span>, with waits measured to now. Reviews given counts reviews
+      submitted in the window.{' '}
+      {d.openOutsideRange > 0 && (
+        <>
+          <span className="font-medium text-warning-fg">
+            {d.openOutsideRange} more open{' '}
+            {d.openOutsideRange === 1 ? 'PR was' : 'PRs were'} opened outside
+            this window
+          </span>{' '}
+          and {d.openOutsideRange === 1 ? 'is' : 'are'} not counted — widen
+          the range to see {d.openOutsideRange === 1 ? 'it' : 'them'}.{' '}
+        </>
+      )}
+      {d.tracked ? (
+        <>
+          The tiles count every pull request; the tables list tracked
+          developers’ only —{' '}
+          <span className="text-fg-secondary">
+            {d.tracked.neverReviewed} of the {d.totals.neverReviewed} never
+            reviewed, {d.tracked.waitingOverThreshold} of them past{' '}
+            {d.thresholdHours}h
+          </span>
+          .
+        </>
+      ) : (
+        'The tiles and the tables cover the same pull requests.'
+      )}
+    </p>
+  );
+}
+
+/** Everything the queue could not measure, and how current its reviews are. */
+function MeasurementNotes({ d }: { d: PrStatusView }) {
+  const unmeasured = d.excludedNoReviewData + d.excludedNoOpenedDate;
+  return (
+    <>
+      {unmeasured > 0 && (
+        <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
+          <span className="font-medium text-fg">{unmeasured}</span> open{' '}
+          {unmeasured === 1 ? 'PR is' : 'PRs are'} excluded above
+          {d.excludedNoReviewData > 0 &&
+            ` — ${d.excludedNoReviewData} because ${d.excludedNoReviewData === 1 ? 'its' : 'their'} review timeline has not been collected yet. “Never asked” is not “never reviewed”, and counting them as unreviewed would report collection lag as a review failure`}
+          {d.excludedNoOpenedDate > 0 &&
+            `${d.excludedNoReviewData > 0 ? ';' : ' —'} ${d.excludedNoOpenedDate} because no opened date was collected, so there is no wait to measure`}
+          .
+        </p>
+      )}
+      {/* Open PRs are not re-asked for reviews once collected (api/README.md
+          §12), so the queue is only as current as its oldest timeline. */}
+      {d.reviewsFetchedOldestAt && (
+        <p className="text-xs text-fg-subtle">
+          Review timelines on these pull requests were collected between{' '}
+          {timeAgo(d.reviewsFetchedOldestAt)} and now. A review submitted since
+          a PR was collected may not show here yet.
+        </p>
+      )}
+    </>
   );
 }

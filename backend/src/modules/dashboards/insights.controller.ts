@@ -69,6 +69,11 @@ export const DASHBOARD_REGISTRY: {
     title: string;
     path: string;
     description: string;
+    /**
+     * Narrows the child to these roles; absent means everyone who sees the
+     * parent. Filtered out of the payload, never sent.
+     */
+    roles?: Role[];
   }[];
   /**
    * `'later'` puts the entry in the sidebar's collapsed **Later** group
@@ -123,6 +128,16 @@ export const DASHBOARD_REGISTRY: {
         path: '/engineering-activity/pr-status',
         description:
           'Pull requests waiting on review and how review load is spread.',
+      },
+      // Moved here from the admin nav on 2026-10-30: the list decides who
+      // every subpage above shows, so it lives beside them. Still admin-only.
+      {
+        key: 'developer-activity-tracked-developers',
+        title: 'Developers with No GH-Recorded Activity',
+        path: '/engineering-activity/tracked-developers',
+        description:
+          'Who Engineering Activity shows per person, and who the daily no-activity digest reports on.',
+        roles: [Role.ADMIN],
       },
     ],
   },
@@ -237,7 +252,13 @@ export function dashboardAssignments(userRoles: readonly string[]) {
     title,
     path,
     description,
-    ...(children ? { children } : {}),
+    ...(children
+      ? {
+          children: children
+            .filter((c) => !c.roles || c.roles.some((r) => roles.has(r)))
+            .map(({ roles: _roles, ...child }) => child),
+        }
+      : {}),
     ...(group ? { group } : {}),
   }));
 }
@@ -738,7 +759,7 @@ export class InsightsController {
     // just doesn't show it.
     if (!(await this.devActivity.isDisplayable(who))) {
       throw new NotFoundException(
-        `${who} is not on the Tracked Developers list. Add them there to see their activity.`,
+        `${who} is not on the Developers with No GH-Recorded Activity list. Add them there to see their activity.`,
       );
     }
     // Fetched alongside rather than folded into `developerActivity`: reviews

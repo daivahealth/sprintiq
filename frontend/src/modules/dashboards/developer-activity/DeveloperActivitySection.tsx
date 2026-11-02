@@ -1,6 +1,7 @@
 import { motion } from 'motion/react';
-import { NavLink, Outlet, useSearchParams } from 'react-router-dom';
+import { NavLink, Outlet, useMatch, useSearchParams } from 'react-router-dom';
 import { FilterBar } from '../../../components/ui';
+import { useAuthStore } from '../../../lib/stores/auth-store';
 import { cn } from '../../../lib/utils';
 import { FreshnessNote } from '../FreshnessNote';
 import { RangeToggle } from './RangeToggle';
@@ -28,6 +29,11 @@ import {
  * The window lives in the URL (`?window=`), like sprint selection does, so a
  * link to a subpage carries the range it was read at (§3, "every granularity
  * queryable").
+ *
+ * Admins get a fifth tab, Developers with No GH-Recorded Activity (named
+ * Tracked Developers until 2026-10-30): the list that
+ * decides who the other four show per person. It reads no window, so the
+ * range bar is hidden there.
  */
 
 const TABS = [
@@ -52,11 +58,24 @@ const TABS = [
     label: 'PR Status',
     title: 'Pull requests waiting on review and how review load is spread.',
   },
+  {
+    to: 'tracked-developers',
+    label: 'Developers with No GH-Recorded Activity',
+    title:
+      'Who Engineering Activity shows per person, and who the daily digest reports on.',
+    adminOnly: true,
+  },
 ];
 
 export function DeveloperActivitySection() {
   const [params, setParams] = useSearchParams();
   const range = parseRange(params);
+  const isAdmin = useAuthStore((s) => s.user?.roles.includes('admin') ?? false);
+  const onQueuePage = useMatch('/engineering-activity/pr-status') !== null;
+  // The list is configuration, not a reading of the window — no range bar.
+  const onRosterPage =
+    useMatch('/engineering-activity/tracked-developers') !== null;
+  const tabs = TABS.filter((tab) => !tab.adminOnly || isAdmin);
 
   const setRange = (next: ActivityRange) => {
     const updated = new URLSearchParams(params);
@@ -88,7 +107,7 @@ export function DeveloperActivitySection() {
 
       <div className="border-b border-border">
         <nav className="-mb-px flex gap-1 overflow-x-auto" aria-label="Engineering Activity sections">
-          {TABS.map((tab) => (
+          {tabs.map((tab) => (
             <NavLink
               key={tab.to}
               to={{ pathname: tab.to, search: `?${rangeParams(range)}` }}
@@ -120,12 +139,21 @@ export function DeveloperActivitySection() {
         </nav>
       </div>
 
-      <FilterBar>
-        <RangeToggle value={range} onChange={setRange} />
-        {/* One freshness signal for the whole section. Mounted here rather
-            than per page: it judges the window, and the window is the shell's. */}
-        <FreshnessNote windowFrom={rangeFrom(range)} windowTo={rangeTo(range)} />
-      </FilterBar>
+      {!onRosterPage && (
+        <FilterBar>
+          <RangeToggle value={range} onChange={setRange} />
+          {/* One freshness signal for the whole section. Mounted here rather
+              than per page: it judges the window, and the window is the shell's.
+              Except on PR Status, whose queue is the present whatever the
+              range: an ended range must not suppress "collection is behind"
+              there, because the open PRs it shows are only as current as the
+              last collection. */}
+          <FreshnessNote
+            windowFrom={rangeFrom(range)}
+            windowTo={onQueuePage ? undefined : rangeTo(range)}
+          />
+        </FilterBar>
+      )}
 
       <Outlet context={{ range, setRange }} />
     </div>

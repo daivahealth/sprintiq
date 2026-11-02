@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import type { Scope } from '../../lib/scope';
 import { rangeParams, type ActivityRange } from './activity-range';
@@ -1066,7 +1071,11 @@ export interface WaitingPr {
   repo: string;
   number: string;
   title: string;
+  /** The GitHub login, as collected. */
   author: string | null;
+  /** Canonical developer id — what links to the Developer page use. */
+  authorDeveloper: string | null;
+  authorDisplayName: string | null;
   projects: string[];
   additions: number;
   deletions: number;
@@ -1077,13 +1086,26 @@ export interface WaitingPr {
 
 export interface PrStatusView {
   totals: {
+    /** Open PRs by people; automation-authored ones are `botAuthored`. */
     open: number;
     waitingOverThreshold: number;
     neverReviewed: number;
+    /** Of `neverReviewed`, PRs only a bot has reviewed. */
+    botReviewedOnly: number;
     reviewsGiven: number;
     botReviews: number;
+    selfReviews: number;
+    botAuthored: number;
   };
+  /** The queue figures over tracked developers' PRs; null while nobody is tracked. */
+  tracked: {
+    open: number;
+    waitingOverThreshold: number;
+    neverReviewed: number;
+  } | null;
   waiting: WaitingPr[];
+  /** Rows before the table's cap. */
+  waitingTotal: number;
   reviewLoad: {
     developer: string;
     displayName: string;
@@ -1093,6 +1115,11 @@ export interface PrStatusView {
   }[];
   /** Open PRs whose review timeline was never fetched — not "unreviewed". */
   excludedNoReviewData: number;
+  excludedNoOpenedDate: number;
+  /** Open PRs by people opened outside the range — what a wider range adds. */
+  openOutsideRange: number;
+  /** When the stalest review timeline among open PRs was fetched. */
+  reviewsFetchedOldestAt: string | null;
   thresholdHours: number;
   windowDays: number;
   computedAt: string;
@@ -1191,6 +1218,10 @@ export function usePrStatus(range: ActivityRange) {
         `/api/dashboards/developer-activity/pr-status?${params}`,
       ),
     staleTime: 60_000,
+    // Keep the previous range's figures on screen (dimmed) while the new
+    // range loads: blanking the page to a spinner on every change made the
+    // tiles vanish and reappear, so the change itself could not be seen.
+    placeholderData: keepPreviousData,
   });
 }
 

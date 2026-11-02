@@ -155,12 +155,6 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
               <NavItem to="/admin/configuration">Configuration</NavItem>
               <NavItem to="/admin/users">Users & Roles</NavItem>
               <NavItem
-                to="/admin/tracked-developers"
-                title="Who the daily no-activity digest reports on"
-              >
-                Tracked Developers
-              </NavItem>
-              <NavItem
                 to="/admin/sync-status"
                 title="Data transfer/backfill progress and live scheduler status"
               >

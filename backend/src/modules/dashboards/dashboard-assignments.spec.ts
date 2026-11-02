@@ -41,6 +41,14 @@ describe('dashboardAssignments', () => {
     expect(nav[0].children?.length).toBe(4);
   });
 
+  it('shows the Tracked Developers subpage to admins only, without its roles', () => {
+    const key = 'developer-activity-tracked-developers';
+    expect(nav[0].children?.some((c) => c.key === key)).toBe(false);
+    const admin = dashboardAssignments([Role.ADMIN])[0].children ?? [];
+    expect(admin.map((c) => c.key)).toContain(key);
+    expect(admin.every((c) => !('roles' in c))).toBe(true);
+  });
+
   it('shows nothing to a user with no roles', () => {
     expect(dashboardAssignments([])).toEqual([]);
   });

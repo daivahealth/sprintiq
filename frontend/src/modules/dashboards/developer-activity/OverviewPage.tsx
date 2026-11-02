@@ -34,6 +34,7 @@ import {
   showCopilotColumn,
 } from './copilot-column';
 import { CurrentLensNote } from './CurrentLensNote';
+import { developerHref } from './developer-href';
 import { activeDevelopersTile } from './active-developers-tile';
 import { hasDailyLoc, timelineMetric } from './timeline-metric';
 import {
@@ -41,24 +42,9 @@ import {
   formatDayKey,
   rangeDays,
   rangeEndKey,
-  rangeParams,
   useSectionRange,
   type ActivityRange,
 } from './window';
-
-/**
- * A link to one person's page that carries the window with it.
- *
- * The range lives in the URL, so a bare `?developer=` drops it and `parseRange`
- * falls back to the default — landing the reader on real numbers for a range
- * they did not choose. That is the one failure this section is built to
- * prevent, so every link out of it goes through here.
- */
-function developerHref(developer: string, range: ActivityRange): string {
-  const params = rangeParams(range);
-  params.set('developer', developer);
-  return `../developer?${params.toString()}`;
-}
 
 /**
  * Engineering Activity §Overview — team-shaped (DASHBOARDS.md §4.4.1).

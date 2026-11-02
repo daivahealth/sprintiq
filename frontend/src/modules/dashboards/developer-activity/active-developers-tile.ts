@@ -20,7 +20,7 @@ export function activeDevelopersTile(totals: {
       value: String(totals.developersWithSignal),
       hint:
         tracked === null
-          ? 'everyone with a commit or PR — add people on Tracked Developers to count your team'
+          ? 'everyone with a commit or PR — add people on Developers with No GH-Recorded Activity to count your team'
           : 'commit or PR in this window',
     };
   }
