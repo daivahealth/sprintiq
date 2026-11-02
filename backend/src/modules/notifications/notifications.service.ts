@@ -46,6 +46,16 @@ const DELIVERED: ReadonlySet<DigestOutcome> = new Set([
 /** Prisma's unique-constraint-violation error code. */
 const UNIQUE_VIOLATION = 'P2002';
 
+/** Most run rows `listRuns` returns, whatever the caller asks for. */
+export const MAX_RUNS_LISTED = 30;
+
+/**
+ * What started a run. `cron` is the unattended weekday sweep; `manual` is an
+ * admin through the run endpoint. Recorded so "did the automation send this
+ * morning, or did someone press the button?" has an answer on the row.
+ */
+export type DigestTrigger = 'cron' | 'manual';
+
 export interface RunDigestOptions {
   /** IST day key to report on. Defaults to the previous working day. */
   day?: string;
@@ -53,6 +63,22 @@ export interface RunDigestOptions {
   dryRun?: boolean;
   /** Re-run a day whose run already succeeded. */
   force?: boolean;
+  /** Defaults to `manual`; only the scheduler passes `cron`. */
+  trigger?: DigestTrigger;
+  /** The admin who asked for a manual run, so the audit entry names them. */
+  actorUserId?: string;
+}
+
+/** One recorded run, as the admin runs list shows it. */
+export interface DigestRunSummary {
+  reportedDay: string;
+  outcome: string;
+  trigger: string;
+  rosterCount: number;
+  flaggedCount: number;
+  deliveredAt: Date | null;
+  createdAt: Date;
+  detail: string | null;
 }
 
 export interface RunDigestResult {
@@ -94,6 +120,7 @@ type ClaimData = {
   deliveredAt: null;
   /** See `DigestDetection.unattributedCommits` — carried straight through. */
   unattributedCommits: number;
+  trigger: DigestTrigger;
 };
 
 /**
@@ -149,6 +176,7 @@ export class NotificationsService {
     const reportedDay = options.day ?? previousWorkingDayKey();
     const dryRun = options.dryRun === true;
     const force = options.force === true;
+    const trigger: DigestTrigger = options.trigger ?? 'manual';
 
     let existing: { outcome: string } | null = null;
     if (!dryRun) {
@@ -227,6 +255,7 @@ export class NotificationsService {
       detail,
       deliveredAt: null,
       unattributedCommits: detected.unattributedCommits,
+      trigger,
     };
 
     if (existing) {
@@ -293,13 +322,18 @@ export class NotificationsService {
       });
     }
 
+    // A manual run names the admin who asked for it; the cron has no person
+    // behind it, so it stays `system`.
     await this.audit?.record({
       tenantId,
-      actorType: 'system',
+      ...(options.actorUserId
+        ? { actorType: 'user' as const, actorId: options.actorUserId }
+        : { actorType: 'system' as const }),
       action: `notification.no_commit_digest.${outcome}`,
       targetType: 'no_commit_digest_run',
       targetId: reportedDay,
       metadata: {
+        trigger,
         reportedDay,
         rosterCount: detected.rosterCount,
         flaggedCount: result.flagged.length,
@@ -309,6 +343,33 @@ export class NotificationsService {
     });
 
     return result;
+  }
+
+  /**
+   * The tenant's most recent runs, newest first — how an admin confirms the
+   * weekday cron actually fired. Read-only, and deliberately without the
+   * `flagged` names: the list answers "did it send, and why not", while who
+   * was named stays on the Watchlist, whose every view is audited.
+   */
+  async listRuns(
+    tenantId: string,
+    limit: number = 10,
+  ): Promise<DigestRunSummary[]> {
+    return this.prisma.noCommitDigestRun.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Math.max(1, limit), MAX_RUNS_LISTED),
+      select: {
+        reportedDay: true,
+        outcome: true,
+        trigger: true,
+        rosterCount: true,
+        flaggedCount: true,
+        deliveredAt: true,
+        createdAt: true,
+        detail: true,
+      },
+    });
   }
 
   /**
