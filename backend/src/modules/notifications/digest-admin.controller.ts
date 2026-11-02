@@ -1,8 +1,12 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
+  IsInt,
   IsOptional,
   Matches,
+  Max,
+  Min,
   registerDecorator,
   ValidationOptions,
 } from 'class-validator';
@@ -10,7 +14,7 @@ import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
-import { NotificationsService } from './notifications.service';
+import { MAX_RUNS_LISTED, NotificationsService } from './notifications.service';
 
 /**
  * Whether a `YYYY-MM-DD` string names a real calendar date, not merely a
@@ -85,6 +89,15 @@ export class RunDigestDto {
   force?: boolean;
 }
 
+export class ListDigestRunsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(MAX_RUNS_LISTED)
+  limit?: number;
+}
+
 /**
  * Manual control over the daily digest.
  *
@@ -98,7 +111,7 @@ export class RunDigestDto {
  * `NotificationsService.runNoCommitDigest()` directly, never through
  * `NotificationSchedulerService` — so the deployment-wide env kill switch
  * (`configuration.ts`'s `notifications.digestCronEnabled`) has no effect
- * here, on purpose. That switch disarms the *unattended* 10:30 IST cron; it
+ * here, on purpose. That switch disarms the *unattended* 09:30 IST cron; it
  * is not a statement that nobody may trigger a digest right now. This
  * endpoint is how a human performs one deliberate send and how the rollout's
  * dry run is performed (docs/deployment/README.md §6.4) — both must keep
@@ -117,6 +130,20 @@ export class DigestAdminController {
       ...(dto.day ? { day: dto.day } : {}),
       ...(dto.dryRun === undefined ? {} : { dryRun: dto.dryRun }),
       ...(dto.force === undefined ? {} : { force: dto.force }),
+      trigger: 'manual',
+      actorUserId: user.userId,
     });
+  }
+
+  /**
+   * Recent runs for the caller's tenant, newest first, without names — how an
+   * admin confirms the weekday cron fired (`trigger: 'cron'`).
+   */
+  @Roles(Role.ADMIN)
+  @Get('runs')
+  async runs(@CurrentUser() user: AuthUser, @Query() dto: ListDigestRunsDto) {
+    return {
+      runs: await this.notifications.listRuns(user.tenantId, dto.limit ?? 10),
+    };
   }
 }
