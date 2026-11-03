@@ -1,5 +1,3 @@
-import { DIGEST_RULE_TEXT } from '../../common/digest-rule';
-
 /**
  * Who to name on the card.
  *
@@ -32,18 +30,16 @@ export interface DigestCardInput {
    * `buildDigestCard`.
    */
   unattributedCommits: number;
+  /**
+   * The tenant's GitHub organization login (e.g. `athmahealth`), named in the
+   * lead-in and all-clear lines so readers know which source "recorded
+   * activity" refers to.
+   * Callers pass it only when it is a valid GitHub login (letters, digits,
+   * hyphens), so it needs no markdown escaping; omitted, the line says
+   * "in GitHub" alone.
+   */
+  githubOrganization?: string;
 }
-
-/**
- * The rule the list was computed from, displayed in every card.
- *
- * Required by the ethics-first exception this feature ships under (CLAUDE.md;
- * ADR-0009 condition 1): where an attributed ranking or list ships, the rule
- * it is computed from ships with it and is displayed on every card. Trimmed
- * to one line (2026-09-28 product decision) from the earlier multi-sentence
- * paragraph — the condition is unchanged, only how briefly it is met.
- */
-const RULE_TEXT = DIGEST_RULE_TEXT;
 
 /**
  * Neutralise the markdown subset an Adaptive Card `TextBlock` renders.
@@ -95,22 +91,46 @@ function block(text: string, extra: Record<string, unknown> = {}) {
  * `buildDigestCard`'s Adaptive Card body and `buildDigestText`'s HTML string.
  *
  * None of these three interpolate untrusted data (only `reportedDay`, an IST
- * date key, and integers) — factored out purely so the card and the text
+ * date key, integers, and `githubOrganization`, which callers restrict to a
+ * valid GitHub login) — factored out purely so the card and the text
  * variant cannot drift apart by one of them being edited and not the other.
- * Anything that DOES interpolate untrusted data (display names,
- * `withheldDetail`) stays inline in each renderer, escaped with that
- * renderer's own scheme.
+ * Their fixed wording contains no markdown or HTML-special characters, so
+ * each renderer can use them unescaped. Anything that DOES interpolate
+ * untrusted data (display names, `withheldDetail`) stays inline in each
+ * renderer, escaped with that renderer's own scheme.
  */
 function headingText(reportedDay: string): string {
-  return `Daily activity check — ${reportedDay}`;
+  return `GH activity check as on ${reportedDay}`;
 }
 
-function allClearText(input: DigestCardInput): string {
-  return `All ${input.evaluatedCount} tracked developers had activity on ${input.reportedDay}.`;
+/**
+ * Bolds the organization name in the renderer's own markup — `**…**` for the
+ * card's markdown, `<b>…</b>` for the HTML `text` field — and escapes it with
+ * that renderer's scheme as a second line of defence behind the caller's
+ * login validation.
+ */
+type Emphasise = (value: string) => string;
+
+const cardBold: Emphasise = (value) => `**${escapeCardText(value)}**`;
+const htmlBold: Emphasise = (value) => `<b>${escapeHtml(value)}</b>`;
+
+function sourceText(input: DigestCardInput, bold: Emphasise): string {
+  return input.githubOrganization
+    ? `GitHub ${bold(input.githubOrganization)} organisation`
+    : 'GitHub';
 }
 
-function countLineText(input: DigestCardInput): string {
-  return `${input.flagged.length} of ${input.evaluatedCount} tracked developers had no activity:`;
+function allClearText(input: DigestCardInput, bold: Emphasise): string {
+  return `All ${input.evaluatedCount} tracked developers had recorded activity in ${sourceText(input, bold)} on ${input.reportedDay}.`;
+}
+
+/**
+ * Introduces the names. Carries no "N of M" count (2026-11-03 product
+ * decision) — the names below are the finding, and ADR-0009 does not require
+ * the count; the all-clear line still states how many were evaluated.
+ */
+function countLineText(input: DigestCardInput, bold: Emphasise): string {
+  return `Below developers had no recorded activity in ${sourceText(input, bold)}:`;
 }
 
 /**
@@ -141,10 +161,10 @@ function unattributedDisclosureText(input: DigestCardInput): string | null {
  * collapses there, which would run every name together on one line — `<br>`
  * is used between every line instead. Carries the same content as the card
  * in every variant (named list, all-clear, withheld, unattributed-commits
- * disclosure, and the ADR-0009 rule line on every variant) — see
+ * disclosure) — see
  * `headingText`/`allClearText`/`countLineText`/`unattributedDisclosureText`
- * and `RULE_TEXT` above, shared with `buildDigestCard` so the two cannot
- * silently diverge.
+ * above, shared with `buildDigestCard` so the two cannot silently diverge.
+ * Neither carries the rule line (ADR-0009 amendment, 2026-11-03).
  *
  * Every interpolated value that can carry untrusted content (display names,
  * `withheldDetail`) is passed through `escapeHtml`, never `escapeCardText` —
@@ -153,21 +173,21 @@ function unattributedDisclosureText(input: DigestCardInput): string | null {
 function buildDigestText(input: DigestCardInput): string {
   const lines: string[] = [
     `<b>${escapeHtml(headingText(input.reportedDay))}</b>`,
+    // Blank line between the heading and the body.
+    '',
   ];
 
   if (input.withheldDetail) {
     lines.push(`<b>${escapeHtml(input.withheldDetail)}</b>`);
   } else if (input.flagged.length === 0) {
-    lines.push(escapeHtml(allClearText(input)));
+    lines.push(allClearText(input, htmlBold));
   } else {
-    lines.push(escapeHtml(countLineText(input)));
+    lines.push(countLineText(input, htmlBold));
     // Alphabetical order is the caller's guarantee; rendering must not sort.
     for (const person of input.flagged) {
       lines.push(`• ${escapeHtml(person.displayName)}`);
     }
   }
-
-  lines.push(`<i>${RULE_TEXT}</i>`);
 
   const unattributed = unattributedDisclosureText(input);
   if (unattributed) {
@@ -197,9 +217,9 @@ export function buildDigestCard(
   if (input.withheldDetail) {
     body.push(block(input.withheldDetail, { weight: 'Bolder' }));
   } else if (input.flagged.length === 0) {
-    body.push(block(allClearText(input)));
+    body.push(block(allClearText(input, cardBold), { spacing: 'Large' }));
   } else {
-    body.push(block(countLineText(input)));
+    body.push(block(countLineText(input, cardBold), { spacing: 'Large' }));
     // Alphabetical order is the caller's guarantee; rendering must not sort.
     body.push(
       block(
@@ -210,11 +230,13 @@ export function buildDigestCard(
     );
   }
 
-  body.push(block(RULE_TEXT, { isSubtle: true, size: 'Small' }));
+  // No rule line: removed from the card by the ADR-0009 amendment of
+  // 2026-11-03. The rule is still shown beside the same list on the admin
+  // Watchlist (`DIGEST_RULE_TEXT`).
+  //
   // Rendered only when positive — a zero here is noise on every ordinary
   // morning, and would train readers to stop reading this line on the one
-  // morning it matters. Kept separate from RULE_TEXT: this is a fact about
-  // THIS day's read, not the standing rule the list is computed from.
+  // morning it matters. This is a fact about THIS day's read, not a rule.
   const unattributed = unattributedDisclosureText(input);
   if (unattributed) {
     body.push(block(unattributed, { isSubtle: true, size: 'Small' }));

@@ -287,12 +287,14 @@ export class NotificationsService {
     // stops this looking like a dead cron — skip straight to the audit
     // entry rather than building or posting a card.
     if (outcome !== 'skipped_no_roster') {
+      const githubOrganization = await this.resolveGithubOrganization(tenantId);
       const card = buildDigestCard({
         reportedDay,
         flagged: result.flagged,
         evaluatedCount,
         unattributedCommits: detected.unattributedCommits,
         ...(detail ? { withheldDetail: detail } : {}),
+        ...(githubOrganization ? { githubOrganization } : {}),
       });
 
       try {
@@ -400,6 +402,34 @@ export class NotificationsService {
       );
     }
     return webhookRef;
+  }
+
+  /**
+   * The tenant's GitHub organization login, for the card's lead-in line
+   * ("… no recorded activity in GitHub athmahealth organisation:"). Read from the same
+   * `github`/`default` configuration row the org sync uses. Returns undefined
+   * unless it is a valid GitHub login, so an admin-typed value cannot carry
+   * markdown or HTML into the card.
+   */
+  private async resolveGithubOrganization(
+    tenantId: string,
+  ): Promise<string | undefined> {
+    const config = await this.prisma.tenantConfiguration.findUnique({
+      where: {
+        tenantId_namespace_key: {
+          tenantId,
+          namespace: 'github',
+          key: CONFIG_KEY,
+        },
+      },
+      select: { values: true },
+    });
+    const organization = ((config?.values ?? {}) as Record<string, unknown>)
+      .organization;
+    return typeof organization === 'string' &&
+      /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(organization)
+      ? organization
+      : undefined;
   }
 }
 
