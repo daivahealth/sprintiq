@@ -47,38 +47,21 @@ describe('buildDigestCard', () => {
     unattributedCommits: 0,
   };
 
-  it('states the one-line rule it was computed from, on the named-list card', () => {
-    // Governance requirement (CLAUDE.md; ADR-0009 condition 1): the rule
-    // ships with the list and is displayed on every card. Trimmed to one
-    // line (2026-09-28 footer-length decision) — this pins the new text.
-    const body = textOf(buildDigestCard(input));
-    expect(body).toContain(
-      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
-    );
-  });
-
-  it('states the same one-line rule on the all-clear card', () => {
-    // The ADR-0009 condition applies to every card, not only the named-list
-    // one — this guards the all-clear variant specifically.
-    const body = textOf(buildDigestCard({ ...input, flagged: [] }));
-    expect(body).toContain(
-      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
-    );
-  });
-
-  it('states the same one-line rule on a withheld card', () => {
-    // The ADR-0009 condition applies even when names are withheld — this
-    // guards the withheld variant specifically.
-    const body = textOf(
+  it('carries no rule line on any card variant (ADR-0009 amendment, 2026-11-03)', () => {
+    // Removed from the card by product decision; the rule stays on the admin
+    // Watchlist view beside the same list.
+    const named = textOf(buildDigestCard(input));
+    const allClear = textOf(buildDigestCard({ ...input, flagged: [] }));
+    const withheld = textOf(
       buildDigestCard({
         ...input,
         flagged: [],
         withheldDetail: 'Names withheld: collection is behind.',
       }),
     );
-    expect(body).toContain(
-      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
-    );
+    for (const body of [named, allClear, withheld]) {
+      expect(body).not.toContain('Counts commits and PRs opened only');
+    }
   });
 
   it('does not render the removed check-in framing line', () => {
@@ -119,8 +102,55 @@ describe('buildDigestCard', () => {
     }
   });
 
-  it('reports the count against the number evaluated', () => {
-    expect(textOf(buildDigestCard(input))).toContain('2 of 66');
+  it('introduces the names without an "N of M" count (2026-11-03)', () => {
+    expect(textOf(buildDigestCard(input))).not.toContain('2 of 66');
+  });
+
+  it('headings the card "GH activity check as on <day>"', () => {
+    const card = buildDigestCard(input);
+    expect(textOf(card)).toContain('GH activity check as on 2026-09-17');
+    expect(card.text).toContain('<b>GH activity check as on 2026-09-17</b>');
+  });
+
+  it('leaves a blank line between the heading and the body in `text`', () => {
+    const card = buildDigestCard(input) as { text: string };
+    expect(card.text).toContain(
+      '<b>GH activity check as on 2026-09-17</b><br><br>Below developers',
+    );
+  });
+
+  it('names the GitHub organization, in bold, in the line above the names', () => {
+    const card = buildDigestCard({
+      ...input,
+      githubOrganization: 'athmahealth',
+    });
+    // Card markdown bolds with **…**; the HTML `text` field with <b>…</b>.
+    expect(textOf(card)).toContain(
+      'Below developers had no recorded activity in GitHub **athmahealth** organisation:',
+    );
+    expect(card.text).toContain(
+      'Below developers had no recorded activity in GitHub <b>athmahealth</b> organisation:',
+    );
+  });
+
+  it('names the GitHub organization, in bold, in the all-clear line', () => {
+    const card = buildDigestCard({
+      ...input,
+      flagged: [],
+      githubOrganization: 'athmahealth',
+    });
+    expect(textOf(card)).toContain(
+      'All 66 tracked developers had recorded activity in GitHub **athmahealth** organisation on 2026-09-17.',
+    );
+    expect(card.text).toContain(
+      'All 66 tracked developers had recorded activity in GitHub <b>athmahealth</b> organisation on 2026-09-17.',
+    );
+  });
+
+  it('says "in GitHub" alone when no organization is configured', () => {
+    expect(textOf(buildDigestCard(input))).toContain(
+      'Below developers had no recorded activity in GitHub:',
+    );
   });
 
   it('lists names alphabetically and never by volume', () => {
@@ -223,34 +253,23 @@ describe('buildDigestCard — top-level `text` field for the "Post message" flow
     );
   });
 
-  it('carries the one-line rule in `text` on the named-list variant', () => {
-    // ADR-0009 condition 1 ("the rule ships with the list, on every card")
-    // applies to the text variant too — dropping it here would silently
-    // violate the same governance condition the card already satisfies.
-    const card = buildDigestCard(input) as { text: string };
-    expect(card.text).toContain(
-      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
-    );
-  });
-
-  it('carries the one-line rule in `text` on the all-clear variant', () => {
-    const card = buildDigestCard({ ...input, flagged: [] }) as {
+  it('carries no rule line in `text` on any variant (ADR-0009 amendment, 2026-11-03)', () => {
+    const named = buildDigestCard(input) as { text: string };
+    const allClear = buildDigestCard({ ...input, flagged: [] }) as {
       text: string;
     };
-    expect(card.text).toContain(
-      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
-    );
+    for (const card of [named, allClear]) {
+      expect(card.text).not.toContain('Counts commits and PRs opened only');
+    }
   });
 
-  it('carries the one-line rule in `text` on a withheld variant', () => {
+  it('renders the withheld reason in `text` without names', () => {
     const card = buildDigestCard({
       ...input,
       flagged: [],
       withheldDetail: 'Names withheld: collection is behind.',
     }) as { text: string };
-    expect(card.text).toContain(
-      "Counts commits and PRs opened only — reviews and Jira aren't counted.",
-    );
+    expect(card.text).not.toContain('Counts commits and PRs opened only');
     expect(card.text).toContain('Names withheld');
     expect(card.text).not.toContain('Bob Bose');
   });
