@@ -255,3 +255,96 @@ Showing feature → developer results in any UI, or to any role but admin, falls
 - **`api` pods in production are up to one rebuild interval behind** (§4.2).
 - **The full load scans each tenant's rows.** `code_pull_request` has no index on `openedAt`/`mergedAt`, and `correlation_link` none on `fromId` (DATA-MODEL.md §8). It runs once per rebuild and took 3 s on the reference tenant.
 - **Cross-context reads.** `GraphSourceReader` reads BC-3, BC-4 and BC-5 tables directly, following the `DeveloperActivityService` precedent. It is the single seam to move behind owning-context read APIs on service extraction (ADR-0001).
+
+## 8. The Knowledge Graph Explorer (frontend)
+
+The one UI over these routes. It is admin only, under the [ADR-0013](../ADR/0013-in-memory-knowledge-graph.md) amendment of 2026-11-03. Sidebar: **Engineering Intelligence → Knowledge Graph**; route `/engineering-intelligence/knowledge-graph`. The nav link is admin-only and the route sits behind `RequireRole('admin')`; the server's `@Roles(ADMIN)` remains the enforcement. Code: `frontend/src/modules/knowledge-graph/`. The page is lazy-loaded, so the graph library (Cytoscape.js) ships only to admins who open it.
+
+### 8.1 The journey
+
+1. **Status first.** `GET /status` drives a strip showing:
+   - Ready / Initializing / Build failed / Disabled / Stale;
+   - the history window;
+   - build time and last incremental update;
+   - node counts by type.
+
+   Until the tenant's graph exists, the page shows why it is waiting and offers no search, rather than an empty canvas that would read as "no data". It polls every 5 s while building and every 60 s once ready.
+2. **Search a repository.** The dropdown lists only what `GET /repositories/search` returns, with commit and PR counts. The API rejects an empty query, so the dropdown asks for a term rather than listing everything. A repository configured in GitHub but absent from the graph simply does not appear, and the empty-state text says why.
+3. **The repository graph.** The repository plus the developers `GET /repositories/:id/developers` returned, joined by `contributed to` edges. The details panel shows:
+   - the repository's URL;
+   - commits, PRs and reviews;
+   - unattributed commits and reviews;
+   - withheld identities as counts;
+   - the developers, alphabetically, with their counts and last contribution;
+   - the attribution rule.
+4. **Expand** (double-click, or the panel's button). Expansions are progressive and capped:
+   - **A developer** adds up to 15 each of their newest commits, PRs and reviews, from the repository's 100 newest activities. These are the items the backend attributed to them (`attribution: 'person'`).
+   - **A PR** adds every review on it, and its Jira issues with the correlation confidence on the edge.
+   - Reset removes every expansion.
+5. **Reverse navigation.** Selecting a developer loads `GET /developers/:id/repositories`:
+   - their repositories, with commits, PRs created and reviewed, last date, and the Jira keys of their PRs there;
+   - their assigned issues.
+
+   "Explore from this developer" re-roots the graph on them; choosing a repository re-roots it there. A breadcrumb records the path, and the focus lives in the URL (`?repo=` / `?developer=`) so an exploration can be shared.
+6. **Activity tabs.** Commits, Pull requests, Reviews and Jira issues, from `GET /repositories/:id/activities?limit=100`.
+   - They load only when asked for, because every call is an audited named-person read.
+   - Each tab says whether it is the whole list or the newest slice.
+   - "Show in graph" reveals a record's node and selects it.
+7. **Relationship coverage**, collapsible (§8.3).
+
+### 8.2 What is drawn, and what never is
+
+Every node and edge is a response field; nothing is joined or resolved in the browser (`graph-model.ts`):
+
+| Edge on screen | From which field |
+|---|---|
+| Developer → Repository (`contributed to`, dashed: derived) | a row in `developers` / `repositories` |
+| Developer → Commit / PR / Review (`created`) | the item's `author`, present only when `attribution === 'person'` |
+| Commit / PR → Repository (`belongs to`) | the item came from that repository's activities |
+| Review → PR (`belongs to`) | the review's `prNumber`. A PR outside the loaded page is drawn faded, as "known only from a review" |
+| PR → Jira issue (`references`, dashed: inferred) | the PR's `jiraKeys`, with confidence and method from the issue's `pullRequests` |
+
+**Never drawn:**
+- commit → Jira;
+- developer → team;
+- team → repository;
+- feature → anything;
+- an author for withheld or unattributed work, which is labelled "Withheld" or "Unattributed" instead;
+- a developer → Jira edge for the per-repository Jira list in the reverse lookup. Those are issues linked to the developer's PRs, not a direct relationship, so they are shown as text.
+
+**Size, colour and emphasis never encode a count.** The entity registry (`entity-registry.ts`) gives each type a fixed shape and a `--chart-N` token, resolved at runtime so dark mode follows.
+
+**Extending.** A new entity type is a registry entry, a detail renderer (`DETAIL_RENDERERS` in `DetailsPanels.tsx`) and, if it has relationships, a coverage row. `TEAM` and `FEATURE` are already registered with `available: false`, so they are listed in coverage and never drawn. The canvas (`GraphCanvas.tsx`) has no type-specific code. Repository search sits behind its own component and service call, so a keyword or semantic feature search can sit beside it once the backend offers one. None is built.
+
+### 8.3 Relationship coverage
+
+`relationship-coverage.ts` evaluates 13 relationships. Each gets a status:
+- **Available.**
+- **Partially available:** implemented, but some records cannot be attributed.
+- **Not implemented:** the backend has no source.
+- **No matching data found:** implemented, but nothing in this scope.
+- **Planned.**
+
+Each also gets a basis: recorded, derived, or inferred (confidence-scored). The statuses come from the numbers the API returned for the selected repository (totals, unattributed, withheld, activities). Before a repository is selected they come from tenant-wide edge counts in `status`, which say so. Commit → Jira always reads: *"Direct Commit → Jira Issue mapping is not currently available. Jira relationships are currently available through correlated Pull Requests."*
+
+### 8.4 API gaps found while building it (no backend change made)
+
+| Gap | Effect in the UI | Would need |
+|---|---|---|
+| No developer search | A developer is reached only from a repository or a breadcrumb | `GET /knowledge-graph/developers/search?q=` |
+| No developer-in-repository activity route | Expanding a developer filters the repository's newest 100 activities by attribution, so older work by that developer is not reachable | `GET /repositories/:id/developers/:dev/activities` |
+| Activities have `limit` (≤200) but no offset or cursor | Only the newest slice of each list is browsable; the tab says so | Cursor pagination on activities |
+| Reviews carry no id | The UI composes a node id from PR, timestamp and author; two reviews by one author on one PR in the same second would merge | `id` on review items |
+| No single PR / commit lookup | A PR named only by a review cannot be opened in full | `GET /repositories/:id/pull-requests/:number` |
+| Search requires a non-empty `q` | The dropdown cannot list all repositories up front | Allow empty `q` (bounded by `limit`) |
+| Assigned issues are developer-scoped only | Jira → developer assignment is shown in developer details, not on the repository graph | n/a: by design of the reverse lookup |
+
+### 8.5 Verification
+
+- **Covered by unit and render tests** (`frontend/src/modules/knowledge-graph/*.test.ts`, Vitest, node environment):
+  - transforms, expansion and reset;
+  - coverage statuses and missing-relationship text;
+  - readiness and 503 handling, and stale warnings;
+  - alphabetical ordering and withheld/unattributed display;
+  - admin-only nav visibility.
+- **Not covered by automated tests:** the Cytoscape canvas itself (zoom, pan, drag, hover, layout). It needs a browser, and it is kept free of logic for that reason.

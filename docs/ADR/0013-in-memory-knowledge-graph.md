@@ -1,6 +1,6 @@
 # ADR-0013: In-memory knowledge graph, with admin-only attributed reads
 
-- **Status:** Accepted — implemented 2026-11-02 (proof of concept)
+- **Status:** Accepted — implemented 2026-11-02 (proof of concept); amended 2026-11-03 (admin-only explorer UI)
 - **Date:** 2026-11-02
 - **Deciders:** Product owner
 - **Related:** [CLAUDE.md](../../CLAUDE.md) ("Metrics are ethics-first"), [ADR-0001](0001-modular-monolith-first.md), [ADR-0004](0004-data-access-and-tenancy.md) (graph store deferred), [ADR-0005](0005-prisma-single-schema.md), [ADR-0009](0009-attributed-commit-digest.md), [ADR-0011](0011-per-developer-loc-chart.md), [ADR-0012](0012-per-developer-copilot-usage.md), [features/ANALYTICS.md](../features/ANALYTICS.md), [api/README.md §6.2, §9](../api/README.md), [security/AUTH-AND-RBAC.md §5.3](../security/AUTH-AND-RBAC.md), [deployment/README.md](../deployment/README.md)
@@ -65,6 +65,19 @@ This is a new, independent exception to the ethics-first rule. It inherits none 
    `TEAM` and `FEATURE` node types are reserved and empty.
 
 **This decision does not extend anywhere else.** The graph's counts do not feed the Sprint Health grade, the digest, the Watchlist, the Developer page, any notification, or any AI agent. Any UI for these routes, any role other than admin, and any figure derived from them (ownership share, bus factor, "top contributor") each need the decision taken again.
+
+### Amendment, 2026-11-03: the admin-only Knowledge Graph Explorer
+
+The decision was taken again for one UI: **Engineering Intelligence → Knowledge Graph** (`/engineering-intelligence/knowledge-graph`, [features/ANALYTICS.md §8](../features/ANALYTICS.md)). It is the same exception, extended to a page that renders these routes, and it keeps every condition above:
+
+- **Admins only.** The page is behind `RequireRole('admin')`, and its nav link is shown to admins only. Both are courtesy: the server's `@Roles(ADMIN)` stays the enforcement.
+- **Audit stays on the server.** The page calls the audited routes and nothing else. It fetches a repository's activities only when the reader asks for them, so audit rows record reads someone chose to make.
+- **Alphabetical only.** The page re-sorts people alphabetically rather than trusting the order it was handed. It offers no sort, filter or highlight by any count, and never draws node size or emphasis from a count.
+- **The rule and freshness are on screen.** The attribution rule is shown beside every named list; build time, last incremental update, window and staleness are always visible.
+- **Withheld and unattributed work is shown as counts and labels** ("Withheld", "Unattributed"), never as a person.
+- **Nothing derived in the browser.** Every node and edge comes from a response field. A missing relationship is listed in *Relationship coverage* with its reason, rather than approximated.
+
+What still needs the decision taken again: showing the page to any other role, adding any derived figure, or putting knowledge-graph data on any other board.
 
 ## Consequences
 

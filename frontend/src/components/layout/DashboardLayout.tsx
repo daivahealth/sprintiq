@@ -10,7 +10,11 @@ import {
 } from "../../modules/dashboards/useInsights";
 import { ThemeToggle } from "../theme-toggle";
 import { NavItem, Spinner } from "../ui";
-import { isInGroup, splitNav } from "./nav-groups";
+import {
+  engineeringIntelligenceLinks,
+  isInGroup,
+  splitNav,
+} from "./nav-groups";
 
 /**
  * One nav entry, plus its subsections when it has any.
@@ -107,6 +111,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
   const assignments = useAssignments();
   const { primary, later } = splitNav(assignments.data?.dashboards ?? []);
   const isAdmin = user?.roles.includes("admin") ?? false;
+  const intelligenceLinks = engineeringIntelligenceLinks(user?.roles ?? []);
   useEffect(() => {
     if (me.data) {
       setIdentity(me.data.user, me.data.tenant);
@@ -149,6 +154,18 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
           ))}
           {assignments.isLoading && (
             <p className="px-3 py-2 text-xs text-fg-faint">Loading…</p>
+          )}
+          {intelligenceLinks.length > 0 && (
+            <div className="pt-3">
+              <p className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-fg-faint">
+                Engineering Intelligence
+              </p>
+              {intelligenceLinks.map((link) => (
+                <NavItem key={link.to} to={link.to} title={link.title}>
+                  {link.label}
+                </NavItem>
+              ))}
+            </div>
           )}
           {isAdmin && (
             <>

@@ -69,6 +69,10 @@ Tailwind's class scanner is a regex over source text, not an evaluator — `` `s
 
 `CommitChart`'s legend swatches are `<span>` elements styled with `bg-chart-*`, not `fill-chart-*` — `fill` is an SVG-only CSS property and has zero effect on an HTML element. (This exact mistake existed in `ProjectActivityChart`'s legend before the token migration — the dots were invisible. Fixed as `LEGEND_DOT_COLORS`, a `bg-*` array parallel to the `fill-*` `DOT_COLORS` array used by the SVG circles.) When adding a new chart, mirror `chart-N` between the mark (`fill-`/`stroke-`) and its legend swatch (`bg-`), and never let the two drift to different indices.
 
+### Token colours for canvas libraries
+
+A library that draws on `<canvas>` (the Knowledge Graph's Cytoscape.js) cannot take Tailwind classes. `GraphCanvas.tsx` resolves the same tokens at runtime instead: `getComputedStyle(document.documentElement).getPropertyValue('--chart-3')` gives `R G B` channels, written as `rgb(R,G,B)`. A `MutationObserver` on `<html class>` re-resolves them when the theme flips. Entity colours are declared as token names in `entity-registry.ts`, never as literals; HTML swatches beside the canvas use `style={{ backgroundColor: 'rgb(var(--chart-3))' }}` for the same reason.
+
 ## Typography
 
 Self-hosted **Inter Variable** (`font-sans`) + **JetBrains Mono Variable** (`font-mono`), latin subset only, `src/assets/fonts/` + `src/styles/fonts.css`. No external font CDN — this is a self-hosted enterprise product. Inter's genuine tabular figures are why it was chosen over a system stack: the metric tables lean on `tabular-nums` throughout.
