@@ -189,6 +189,21 @@ Execution also respects the existing `GITHUB_BACKFILL_RATE_RESERVE` ([api/README
 
 A run always uses the **GraphQL** transport, whatever `GITHUB_COLLECTION_MODE` is, with each repository's own connection token. It draws on the GraphQL points bucket, which is separate from REST's `core` bucket. It stops at `GITHUB_BACKFILL_RATE_RESERVE` like the reconcilers, so verification cannot starve scheduled collection. By the query shapes, and not yet measured on the reference org, a run costs about one point per repository read plus one per 10 active branches. "Where they worked" reads only a developer's repositories. "All repositories" reads every collected one.
 
+### 5.4 Knowledge graph (`KNOWLEDGE_GRAPH_*`, [ADR-0013](../ADR/0013-in-memory-knowledge-graph.md))
+
+| Variable | Default | Values | Purpose |
+|---|---|---|---|
+| `KNOWLEDGE_GRAPH_ENABLED` | on | unset, or `on`\|`true`\|`1` / `off`\|`false`\|`0` (case-insensitive) | Whether this process builds the in-memory graph ([features/ANALYTICS.md §4](../features/ANALYTICS.md)). Unset is **on**. Off makes every `/api/knowledge-graph/*` read except `status` answer `503`. An unrecognised value fails `validateEnv` at boot. |
+| `KNOWLEDGE_GRAPH_WINDOW_DAYS` | `90` | integer `1–730` | How much activity is held in memory. This is the memory lever: on the reference tenant, 90 days was about 41k nodes and 100 MB of heap. |
+| `KNOWLEDGE_GRAPH_REBUILD_MINUTES` | `30` | integer `5–1440` | How often each tenant's graph is rebuilt from Postgres and swapped in. On `api` pods in production this is the freshness bound, see below. |
+
+All three are read from the process environment at boot, so a change needs a restart.
+
+- **Only HTTP-serving roles build a graph** (`api`, `collector`). `worker` never does, whatever the flag says.
+- **Every replica builds and holds its own graph.** Memory is per pod, per tenant. There is no shared cache, and none is needed: a restart rebuilds from Postgres.
+- **The first build runs after the HTTP listener is up**, so a cold pod passes health checks while the graph is still loading. Its graph reads answer `503` until `GET /api/knowledge-graph/status` reports the tenant `ready`.
+- **Freshness on `api` pods.** The graph follows post-write events in-process (api/README.md §6.2). Ingestion runs in `collector`/`worker` pods, so an `api` pod's graph is at most `KNOWLEDGE_GRAPH_REBUILD_MINUTES` behind. Responses say so in `freshness`.
+
 ---
 
 ## 6. Collector operations

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { DashboardLayout } from '../components/layout/DashboardLayout';
 import { useAuthStore } from '../lib/stores/auth-store';
@@ -24,6 +24,14 @@ import {
 } from '../modules/dashboards/boards';
 import { DeliveryDashboard } from '../modules/dashboards/DeliveryDashboard';
 import { TopRepos } from '../modules/dashboards/TopRepos';
+import { Spinner } from '../components/ui';
+
+// Its own chunk: the graph library is large, and only admins open this page.
+const KnowledgeGraphPage = lazy(() =>
+  import('../modules/knowledge-graph/KnowledgeGraphPage').then((m) => ({
+    default: m.KnowledgeGraphPage,
+  })),
+);
 import { StyleguidePage } from '../modules/styleguide/StyleguidePage';
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -172,6 +180,21 @@ export function AppRouter() {
           <Page>
             <RequireRole role="admin">
               <SyncStatusPage />
+            </RequireRole>
+          </Page>
+        }
+      />
+      {/* Admin only (ADR-0013, amended 2026-11-03): the server enforces it with
+          @Roles(ADMIN) on every route; this keeps non-admins off a page that
+          would only answer 403. */}
+      <Route
+        path="/engineering-intelligence/knowledge-graph"
+        element={
+          <Page>
+            <RequireRole role="admin">
+              <Suspense fallback={<Spinner />}>
+                <KnowledgeGraphPage />
+              </Suspense>
             </RequireRole>
           </Page>
         }

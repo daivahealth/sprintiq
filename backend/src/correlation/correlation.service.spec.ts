@@ -59,7 +59,10 @@ describe('CorrelationService.reconcileOrphans', () => {
     planning = {
       findByKey: jest.fn(),
     } as unknown as jest.Mocked<PlanningService>;
-    const eventBus = { subscribe: jest.fn() } as unknown as EventBus;
+    const eventBus = {
+      subscribe: jest.fn(),
+      publish: jest.fn(),
+    } as unknown as EventBus;
     service = new CorrelationService(
       prisma as unknown as PrismaService,
       eventBus,

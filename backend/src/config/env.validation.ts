@@ -9,6 +9,7 @@ import {
   validateSync,
   ValidationOptions,
 } from 'class-validator';
+import { readKnowledgeGraphConfig } from '../analytics/knowledge-graph/knowledge-graph.config';
 import { readGithubCopilotConfig } from '../collectors/sources/github/github-copilot.config';
 import { AppRole } from './app-role';
 import { isValidTriStateFlagValue } from './env-flags';
@@ -109,6 +110,11 @@ export function validateEnv(config: Record<string, unknown>) {
   // so a value that boots is a value the sync understands.
   try {
     readGithubCopilotConfig(config);
+  } catch (error) {
+    messages.push(`  - ${(error as Error).message}`);
+  }
+  try {
+    readKnowledgeGraphConfig(config);
   } catch (error) {
     messages.push(`  - ${(error as Error).message}`);
   }

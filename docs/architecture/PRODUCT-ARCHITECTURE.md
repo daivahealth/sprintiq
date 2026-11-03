@@ -268,6 +268,11 @@ SprintIQ is decomposed using Domain-Driven Design. Contexts are classified as **
 - **Inputs:** Delivery graph, metrics, history.
 - **Outputs:** Graphs, rankings, forecasts, structural insights.
 - **Interactions:** BC-11 (agents reason over analytics), BC-13 (advanced visualizations), BC-9 (feeds risk signals).
+- **Status (2026-11-02):** The first build-out is an **in-memory knowledge graph** ([ADR-0013](../ADR/0013-in-memory-knowledge-graph.md), [features/ANALYTICS.md](../features/ANALYTICS.md)):
+  - One graphology graph per tenant per process, derived from Postgres and never written back.
+  - Repository ↔ developer ↔ commit/PR/review ↔ Jira issue traversal, served admin-only through `/api/knowledge-graph/*`.
+  - Kept current by post-write events (api/README.md §6.2) and a periodic rebuild.
+  - Hotspots, ownership/bus-factor, networks and the rest are not built. "Rankings" above remains subject to the ethics rule: none are produced.
 - **Owner:** Metrics & Analytics team.
 
 ### BC-11 — AI Agent Orchestration *(Core)* ★
