@@ -537,9 +537,10 @@ export class DeveloperActivityService {
       { opened: number; merged: number }
     >();
 
-    // Merge commits count toward the signal sets (`committers`, and
-    // `activeDeveloperSet` below, shared with the digest) but not toward any
-    // commit count or LOC figure (METRICS.md §0, `merge-commits.ts`).
+    // Merge commits count toward `committers` (the planning-gap and bridge-
+    // coverage inputs) but not toward any commit count, LOC figure, or — since
+    // 2026-11-04 — the "active" set (`activeDeveloperSet` below, shared with
+    // the digest). METRICS.md §0, `merge-commits.ts`.
     const mergesByDeveloper = new Map<string, number>();
     let mergeCommitsExcluded = 0;
     for (const c of commits) {
@@ -588,7 +589,7 @@ export class DeveloperActivityService {
     }
 
     // One definition, shared with the daily digest — see `activeDeveloperSet`.
-    const withSignal = activeDeveloperSet(commits, prs, index);
+    const withSignal = activeDeveloperSet(commits, index);
 
     // People only, for the tile and the roster alike — bots, anonymized
     // accounts and admin exclusions are not developers (DASHBOARDS.md §4.4.7),
@@ -656,7 +657,14 @@ export class DeveloperActivityService {
         copilotCoverage.collected
           ? copilotLookup(copilotRows, copilotSeats, index.byLogin)
           : null,
-      ).filter((row) => counted(row.developer)),
+        // Membership is the signal set, so the roster is exactly the people
+        // the "Active developers" headline counts — someone with only PRs or
+        // merge commits in the window has a row of figures but no signal
+        // (2026-11-04), and listing them would make the list longer than the
+        // number above it.
+      ).filter(
+        (row) => counted(row.developer) && withSignal.has(row.developer),
+      ),
       copilot: copilotCoverage,
       // Day totals (commits, LOC) keep all work; the contributors named under
       // each day are tracked developers only.
@@ -1652,11 +1660,11 @@ export function activeDeveloperRoster(
   mergesByDeveloper: ReadonlyMap<string, number> = new Map(),
   copilot: CopilotLookup | null = null,
 ): ActiveDeveloper[] {
-  // Merge-only contributors belong on the roster too: their merges are a
-  // signal (`activeDeveloperSet` counts them), so leaving them off would make
-  // the list shorter than the tile it explains. Copilot never changes who is
-  // on the roster or where: membership is the delivery-signal definition
-  // above, and the order stays alphabetical.
+  // Builds a row for everyone with any commits, PRs or merges in the window;
+  // the caller keeps only the rows in `activeDeveloperSet`, so the list is
+  // exactly the tile it explains. Copilot never changes who is on the roster
+  // or where: membership is the delivery-signal definition, and the order
+  // stays alphabetical.
   const everyone = new Set([
     ...commitsByDeveloper.keys(),
     ...prsByDeveloper.keys(),
@@ -1884,7 +1892,30 @@ export function attributeCommit(
 }
 
 /**
- * Who had a delivery signal in a window: commit authors ∪ PR authors.
+ * A commit that is a delivery signal: not a merge, and it changed something —
+ * lines, or (for binary or rename-only edits) files.
+ *
+ * Product decision 2026-11-04 (ADR-0009 amendment): PRs opened or merged, and
+ * merge commits, no longer count — a merge's stats are the merged branch's
+ * lines a second time, credited to whoever merged. A zero-line commit that
+ * changed files still counts: under the GraphQL transport the line count is a
+ * fetched answer, and most such commits on the reference tenant were real
+ * edits to report templates.
+ */
+export function isSignalCommit(commit: {
+  parentCount?: number | null;
+  additions: number;
+  deletions: number;
+  filesChanged: number;
+}): boolean {
+  if (isMergeCommit(commit)) {
+    return false;
+  }
+  return commit.additions + commit.deletions > 0 || commit.filesChanged > 0;
+}
+
+/**
+ * Who had a delivery signal in a window: authors of `isSignalCommit` commits.
  *
  * **The single definition of "active", used by both the Activity Overview
  * board and the daily digest notification.** It exists as one function
@@ -1895,30 +1926,29 @@ export function attributeCommit(
  *
  * That matters more for the digest than for the board: the digest NAMES the
  * people who are absent from this set, so any signal the board counts and the
- * digest does not becomes a person wrongly named in a Teams channel. Widening
- * this set is a legitimate improvement; widening it for only one caller is
- * not, and is impossible while both go through here.
+ * digest does not becomes a person wrongly named in a Teams channel. Changing
+ * this set is a product decision; changing it for only one caller is not
+ * possible while both go through here.
  */
 export function activeDeveloperSet(
   commits: readonly {
     authorLogin: string | null;
     authorEmail: string | null;
+    parentCount?: number | null;
+    additions: number;
+    deletions: number;
+    filesChanged: number;
   }[],
-  prs: readonly { authorLogin: string | null }[],
   index: { byLogin: Map<string, string>; byEmail: Map<string, string> },
 ): Set<string> {
   const active = new Set<string>();
   for (const commit of commits) {
+    if (!isSignalCommit(commit)) {
+      continue;
+    }
     const person = attributeCommit(commit, index);
     if (person) {
       active.add(person);
-    }
-  }
-  for (const pr of prs) {
-    if (pr.authorLogin) {
-      // Same fallback `attributeCommit` uses: a login is an identity even
-      // before the resolution pass has reached it.
-      active.add(index.byLogin.get(pr.authorLogin) ?? pr.authorLogin);
     }
   }
   return active;
