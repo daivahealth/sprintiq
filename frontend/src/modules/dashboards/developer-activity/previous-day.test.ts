@@ -11,7 +11,7 @@ const base: PreviousDayView = {
   day: '2026-10-16',
   outcome: 'named',
   withheld: null,
-  ruleText: "Counts commits and PRs opened only — reviews and Jira aren't counted.",
+  ruleText: "Counts commits that changed files only — PRs, merges, reviews and Jira aren't counted.",
   rosterCount: 66,
   flagged: Array.from({ length: 15 }, (_, i) => ({
     developer: `d${i}`,

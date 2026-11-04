@@ -275,7 +275,7 @@ describe('panel command gating', () => {
 describe('previewActiveLine', () => {
   it('reads like the Overview tile: active tracked developers out of the list', () => {
     expect(previewActiveLine({ rosterCount: 66, activeCount: 40 })).toBe(
-      'Active developers: 40 / 66 · tracked developers with a commit or PR',
+      'Active developers: 40 / 66 · tracked developers with a commit that changed files',
     );
   });
 

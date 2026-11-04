@@ -38,8 +38,7 @@ describe('daily digest tenant isolation', () => {
         ]),
       },
       watchlistExclusion: { findMany: capture([]) },
-      pullRequest: { findMany: capture([]) },
-      commit: { groupBy: capture([]) },
+      commit: { findMany: capture([]) },
     };
     const identities = {
       attributionIndex: jest.fn().mockResolvedValue({
@@ -130,13 +129,36 @@ interface HarnessOptions {
    * `staleSeconds` above.
    */
   lastSyncAt?: Date | null;
-  commits?: { authorLogin: string | null; authorEmail: string | null }[];
+  /**
+   * Commits in the day's read. Each defaults to a single-parent commit that
+   * changed one line in one file — a signal under `isSignalCommit` — unless
+   * the test overrides those fields.
+   */
+  commits?: CommitFixture[];
   truncated?: boolean;
-  prs?: { authorLogin: string | null }[];
-  /** Rows `commit.groupBy` (the `committedAt: null` read) resolves to. */
-  invisibleRows?: { authorLogin: string | null; authorEmail: string | null }[];
+  /** Rows `commit.findMany` (the `committedAt: null` read) resolves to. */
+  invisibleRows?: CommitFixture[];
   byLogin?: Map<string, string>;
   byEmail?: Map<string, string>;
+}
+
+interface CommitFixture {
+  authorLogin: string | null;
+  authorEmail: string | null;
+  parentCount?: number | null;
+  additions?: number;
+  deletions?: number;
+  filesChanged?: number;
+}
+
+function withStats(commits: CommitFixture[] = []) {
+  return commits.map((c) => ({
+    parentCount: 1,
+    additions: 1,
+    deletions: 0,
+    filesChanged: 1,
+    ...c,
+  }));
 }
 
 function roster(ids: string[]) {
@@ -155,9 +177,8 @@ function harness(opts: HarnessOptions = {}) {
     watchlistExclusion: {
       findMany: jest.fn().mockResolvedValue(opts.exclusions ?? []),
     },
-    pullRequest: { findMany: jest.fn().mockResolvedValue(opts.prs ?? []) },
     commit: {
-      groupBy: jest.fn().mockResolvedValue(opts.invisibleRows ?? []),
+      findMany: jest.fn().mockResolvedValue(withStats(opts.invisibleRows)),
     },
   };
   const identities = {
@@ -170,7 +191,7 @@ function harness(opts: HarnessOptions = {}) {
   };
   const code = {
     listCommitsPage: jest.fn().mockResolvedValue({
-      commits: opts.commits ?? [],
+      commits: withStats(opts.commits),
       truncated: opts.truncated ?? false,
     }),
   };
@@ -647,20 +668,27 @@ describe('unattributedCommits count', () => {
 });
 
 describe('commitsInvisibleToTheDayRead query shape', () => {
-  it('queries commit.groupBy for committedAt: null within the reported day, and withholds a developer found only that way as incomplete rather than flagging them', async () => {
+  it('queries commit.findMany for committedAt: null within the reported day, and withholds a developer found only that way as incomplete rather than flagging them', async () => {
     const { service, prisma } = harness({
       roster: roster(['gary_athma']),
       displayNames: names([['gary_athma', 'Gary G']]),
-      // Nothing in the ordinary commit/PR read — gary looks idle unless the
+      // Nothing in the ordinary commit read — gary looks idle unless the
       // committedAt-null read finds him.
       invisibleRows: [{ authorLogin: 'gary_athma', authorEmail: null }],
     });
 
     const result = await service.detect('tenant_a', REPORTED_DAY);
 
-    expect(prisma.commit.groupBy).toHaveBeenCalledWith(
+    expect(prisma.commit.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        by: ['authorLogin', 'authorEmail'],
+        // The fields `isSignalCommit` needs, so the invisible read applies
+        // the same rule as the day's read.
+        select: expect.objectContaining({
+          parentCount: true,
+          additions: true,
+          deletions: true,
+          filesChanged: true,
+        }),
         where: expect.objectContaining({
           tenantId: 'tenant_a',
           committedAt: null,
@@ -679,5 +707,94 @@ describe('commitsInvisibleToTheDayRead query shape', () => {
       'gary_athma',
     ]);
     expect(result.evaluation.flagged).toEqual([]);
+  });
+
+  it('withholds nobody for an invisible merge commit — it would not have been a signal either', async () => {
+    const { service } = harness({
+      roster: roster(['gary_athma', 'hana_athma']),
+      displayNames: names([
+        ['gary_athma', 'Gary G'],
+        ['hana_athma', 'Hana H'],
+      ]),
+      // hana keeps the implausible-share gate quiet.
+      commits: [{ authorLogin: 'hana_athma', authorEmail: null }],
+      invisibleRows: [
+        { authorLogin: 'gary_athma', authorEmail: null, parentCount: 2 },
+      ],
+    });
+
+    const result = await service.detect('tenant_a', REPORTED_DAY);
+
+    expect(result.evaluation.incomplete).toEqual([]);
+    expect(result.evaluation.flagged.map((d) => d.developer)).toEqual([
+      'gary_athma',
+    ]);
+  });
+});
+
+describe('what counts as a signal (ADR-0009 amendment, 2026-11-04)', () => {
+  // Two active people keep the implausible-share gate (> 80% flagged) quiet
+  // while one roster entry is under test.
+  const active = [
+    { authorLogin: 'hana_athma', authorEmail: null },
+    { authorLogin: 'ivan_athma', authorEmail: null },
+  ];
+  const people = names([
+    ['gary_athma', 'Gary G'],
+    ['hana_athma', 'Hana H'],
+    ['ivan_athma', 'Ivan I'],
+  ]);
+  const detectWith = async (garyCommits: CommitFixture[]) => {
+    const { service } = harness({
+      roster: roster(['gary_athma', 'hana_athma', 'ivan_athma']),
+      displayNames: people,
+      commits: [...active, ...garyCommits],
+    });
+    return service.detect('tenant_a', REPORTED_DAY);
+  };
+  const flaggedIds = (result: Awaited<ReturnType<typeof detectWith>>) =>
+    result.evaluation.flagged.map((d) => d.developer);
+
+  it('names someone whose only activity was opening or merging a PR', async () => {
+    // No PR read at all any more: a PR-only day has no qualifying commit.
+    expect(flaggedIds(await detectWith([]))).toEqual(['gary_athma']);
+  });
+
+  it('names someone whose only commit was a merge, whatever its line count', async () => {
+    const result = await detectWith([
+      {
+        authorLogin: 'gary_athma',
+        authorEmail: null,
+        parentCount: 2,
+        additions: 430,
+      },
+    ]);
+    expect(flaggedIds(result)).toEqual(['gary_athma']);
+  });
+
+  it('names someone whose only commit was empty', async () => {
+    const result = await detectWith([
+      {
+        authorLogin: 'gary_athma',
+        authorEmail: null,
+        additions: 0,
+        deletions: 0,
+        filesChanged: 0,
+      },
+    ]);
+    expect(flaggedIds(result)).toEqual(['gary_athma']);
+  });
+
+  it('does not name someone whose commit changed files but no lines', async () => {
+    const result = await detectWith([
+      {
+        authorLogin: 'gary_athma',
+        authorEmail: null,
+        additions: 0,
+        deletions: 0,
+        filesChanged: 2,
+      },
+    ]);
+    expect(flaggedIds(result)).toEqual([]);
   });
 });

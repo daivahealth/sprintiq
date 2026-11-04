@@ -513,13 +513,12 @@ export class NoCommitDetectionService {
       }
     }
 
-    const [{ commits, truncated }, prs] = await Promise.all([
-      this.code.listCommitsPage(tenantId, { from, to }),
-      this.prisma.pullRequest.findMany({
-        where: { tenantId, openedAt: { gte: from, lte: to } },
-        select: { authorLogin: true },
-      }),
-    ]);
+    // Commits only: PRs opened or merged are not a signal since 2026-11-04
+    // (ADR-0009 amendment) — see `isSignalCommit`.
+    const { commits, truncated } = await this.code.listCommitsPage(tenantId, {
+      from,
+      to,
+    });
 
     // Gate 2: a short commit read makes the active set unreliable, and every
     // developer it omitted would be flagged. The flag exists precisely so
@@ -541,7 +540,7 @@ export class NoCommitDetectionService {
       };
     }
 
-    const activeSet = activeDeveloperSet(commits, prs, index);
+    const activeSet = activeDeveloperSet(commits, index);
     const incompleteSet = await this.commitsInvisibleToTheDayRead(
       tenantId,
       index,
@@ -685,17 +684,24 @@ export class NoCommitDetectionService {
     from: Date,
     to: Date,
   ): Promise<Set<string>> {
-    const rows = await this.prisma.commit.groupBy({
-      by: ['authorLogin', 'authorEmail'],
+    const rows = await this.prisma.commit.findMany({
       where: {
         tenantId,
         committedAt: null,
         authoredAt: { gte: from, lte: to },
       },
+      select: {
+        authorLogin: true,
+        authorEmail: true,
+        parentCount: true,
+        additions: true,
+        deletions: true,
+        filesChanged: true,
+      },
     });
-    // Same attribution as the active set, with no PRs to consider — so a
-    // developer identified here is identified by exactly the rules that would
-    // have recognised them had the column been populated.
-    return activeDeveloperSet(rows, [], index);
+    // Same rule and attribution as the active set — so a developer identified
+    // here is identified by exactly the rules that would have counted them had
+    // the column been populated, and an invisible merge withholds nobody.
+    return activeDeveloperSet(rows, index);
   }
 }

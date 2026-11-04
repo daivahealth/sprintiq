@@ -8,7 +8,7 @@ describe('activeDevelopersTile', () => {
     ).toEqual({
       label: 'Active developers',
       value: '40 / 66',
-      hint: 'tracked developers with a commit or PR',
+      hint: 'tracked developers with a commit that changed files',
     });
   });
 

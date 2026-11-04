@@ -1,6 +1,6 @@
 # ADR-0009: Attributed daily commit digest to Microsoft Teams
 
-- **Status:** Accepted — implemented 2026-09-18; amended 2026-10-19 and 2026-11-03
+- **Status:** Accepted — implemented 2026-09-18; amended 2026-10-19, 2026-11-03 and 2026-11-04
 - **Date:** 2026-09-18
 - **Deciders:** Product owner
 - **Related:** [CLAUDE.md](../../CLAUDE.md) ("Metrics are ethics-first"), [features/NOTIFICATIONS.md](../features/NOTIFICATIONS.md), [api/README.md §8](../api/README.md), [security/AUTH-AND-RBAC.md §5](../security/AUTH-AND-RBAC.md), [METRICS.md `sprint_productivity_grade`](../features/METRICS.md) (the first, and until now only, exception to this rule)
@@ -51,6 +51,22 @@ This relaxes condition 1 for the card only:
 **The cost, stated plainly.** §Consequences below says condition 1 "is not decoration", because "no tracked signal yesterday" is not "did no work". That is still true, and channel readers now see the names without the rule. A developer who spent the day reviewing code, or merged a PR opened earlier, is named with nothing on the card explaining why. The mitigation is that the rule is one click away on the Watchlist for admins, and that the message is a prompt to check in, not a finding.
 
 Scope stays narrow. This amendment changes only what the Teams card displays. It does not change the active-set definition, who is named, the channel, the Watchlist (which must keep showing the rule), or any other surface. Putting the rule back on the card needs no new decision; removing it from the Watchlist, or extending this relaxation to any other attributed surface, needs the decision taken again.
+
+## Amendment, 2026-11-04 — only commits that changed files count
+
+**Decision (2026-11-04, requested by Rohan R Venugopal; pending product-owner sign-off):** the rule the list is computed from narrows. A developer counts as active on a day only with a **non-merge commit that changed files**: `parentCount` ≤ 1 or unknown, and lines added + deleted > 0 or files changed > 0 (`isSignalCommit`, `backend/src/metrics/developer-activity.service.ts`). Opening a PR, merging one, merge commits and empty commits no longer count. The trigger was a real case on the reference tenant: a developer with no commits on 3 Nov was left off the list because they opened and merged one PR that day.
+
+Why the edges fall where they do:
+
+- **Merge commits do not count, whatever their line count.** A merge's stats are the merged branch's lines a second time, credited to whoever merged — 2,352 of 2,412 merges in a 30-day sample carried lines, so a line filter would have counted almost every merge. Squash and rebase merges are ordinary single-parent commits and still count, usually for the PR's author.
+- **A commit that changed files but no lines counts.** Under the GraphQL transport the line count arrives inline with the commit, so 0 is a fetched answer, not a missing one. In the same sample, 50 of 54 zero-line non-merge commits reported files changed (report templates — binary or rename-only edits): real work.
+- **Commits whose stats were never collected** can only arise under the REST transport, from push webhooks (deferred), or from data collected before GraphQL was switched on. Under REST such a commit reads as empty and its author can be named; the GraphQL transport is therefore a precondition for this rule being accurate.
+
+**Parity is kept, not broken.** The change is made in the one shared function, so the Activity Overview's "Active developers" tile and roster, the admin Watchlist's previous-day card and the Teams digest all move together — exactly as §Consequences requires ("made in the Overview first and inherited by the digest"). The Overview roster is now filtered to the same set, so a PR-only or merge-only person has no row, while team totals still count their PRs and merges. The Watchlist's recency buckets are a separate, earlier surface (2026-10-19 amendment) and are unchanged; they still count PRs, merges and reviews.
+
+**Conditions 1–3 are unchanged in substance.** The rule text is updated to match — "Counts commits that changed files only — PRs, merges, reviews and Jira aren't counted." (`DIGEST_RULE_TEXT`) — and still ships beside the list on the Watchlist. Suppressions, withhold gates, alphabetical order, run records and audit are untouched. The invisible-commit (`committedAt` null) check applies the same rule, so an invisible merge withholds nobody.
+
+**The cost, stated plainly.** More people are named: anyone whose day was reviewing, opening or merging PRs, or merging branches. That widens the cost §Consequences already accepts for reviewers to PR and merge work, and the card no longer says so (2026-11-03 amendment). It is a product decision about what "activity" means for this list, not a defect.
 
 ## Consequences
 
