@@ -165,10 +165,7 @@ describe('NoCommitDetectionService audit-sync coverage gate', () => {
         ]),
       },
       watchlistExclusion: { findMany: jest.fn().mockResolvedValue([]) },
-      pullRequest: {
-        findMany: jest.fn().mockResolvedValue([{ authorLogin: 'finn' }]),
-      },
-      commit: { groupBy: jest.fn().mockResolvedValue([]) },
+      commit: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const identities = {
       attributionIndex: jest.fn().mockResolvedValue({
@@ -184,10 +181,22 @@ describe('NoCommitDetectionService audit-sync coverage gate', () => {
         excluded: new Set(),
       }),
     };
+    // finn is the active one: a single-parent commit that changed a line
+    // (a PR alone no longer counts — 2026-11-04).
     const code = {
-      listCommitsPage: jest
-        .fn()
-        .mockResolvedValue({ commits: [], truncated: false }),
+      listCommitsPage: jest.fn().mockResolvedValue({
+        commits: [
+          {
+            authorLogin: 'finn',
+            authorEmail: null,
+            parentCount: 1,
+            additions: 3,
+            deletions: 1,
+            filesChanged: 1,
+          },
+        ],
+        truncated: false,
+      }),
     };
     const connections = {
       getDataFreshness: jest.fn().mockResolvedValue({

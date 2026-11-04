@@ -8,10 +8,11 @@
  * carrying 43% of all changed lines. Counting them doubles a merged branch's
  * volume and moves it onto the merger.
  *
- * Excluded from *volume*, not from *signal*: merging is real activity, so the
- * shared "active" definition (`activeDeveloperSet`, which the daily digest also
- * uses) and the Watchlist still see merge commits. Every view that drops them
- * discloses how many it dropped.
+ * Excluded from *volume*, and — since 2026-11-04 (ADR-0009 amendment) — from
+ * the shared "active" definition too (`isSignalCommit` / `activeDeveloperSet`,
+ * which the Overview and the daily digest share): merging a PR is not counted
+ * as a day's activity. Every view that drops them discloses how many it
+ * dropped.
  *
  * `parentCount` null means unknown (not yet backfilled, or GitHub no longer
  * answers for the commit) and is treated as NOT a merge — the conservative

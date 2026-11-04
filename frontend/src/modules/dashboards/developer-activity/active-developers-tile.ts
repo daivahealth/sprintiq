@@ -20,13 +20,15 @@ export function activeDevelopersTile(totals: {
       value: String(totals.developersWithSignal),
       hint:
         tracked === null
-          ? 'everyone with a commit or PR — add people on Developers with No GH-Recorded Activity to count your team'
-          : 'commit or PR in this window',
+          ? 'everyone with a commit that changed files — add people on Developers with No GH-Recorded Activity to count your team'
+          : 'commit that changed files in this window',
     };
   }
+  // "Commit that changed files" since 2026-11-04: PRs and merge commits alone
+  // no longer count (ADR-0009 amendment, backend `isSignalCommit`).
   return {
     label: 'Active developers',
     value: `${totals.developersWithSignal} / ${tracked}`,
-    hint: 'tracked developers with a commit or PR',
+    hint: 'tracked developers with a commit that changed files',
   };
 }

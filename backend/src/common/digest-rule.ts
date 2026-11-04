@@ -7,6 +7,9 @@
  * Teams card until the ADR-0009 amendment of 2026-11-03 removed it from
  * there; keep this the single source if the card ever displays the rule
  * again — two copies of a rule sentence drift.
+ *
+ * Reworded 2026-11-04 with the rule itself (ADR-0009 amendment): a day counts
+ * only with a non-merge commit that changed files (`isSignalCommit`).
  */
 export const DIGEST_RULE_TEXT =
-  "Counts commits and PRs opened only — reviews and Jira aren't counted.";
+  "Counts commits that changed files only — PRs, merges, reviews and Jira aren't counted.";

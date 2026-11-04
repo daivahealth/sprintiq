@@ -336,7 +336,7 @@ function ActiveDevelopers({
         <div>
           <h3 className="font-semibold text-fg">Active developers</h3>
           <p className="text-xs text-fg-subtle">
-            {developers.length} with a commit or PR in this window — select one
+            {developers.length} with a commit that changed files in this window — select one
             for their profile
           </p>
         </div>

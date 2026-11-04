@@ -439,40 +439,89 @@ describe('activeDeveloperSet', () => {
     byLogin: new Map([['alice_athma', 'alice_athma']]),
     byEmail: new Map([['bob@example.com', 'bob_athma']]),
   };
-
-  it('is the union of commit authors and PR authors', () => {
-    // The Overview's "developers with a signal" tile counts both. A set built
-    // from committers alone is a different, quietly narrower definition.
-    const set = activeDeveloperSet(
-      [{ authorLogin: 'alice_athma', authorEmail: null }],
-      [{ authorLogin: 'carol_athma' }],
-      index,
-    );
-    expect([...set].sort()).toEqual(['alice_athma', 'carol_athma']);
+  /** An ordinary single-parent commit that changed one line in one file. */
+  const changed = (
+    authorLogin: string | null,
+    authorEmail: string | null = null,
+    overrides: Partial<{
+      parentCount: number | null;
+      additions: number;
+      deletions: number;
+      filesChanged: number;
+    }> = {},
+  ) => ({
+    authorLogin,
+    authorEmail,
+    parentCount: 1,
+    additions: 1,
+    deletions: 0,
+    filesChanged: 1,
+    ...overrides,
   });
 
-  it('attributes a commit with no login through its email', () => {
-    // GitHub omits author.login unless the commit email is verified on an
-    // account, so this is the ordinary case, not an edge case.
-    const set = activeDeveloperSet(
-      [{ authorLogin: null, authorEmail: 'BOB@example.com' }],
-      [],
-      index,
-    );
-    expect([...set]).toEqual(['bob_athma']);
+  it('counts the author of a non-merge commit that changed lines', () => {
+    const set = activeDeveloperSet([changed('alice_athma')], index);
+    expect([...set]).toEqual(['alice_athma']);
   });
 
-  it('ignores a commit that cannot be attributed to anyone', () => {
+  it('counts a commit that changed files but no lines (binary or rename-only)', () => {
+    // Measured 2026-11-04: most zero-line commits on the reference tenant
+    // report files changed (report templates). That is real work, and the
+    // line count is a fetched answer, not a missing one.
     const set = activeDeveloperSet(
-      [{ authorLogin: null, authorEmail: 'nobody@example.com' }],
-      [],
+      [changed('alice_athma', null, { additions: 0, filesChanged: 2 })],
+      index,
+    );
+    expect([...set]).toEqual(['alice_athma']);
+  });
+
+  it('does not count a merge commit, however many lines it shows (2026-11-04)', () => {
+    // A merge's stats are the merged branch's lines a second time, credited
+    // to whoever merged — merging a PR is not counted as activity.
+    const set = activeDeveloperSet(
+      [changed('alice_athma', null, { parentCount: 2, additions: 430 })],
       index,
     );
     expect(set.size).toBe(0);
   });
 
-  it('ignores a PR with no author login', () => {
-    const set = activeDeveloperSet([], [{ authorLogin: null }], index);
+  it('does not count an empty commit (no lines, no files)', () => {
+    const set = activeDeveloperSet(
+      [
+        changed('alice_athma', null, {
+          additions: 0,
+          deletions: 0,
+          filesChanged: 0,
+        }),
+      ],
+      index,
+    );
+    expect(set.size).toBe(0);
+  });
+
+  it('treats an unknown parentCount as a non-merge commit', () => {
+    // Same reading as `isMergeCommit`: null is "not yet backfilled", and
+    // treating it as a merge would name someone whose only commit predates
+    // the backfill.
+    const set = activeDeveloperSet(
+      [changed('alice_athma', null, { parentCount: null })],
+      index,
+    );
+    expect([...set]).toEqual(['alice_athma']);
+  });
+
+  it('attributes a commit with no login through its email', () => {
+    // GitHub omits author.login unless the commit email is verified on an
+    // account, so this is the ordinary case, not an edge case.
+    const set = activeDeveloperSet([changed(null, 'BOB@example.com')], index);
+    expect([...set]).toEqual(['bob_athma']);
+  });
+
+  it('ignores a commit that cannot be attributed to anyone', () => {
+    const set = activeDeveloperSet(
+      [changed(null, 'nobody@example.com')],
+      index,
+    );
     expect(set.size).toBe(0);
   });
 
@@ -481,20 +530,14 @@ describe('activeDeveloperSet', () => {
     // reached yet. If this regresses, the person it drops is exactly someone
     // who committed but would be named in a Teams channel as having done
     // nothing — the highest-cost failure this function can have.
-    const set = activeDeveloperSet(
-      [{ authorLogin: 'dave_unresolved', authorEmail: null }],
-      [],
-      index,
-    );
+    const set = activeDeveloperSet([changed('dave_unresolved')], index);
     expect([...set]).toEqual(['dave_unresolved']);
   });
 
-  it('dedupes a person who is both a commit author and a PR author', () => {
-    // The union must be a set of people, not a tally of events. Two records
-    // for the same person should never inflate developersWithSignal by one.
+  it('dedupes a person with several qualifying commits', () => {
+    // A set of people, not a tally of events.
     const set = activeDeveloperSet(
-      [{ authorLogin: 'alice_athma', authorEmail: null }],
-      [{ authorLogin: 'alice_athma' }],
+      [changed('alice_athma'), changed('alice_athma')],
       index,
     );
     expect([...set]).toEqual(['alice_athma']);
@@ -790,7 +833,14 @@ describe('Copilot column (ADR-0012)', () => {
 });
 
 describe('DeveloperActivityService.overview — people and the Copilot column', () => {
-  function service(copilotCollected: boolean, tracked: string[] = []) {
+  function service(
+    copilotCollected: boolean,
+    tracked: string[] = [],
+    extra: {
+      commits?: Record<string, unknown>[];
+      prs?: Record<string, unknown>[];
+    } = {},
+  ) {
     const commit = (login: string) => ({
       sha: `sha-${login}`,
       repoFullName: 'org/repo',
@@ -809,6 +859,7 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
           commit('dependabot[bot]'),
           commit('gone'),
           commit('ravi'),
+          ...(extra.commits ?? []),
         ],
         truncated: false,
       }),
@@ -856,7 +907,7 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
       bridgeCoverage: jest.fn().mockReturnValue({}),
     };
     const prisma = {
-      pullRequest: { findMany: jest.fn().mockResolvedValue([]) },
+      pullRequest: { findMany: jest.fn().mockResolvedValue(extra.prs ?? []) },
       developerRole: { findMany: jest.fn().mockResolvedValue([]) },
       trackedDeveloper: {
         findMany: jest
@@ -877,6 +928,40 @@ describe('DeveloperActivityService.overview — people and the Copilot column', 
 
   const from = new Date('2026-10-01T00:00:00+05:30');
   const to = new Date('2026-10-14T23:59:59+05:30');
+
+  it('leaves PR-only and merge-only people off the roster and out of the tile (2026-11-04)', async () => {
+    const view = await service(true, [], {
+      // meera only merged (a 2-parent commit); omar only opened a PR.
+      commits: [
+        {
+          sha: 'sha-meera-merge',
+          repoFullName: 'org/repo',
+          authorLogin: 'meera',
+          authorEmail: null,
+          committedAt: new Date('2026-10-10T07:00:00Z'),
+          authoredAt: new Date('2026-10-10T07:00:00Z'),
+          additions: 430,
+          deletions: 12,
+          parentCount: 2,
+        },
+      ],
+      prs: [
+        {
+          authorLogin: 'omar',
+          openedAt: new Date('2026-10-10T08:00:00Z'),
+          mergedAt: new Date('2026-10-10T09:00:00Z'),
+        },
+      ],
+    }).overview([], from, to, 14);
+    expect(view.activeDevelopers.map((d) => d.developer)).toEqual([
+      'asha',
+      'ravi',
+    ]);
+    expect(view.totals.developersWithSignal).toBe(2);
+    // Their work still shows in the team totals.
+    expect(view.totals.prsOpened).toBe(1);
+    expect(view.totals.mergeCommitsExcluded).toBe(1);
+  });
 
   it('lists people only, and the tile counts exactly the list', async () => {
     const view = await service(true).overview([], from, to, 14);
