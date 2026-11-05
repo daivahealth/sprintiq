@@ -59,7 +59,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
   it('keeps a genuinely running sprint in the ranked cards', async () => {
     planning.listSprints.mockResolvedValue([sprint({})]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.rows).toHaveLength(1);
     expect(view.stale).toHaveLength(0);
@@ -72,7 +72,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
       sprint({ endAt: new Date('2026-08-09T00:00:00.000Z') }),
     ]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.rows).toHaveLength(1);
     expect(view.stale).toHaveLength(0);
@@ -96,7 +96,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
       }),
     ]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.rows.map((r) => r.sprint.externalId)).toEqual(['live']);
     expect(view.stale).toHaveLength(1);
@@ -107,10 +107,66 @@ describe('InsightsService — sprints Jira still calls active', () => {
   it('never calls a sprint stale when it has no end date to be past', async () => {
     planning.listSprints.mockResolvedValue([sprint({ endAt: null })]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.stale).toHaveLength(0);
     expect(view.rows).toHaveLength(1);
+  });
+
+  // A monthly sprint here is shared by two dozen projects; pooled, it
+  // answers no one's question, so nothing is computed without a project.
+  it('asks for a project instead of pooling every project into one card', async () => {
+    const view = await service.activeSprintsHealth([]);
+
+    expect(view.projectRequired).toBe(true);
+    expect(view.rows).toHaveLength(0);
+    expect(planning.listSprints).not.toHaveBeenCalled();
+  });
+
+  it('gives each project its own card for a shared sprint, over its own items', async () => {
+    const shared = sprint({ externalId: 'shared', projectKey: 'ACT' });
+    planning.listSprints.mockResolvedValue([shared]);
+    planning.listItemsForSprint.mockImplementation(
+      async (_t: string, _s: string, projects?: string[]) =>
+        [
+          { id: 'a', projectKey: 'ACT', type: 'story', status: 'Done' },
+          { id: 'b', projectKey: 'ACT', type: 'story', status: 'To Do' },
+          { id: 'c', projectKey: 'NHC', type: 'story', status: 'Done' },
+        ].filter(
+          (i) => !projects?.length || projects.includes(i.projectKey),
+        ) as never,
+    );
+
+    const view = await service.activeSprintsHealth(['ACT', 'NHC']);
+
+    expect(planning.listSprints).toHaveBeenCalledWith(
+      'tenant-a',
+      ['ACT'],
+      'active',
+    );
+    expect(planning.listSprints).toHaveBeenCalledWith(
+      'tenant-a',
+      ['NHC'],
+      'active',
+    );
+    const byProject = new Map(view.rows.map((r) => [r.projects[0], r]));
+    expect(view.rows).toHaveLength(2);
+    expect(byProject.get('ACT')!.itemsTotal).toBe(2);
+    expect(byProject.get('NHC')!.itemsTotal).toBe(1);
+    expect(view.projectRequired).toBe(false);
+  });
+
+  it('reports a stale sprint once, however many selected projects are in it', async () => {
+    planning.listSprints.mockResolvedValue([
+      sprint({
+        externalId: 'abandoned',
+        endAt: new Date('2022-03-30T00:00:00.000Z'),
+      }),
+    ]);
+
+    const view = await service.activeSprintsHealth(['ACT', 'NHC']);
+
+    expect(view.stale).toHaveLength(1);
   });
 
   it('applies the same split to Sprint Risk', async () => {

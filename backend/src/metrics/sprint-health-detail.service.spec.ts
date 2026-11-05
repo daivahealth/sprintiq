@@ -1,9 +1,10 @@
+import { CorrelationService } from '../correlation/correlation.service';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
+import { PullRequest } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
 import { PlanningService } from '../modules/planning/planning.service';
-import { InsightsService } from './insights.service';
 import { SprintHealthDetailService } from './sprint-health-detail.service';
 
 /** The sprint every test resolves '42' to, unless a test overrides the mock. */
@@ -29,6 +30,7 @@ function defaultCommits() {
   return Array.from({ length: 14 }, (_, i) => ({
     sha: `sha${i}`,
     repoFullName: 'org/act-api',
+    message: `ACT-1 change ${i}`,
     authorLogin: i % 2 === 0 ? 'alice' : 'bob',
     authorEmail: null,
     additions: 3,
@@ -41,9 +43,24 @@ function defaultCommits() {
 /** 3 sprint items, each assigned to a different person. */
 function defaultItems() {
   return [
-    { assigneeLogin: 'alice', assigneeName: 'Alice A' },
-    { assigneeLogin: 'bob', assigneeName: 'Bob B' },
-    { assigneeLogin: 'carol', assigneeName: 'Carol C' },
+    {
+      id: 'story-1',
+      externalKey: 'ACT-1',
+      assigneeLogin: 'alice',
+      assigneeName: 'Alice A',
+    },
+    {
+      id: 'story-2',
+      externalKey: 'ACT-2',
+      assigneeLogin: 'bob',
+      assigneeName: 'Bob B',
+    },
+    {
+      id: 'story-3',
+      externalKey: 'ACT-3',
+      assigneeLogin: 'carol',
+      assigneeName: 'Carol C',
+    },
   ];
 }
 
@@ -78,9 +95,9 @@ describe('SprintHealthDetailService.commitActivity', () => {
   let planning: jest.Mocked<PlanningService>;
   let code: jest.Mocked<CodeService>;
   let identities: jest.Mocked<DeveloperIdentityService>;
-  let insights: jest.Mocked<InsightsService>;
+  let correlation: jest.Mocked<CorrelationService>;
   let tenantContext: jest.Mocked<TenantContextService>;
-  let prisma: { pullRequest: { findMany: jest.Mock } };
+  let prisma: { prReview: { findMany: jest.Mock } };
   let service: SprintHealthDetailService;
 
   beforeEach(() => {
@@ -97,12 +114,15 @@ describe('SprintHealthDetailService.commitActivity', () => {
       ),
       listSprints: jest.fn().mockResolvedValue([]),
       listItemsForSprint: jest.fn().mockResolvedValue(defaultItems()),
+      findByKeys: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<PlanningService>;
 
     code = {
       listCommitsPage: jest
         .fn()
         .mockResolvedValue({ commits: defaultCommits(), truncated: false }),
+      branchesForCommits: jest.fn().mockResolvedValue([]),
+      listPullRequestsByRefs: jest.fn().mockResolvedValue(defaultPrs()),
     } as unknown as jest.Mocked<CodeService>;
 
     identities = {
@@ -114,18 +134,18 @@ describe('SprintHealthDetailService.commitActivity', () => {
       }),
     } as unknown as jest.Mocked<DeveloperIdentityService>;
 
-    insights = {
-      repoToProjects: jest
+    correlation = {
+      prRefsByStoryId: jest
         .fn()
-        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
-    } as unknown as jest.Mocked<InsightsService>;
+        .mockResolvedValue(new Map([['story-1', ['org/act-api#1']]])),
+    } as unknown as jest.Mocked<CorrelationService>;
 
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('t1'),
     } as unknown as jest.Mocked<TenantContextService>;
 
     prisma = {
-      pullRequest: { findMany: jest.fn().mockResolvedValue(defaultPrs()) },
+      prReview: { findMany: jest.fn().mockResolvedValue([]) },
     };
 
     service = new SprintHealthDetailService(
@@ -134,7 +154,7 @@ describe('SprintHealthDetailService.commitActivity', () => {
       planning,
       code,
       identities,
-      insights,
+      correlation,
     );
   });
 
@@ -162,6 +182,7 @@ describe('SprintHealthDetailService.commitActivity', () => {
     const botCommit = {
       sha: 'sha-bot',
       repoFullName: 'org/act-api',
+      message: 'ACT-2 bump lodash',
       authorLogin: 'dependabot[bot]',
       authorEmail: null,
       additions: 1,
@@ -172,6 +193,7 @@ describe('SprintHealthDetailService.commitActivity', () => {
     const anonymizedCommit = {
       sha: 'sha-anon',
       repoFullName: 'org/act-api',
+      message: 'ACT-3 fix',
       authorLogin: '1a824967e10493200d5a7ee2d91b87',
       authorEmail: null,
       additions: 1,
@@ -209,14 +231,14 @@ describe('SprintHealthDetailService.commitActivity', () => {
   // A sprint with no reviewed PR has no average. Reporting 0 would say
   // "reviewed instantly", the opposite of the truth.
   it('reports a null first-review average when nothing has been reviewed', async () => {
-    prisma.pullRequest.findMany.mockResolvedValue([
+    code.listPullRequestsByRefs.mockResolvedValue([
       {
         authorLogin: 'a',
         openedAt: new Date('2026-08-26'),
         firstReviewAt: null,
         mergedAt: null,
       },
-    ]);
+    ] as unknown as PullRequest[]);
     const view = await service.commitActivity('42');
     expect(view?.avgHoursToFirstReview).toBeNull();
     expect(view?.prsReviewed).toBe(0);
@@ -227,34 +249,117 @@ describe('SprintHealthDetailService.commitActivity', () => {
     expect(view?.prsWaitingOver24h).toBe(1);
   });
 
-  it('scopes commits to repos mapped to the sprint project', async () => {
-    insights.repoToProjects.mockResolvedValue(
-      new Map([
-        ['org/act-api', ['ACT']],
-        ['org/other', ['PAY']],
-      ]),
-    );
-    await service.commitActivity('42');
-    expect(code.listCommitsPage).toHaveBeenCalledWith(
-      't1',
-      expect.objectContaining({
-        repos: ['org/act-api'],
-      }),
-    );
-  });
+  // Git has no sprint field: a commit is this sprint's only when it names one
+  // of the sprint's tickets, in its message or on a branch it was seen on —
+  // not because it landed in a repo the project once touched.
+  describe('ticket linkage', () => {
+    const commit = (sha: string, message: string, extra = {}) => ({
+      sha,
+      repoFullName: 'org/shared',
+      message,
+      authorLogin: 'alice',
+      authorEmail: null,
+      additions: 1,
+      deletions: 0,
+      committedAt: new Date('2026-08-26T00:00:00.000Z'),
+      authoredAt: new Date('2026-08-26T00:00:00.000Z'),
+      ...extra,
+    });
+    const page = (commits: ReturnType<typeof commit>[]) => ({
+      commits: commits as unknown as Awaited<
+        ReturnType<CodeService['listCommitsPage']>
+      >['commits'],
+      truncated: false,
+    });
 
-  // The guard that stops an unmapped project from reading every repo in the
-  // tenant: `listCommitsPage` treats an EMPTY `repos` filter as "no filter",
-  // so when nothing maps to this sprint's project the service must skip the
-  // read entirely rather than pass `repos: []` through.
-  it('reports zero commits and skips the read entirely when no repo maps to the sprint project', async () => {
-    insights.repoToProjects.mockResolvedValue(
-      new Map([['org/other', ['PAY']]]),
-    );
-    const view = await service.commitActivity('42');
-    expect(code.listCommitsPage).not.toHaveBeenCalled();
-    expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
-    expect(view).toMatchObject({ commits: 0, repos: [] });
+    it('reads the whole window, not a repo list', async () => {
+      await service.commitActivity('42');
+      expect(code.listCommitsPage).toHaveBeenCalledWith('t1', {
+        from: defaultSprint().startAt,
+        to: new Date('2026-08-31T00:00:00.000Z'),
+      });
+    });
+
+    it('counts commits naming a sprint ticket and sorts the rest into disclosed buckets', async () => {
+      code.listCommitsPage.mockResolvedValue(
+        page([
+          commit('a', 'ACT-1 add endpoint'),
+          commit('b', 'tidy up'), // linked by its branch only
+          commit('c', 'ACT-99 backlog work'), // this project, not this sprint
+          commit('d', 'PAY-7 another project'), // neither bucket
+          commit('e', 'no ticket at all'),
+          commit('f', 'UTF-8 handling'), // a key Jira does not know
+          commit('g', 'Merge ACT-1', { parentCount: 2 }),
+        ]),
+      );
+      code.branchesForCommits.mockResolvedValue([
+        { repoFullName: 'org/shared', branch: 'feature/ACT-2-login', sha: 'b' },
+      ]);
+      planning.findByKeys.mockResolvedValue([
+        { externalKey: 'ACT-99', projectKey: 'ACT' },
+        { externalKey: 'PAY-7', projectKey: 'PAY' },
+      ] as Awaited<ReturnType<PlanningService['findByKeys']>>);
+
+      const view = await service.commitActivity('42', ['ACT']);
+
+      expect(view?.commits).toBe(2);
+      expect(view?.mergeCommitsExcluded).toBe(1);
+      expect(view?.linkage).toEqual({
+        sprintTickets: 3,
+        linkedCommits: 2,
+        linkedViaBranchOnly: 1,
+        otherTicketCommits: 1,
+        noTicketCommits: 2,
+        reposTouched: ['org/shared'],
+        truncated: false,
+      });
+    });
+
+    it('reads a ticket from any copy of a commit before copies collapse', async () => {
+      code.listCommitsPage.mockResolvedValue(
+        page([
+          commit('a', 'tidy up'),
+          commit('a', 'tidy up', { repoFullName: 'org/shared-copy' }),
+        ]),
+      );
+      code.branchesForCommits.mockResolvedValue([
+        { repoFullName: 'org/shared-copy', branch: 'ACT-3-fix', sha: 'a' },
+      ]);
+
+      const view = await service.commitActivity('42');
+
+      expect(view?.commits).toBe(1);
+      expect(view?.linkage.linkedViaBranchOnly).toBe(1);
+    });
+
+    it('takes PRs from the sprint tickets, opened inside the window', async () => {
+      code.listPullRequestsByRefs.mockResolvedValue([
+        ...defaultPrs(),
+        {
+          ...defaultPrs()[0],
+          externalNumber: '3',
+          openedAt: new Date('2026-08-01T00:00:00.000Z'),
+        },
+      ] as unknown as Awaited<
+        ReturnType<CodeService['listPullRequestsByRefs']>
+      >);
+
+      const view = await service.commitActivity('42');
+
+      expect(code.listPullRequestsByRefs).toHaveBeenCalledWith('t1', [
+        'org/act-api#1',
+      ]);
+      expect(view?.prsRaised).toBe(2);
+    });
+
+    it('reports a truncated window read', async () => {
+      code.listCommitsPage.mockResolvedValue({
+        ...page([commit('a', 'ACT-1')]),
+        truncated: true,
+      });
+      const view = await service.commitActivity('42');
+      expect(view?.linkage.truncated).toBe(true);
+    });
   });
 
   // Isolation is tested, not assumed. Every read on this service resolves its
@@ -284,13 +389,28 @@ describe('SprintHealthDetailService.commitActivity', () => {
       '42',
       [],
     );
-    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(correlation.prRefsByStoryId).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
+    );
     expect(code.listCommitsPage).toHaveBeenCalledWith(
       't-other',
       expect.anything(),
     );
     expect(identities.attributionIndex).toHaveBeenCalledWith('t-other');
-    expect(prisma.pullRequest.findMany).toHaveBeenCalledWith(
+    expect(code.branchesForCommits).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
+    );
+    expect(planning.findByKeys).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
+    );
+    expect(code.listPullRequestsByRefs).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
+    );
+    expect(prisma.prReview.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ tenantId: 't-other' }),
       }),
@@ -314,7 +434,7 @@ describe('SprintHealthDetailService.commitActivity', () => {
     );
     expect(view).toBeNull();
     expect(code.listCommitsPage).not.toHaveBeenCalled();
-    expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
+    expect(code.listPullRequestsByRefs).not.toHaveBeenCalled();
   });
 });
 
@@ -340,6 +460,7 @@ function productivityCommits() {
   return PRODUCTIVITY_DEVS.map((d, i) => ({
     sha: `sha-${d.developer}`,
     repoFullName: 'org/act-api',
+    message: `ACT-1 ${d.developer} work`,
     authorLogin: d.developer,
     authorEmail: null,
     additions: d.additions,
@@ -390,7 +511,11 @@ function productivityTransitions() {
 
 /** The sprint's own item keys — every key `productivityTransitions` uses. */
 function productivitySprintItems() {
-  return productivityTransitions().map((t) => ({ externalKey: t.externalKey }));
+  return [
+    // The ticket every fixture commit names, so the commits link to the sprint.
+    { id: 'story-1', externalKey: 'ACT-1' },
+    ...productivityTransitions().map((t) => ({ externalKey: t.externalKey })),
+  ];
 }
 
 function productivityJiraIndex() {
@@ -414,10 +539,9 @@ describe('SprintHealthDetailService.productivity', () => {
   let planning: jest.Mocked<PlanningService>;
   let code: jest.Mocked<CodeService>;
   let identities: jest.Mocked<DeveloperIdentityService>;
-  let insights: jest.Mocked<InsightsService>;
+  let correlation: jest.Mocked<CorrelationService>;
   let tenantContext: jest.Mocked<TenantContextService>;
   let prisma: {
-    pullRequest: { findMany: jest.Mock };
     prReview: { findMany: jest.Mock };
     issueStatusHistory: { findMany: jest.Mock };
   };
@@ -436,6 +560,7 @@ describe('SprintHealthDetailService.productivity', () => {
       listItemsForSprint: jest
         .fn()
         .mockResolvedValue(productivitySprintItems()),
+      findByKeys: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<PlanningService>;
 
     code = {
@@ -443,6 +568,8 @@ describe('SprintHealthDetailService.productivity', () => {
         commits: productivityCommits(),
         truncated: false,
       }),
+      branchesForCommits: jest.fn().mockResolvedValue([]),
+      listPullRequestsByRefs: jest.fn().mockResolvedValue(productivityPrs()),
     } as unknown as jest.Mocked<CodeService>;
 
     identities = {
@@ -455,18 +582,17 @@ describe('SprintHealthDetailService.productivity', () => {
       jiraAssigneeIndex: jest.fn().mockResolvedValue(productivityJiraIndex()),
     } as unknown as jest.Mocked<DeveloperIdentityService>;
 
-    insights = {
-      repoToProjects: jest
+    correlation = {
+      prRefsByStoryId: jest
         .fn()
-        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
-    } as unknown as jest.Mocked<InsightsService>;
+        .mockResolvedValue(new Map([['story-1', ['org/act-api#1']]])),
+    } as unknown as jest.Mocked<CorrelationService>;
 
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('t1'),
     } as unknown as jest.Mocked<TenantContextService>;
 
     prisma = {
-      pullRequest: { findMany: jest.fn().mockResolvedValue(productivityPrs()) },
       prReview: {
         findMany: jest.fn().mockResolvedValue(productivityReviews()),
       },
@@ -481,7 +607,7 @@ describe('SprintHealthDetailService.productivity', () => {
       planning,
       code,
       identities,
-      insights,
+      correlation,
     );
   });
 
@@ -537,10 +663,10 @@ describe('SprintHealthDetailService.productivity', () => {
       firstReviewAt: null,
       mergedAt: null,
     }));
-    prisma.pullRequest.findMany.mockResolvedValue([
+    code.listPullRequestsByRefs.mockResolvedValue([
       ...productivityPrs(),
       ...botPrs,
-    ]);
+    ] as unknown as PullRequest[]);
 
     const view = await service.productivity('42');
 
@@ -565,8 +691,10 @@ describe('SprintHealthDetailService.productivity', () => {
       >['commits'],
       truncated: false,
     });
-    prisma.pullRequest.findMany.mockResolvedValue(
-      productivityPrs().filter((pr) => onlyAB(pr.authorLogin)),
+    code.listPullRequestsByRefs.mockResolvedValue(
+      productivityPrs().filter((pr) =>
+        onlyAB(pr.authorLogin),
+      ) as unknown as PullRequest[],
     );
     prisma.prReview.findMany.mockResolvedValue(
       productivityReviews().filter((r) => onlyAB(r.reviewerLogin)),
@@ -604,8 +732,10 @@ describe('SprintHealthDetailService.productivity', () => {
       >['commits'],
       truncated: false,
     });
-    prisma.pullRequest.findMany.mockResolvedValue(
-      productivityPrs().filter((pr) => pr.authorLogin === signalDev),
+    code.listPullRequestsByRefs.mockResolvedValue(
+      productivityPrs().filter(
+        (pr) => pr.authorLogin === signalDev,
+      ) as unknown as PullRequest[],
     );
     prisma.prReview.findMany.mockResolvedValue(
       productivityReviews().filter((r) => r.reviewerLogin === signalDev),
@@ -656,17 +786,19 @@ describe('SprintHealthDetailService.productivity', () => {
       '42',
       [],
     );
-    expect(insights.repoToProjects).toHaveBeenCalledWith('t-other');
+    expect(correlation.prRefsByStoryId).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
+    );
     expect(code.listCommitsPage).toHaveBeenCalledWith(
       't-other',
       expect.anything(),
     );
     expect(identities.attributionIndex).toHaveBeenCalledWith('t-other');
     expect(identities.jiraAssigneeIndex).toHaveBeenCalledWith('t-other');
-    expect(prisma.pullRequest.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ tenantId: 't-other' }),
-      }),
+    expect(code.listPullRequestsByRefs).toHaveBeenCalledWith(
+      't-other',
+      expect.anything(),
     );
     expect(prisma.prReview.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -694,7 +826,7 @@ describe('SprintHealthDetailService.productivity', () => {
     expect(view).toBeNull();
     expect(planning.listItemsForSprint).not.toHaveBeenCalled();
     expect(code.listCommitsPage).not.toHaveBeenCalled();
-    expect(prisma.pullRequest.findMany).not.toHaveBeenCalled();
+    expect(code.listPullRequestsByRefs).not.toHaveBeenCalled();
     expect(prisma.prReview.findMany).not.toHaveBeenCalled();
     expect(prisma.issueStatusHistory.findMany).not.toHaveBeenCalled();
   });
@@ -742,7 +874,7 @@ function qualityCheckDoneTransitions() {
 
 describe('SprintHealthDetailService.qualityCheck', () => {
   let planning: jest.Mocked<PlanningService>;
-  let insights: jest.Mocked<InsightsService>;
+  let correlation: jest.Mocked<CorrelationService>;
   let tenantContext: jest.Mocked<TenantContextService>;
   let history: { findMany: jest.Mock };
   let prisma: { issueStatusHistory: { findMany: jest.Mock } };
@@ -761,11 +893,11 @@ describe('SprintHealthDetailService.qualityCheck', () => {
       listItemsForSprint: jest.fn().mockResolvedValue(qualityCheckItems()),
     } as unknown as jest.Mocked<PlanningService>;
 
-    insights = {
-      repoToProjects: jest
+    correlation = {
+      prRefsByStoryId: jest
         .fn()
-        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
-    } as unknown as jest.Mocked<InsightsService>;
+        .mockResolvedValue(new Map([['story-1', ['org/act-api#1']]])),
+    } as unknown as jest.Mocked<CorrelationService>;
 
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('t1'),
@@ -782,7 +914,7 @@ describe('SprintHealthDetailService.qualityCheck', () => {
       planning,
       {} as unknown as CodeService,
       {} as unknown as DeveloperIdentityService,
-      insights,
+      correlation,
     );
   });
 
@@ -935,13 +1067,11 @@ describe('SprintHealthDetailService.qualityCheck', () => {
     expect(history.findMany).not.toHaveBeenCalled();
   });
 
-  // This panel needs only the sprint's own elapsed dates — never
-  // `win.repos` — so it must use the lean `sprintWindow()` path and skip the
-  // N+1 repo lookup (`insights.repoToProjects`, a scan over every project)
-  // entirely.
-  it('never calls the repo↔project lookup, which this panel does not need', async () => {
+  // This panel reads only Jira data over the sprint's own dates, so it must
+  // never pay for the ticket-linked GitHub read (`linkedWork`).
+  it('never reads ticket-linked GitHub work, which this panel does not need', async () => {
     await service.qualityCheck('42');
-    expect(insights.repoToProjects).not.toHaveBeenCalled();
+    expect(correlation.prRefsByStoryId).not.toHaveBeenCalled();
   });
 
   // The `rolledBackPct` bug: an item that entered `done` in the window but
@@ -990,7 +1120,7 @@ describe('SprintHealthDetailService.qualityCheck', () => {
 
 describe('SprintHealthDetailService.qualityCheck when nothing has been released', () => {
   let planning: jest.Mocked<PlanningService>;
-  let insights: jest.Mocked<InsightsService>;
+  let correlation: jest.Mocked<CorrelationService>;
   let tenantContext: jest.Mocked<TenantContextService>;
   let prisma: { issueStatusHistory: { findMany: jest.Mock } };
   let service: SprintHealthDetailService;
@@ -1025,11 +1155,11 @@ describe('SprintHealthDetailService.qualityCheck when nothing has been released'
       ]),
     } as unknown as jest.Mocked<PlanningService>;
 
-    insights = {
-      repoToProjects: jest
+    correlation = {
+      prRefsByStoryId: jest
         .fn()
-        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
-    } as unknown as jest.Mocked<InsightsService>;
+        .mockResolvedValue(new Map([['story-1', ['org/act-api#1']]])),
+    } as unknown as jest.Mocked<CorrelationService>;
 
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('t1'),
@@ -1045,7 +1175,7 @@ describe('SprintHealthDetailService.qualityCheck when nothing has been released'
       planning,
       {} as unknown as CodeService,
       {} as unknown as DeveloperIdentityService,
-      insights,
+      correlation,
     );
   });
 
@@ -1065,7 +1195,7 @@ describe('SprintHealthDetailService.qualityCheck when nothing has been released'
 describe('SprintHealthDetailService.checkIns', () => {
   let planning: jest.Mocked<PlanningService>;
   let identities: jest.Mocked<DeveloperIdentityService>;
-  let insights: jest.Mocked<InsightsService>;
+  let correlation: jest.Mocked<CorrelationService>;
   let tenantContext: jest.Mocked<TenantContextService>;
   let history: { findMany: jest.Mock };
   let prisma: { issueStatusHistory: { findMany: jest.Mock } };
@@ -1106,11 +1236,11 @@ describe('SprintHealthDetailService.checkIns', () => {
       }),
     } as unknown as jest.Mocked<DeveloperIdentityService>;
 
-    insights = {
-      repoToProjects: jest
+    correlation = {
+      prRefsByStoryId: jest
         .fn()
-        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
-    } as unknown as jest.Mocked<InsightsService>;
+        .mockResolvedValue(new Map([['story-1', ['org/act-api#1']]])),
+    } as unknown as jest.Mocked<CorrelationService>;
 
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('t1'),
@@ -1127,7 +1257,7 @@ describe('SprintHealthDetailService.checkIns', () => {
       planning,
       {} as unknown as CodeService,
       identities,
-      insights,
+      correlation,
     );
   });
 
@@ -1286,14 +1416,12 @@ describe('SprintHealthDetailService.checkIns', () => {
     );
   });
 
-  // This panel needs only the sprint's own elapsed dates — never `win.repos`
-  // — so it must use the lean `sprintWindow()` path and skip the N+1 repo
-  // lookup (`insights.repoToProjects`, a scan over every project) entirely.
-  // `GET /sprint-health` fans out to this panel on every board load, so a
-  // needless repo lookup here runs once per load for no reason.
-  it('never calls the repo↔project lookup, which this panel does not need', async () => {
+  // This panel reads only Jira data over the sprint's own dates, so it must
+  // never pay for the ticket-linked GitHub read (`linkedWork`), which would
+  // otherwise run once per page flip for no reason.
+  it('never reads ticket-linked GitHub work, which this panel does not need', async () => {
     await service.checkIns('42');
-    expect(insights.repoToProjects).not.toHaveBeenCalled();
+    expect(correlation.prRefsByStoryId).not.toHaveBeenCalled();
   });
 
   // The bug this file had no test for: the controller converts an IST
@@ -1514,7 +1642,7 @@ function defaultReleases() {
 
 describe('SprintHealthDetailService.releaseCandidates', () => {
   let planning: jest.Mocked<PlanningService>;
-  let insights: jest.Mocked<InsightsService>;
+  let correlation: jest.Mocked<CorrelationService>;
   let tenantContext: jest.Mocked<TenantContextService>;
   let release: { findMany: jest.Mock };
   let story: { findMany: jest.Mock };
@@ -1536,11 +1664,11 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
       listSprints: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<PlanningService>;
 
-    insights = {
-      repoToProjects: jest
+    correlation = {
+      prRefsByStoryId: jest
         .fn()
-        .mockResolvedValue(new Map([['org/act-api', ['ACT']]])),
-    } as unknown as jest.Mocked<InsightsService>;
+        .mockResolvedValue(new Map([['story-1', ['org/act-api#1']]])),
+    } as unknown as jest.Mocked<CorrelationService>;
 
     tenantContext = {
       requireTenantId: jest.fn().mockReturnValue('t1'),
@@ -1558,7 +1686,7 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
       planning,
       {} as unknown as CodeService,
       {} as unknown as DeveloperIdentityService,
-      insights,
+      correlation,
     );
   });
 
@@ -1740,13 +1868,13 @@ describe('SprintHealthDetailService.releaseCandidates', () => {
     expect(release.findMany).not.toHaveBeenCalled();
   });
 
-  // This panel needs only `sprint.projectKey` — never `win.repos`, and not
-  // even `win.from`/`win.to` — so it must reach the sprint directly rather
-  // than through `window()`/`sprintWindow()`, and it must never pay for the
-  // N+1 repo lookup (`insights.repoToProjects`, a scan over every project).
-  it('never calls the repo↔project lookup, which this panel does not need', async () => {
+  // This panel needs only `sprint.projectKey` — not even `win.from`/`win.to`
+  // — so it must reach the sprint directly rather than through
+  // `sprintWindow()`, and it must never pay for the ticket-linked GitHub
+  // read (`linkedWork`).
+  it('never reads ticket-linked GitHub work, which this panel does not need', async () => {
     await service.releaseCandidates('42');
-    expect(insights.repoToProjects).not.toHaveBeenCalled();
+    expect(correlation.prRefsByStoryId).not.toHaveBeenCalled();
   });
 
   // `window()` gates on `sprint.startAt`, which this panel has no use for —

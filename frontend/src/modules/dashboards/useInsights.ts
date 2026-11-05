@@ -72,6 +72,12 @@ export type SprintPace = 'on-track' | 'at-risk' | 'behind' | 'unknown';
 
 export interface SprintHealthView {
   sprint: SprintSummary;
+  /**
+   * The projects these figures cover — the card's label, not
+   * `sprint.projectKey` (the first project Jira saw in a sprint shared by
+   * many). Optional: an older API omits it.
+   */
+  projects?: string[];
   committedPoints: number;
   completedPoints: number;
   completionPct: number | null;
@@ -500,8 +506,13 @@ export function useActiveSprintsHealth(projects: string[]) {
         rows: SprintHealthView[];
         stale?: StaleSprint[];
         staleGraceDays?: number;
+        /** No project selected: the API computed nothing and wants one. */
+        projectRequired?: boolean;
         computedAt: string;
       }>(`/api/dashboards/sprint-health/active?${params}`),
+    // A shared monthly sprint pooled across every project answers no one's
+    // question, so nothing is asked for until a project is picked.
+    enabled: projects.length > 0,
   });
 }
 
@@ -521,7 +532,23 @@ export interface CommitActivityView {
   reviewedPct: number | null;
   avgHoursToFirstReview: number | null;
   prsWaitingOver24h: number;
-  repos: string[];
+  /** How the commits were linked to the sprint. Optional: an older API sends `repos` instead. */
+  linkage?: SprintCommitLinkage;
+}
+
+/**
+ * Commits belong to the sprint when their message or branch names one of its
+ * tickets (backend `SprintCommitLinkage`). Every count is authored commits in
+ * the sprint's window, each SHA once.
+ */
+export interface SprintCommitLinkage {
+  sprintTickets: number;
+  linkedCommits: number;
+  linkedViaBranchOnly: number;
+  otherTicketCommits: number;
+  noTicketCommits: number;
+  reposTouched: string[];
+  truncated: boolean;
 }
 
 export type ProductivityGrade = 'high' | 'medium' | 'low';

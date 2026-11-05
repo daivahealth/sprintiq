@@ -14,6 +14,7 @@ import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
 import { useProjects } from './useCatalog';
 import {
   type SprintPace,
+  type SprintSummary,
   type StaleSprint,
   type VelocityRow,
   useActiveSprintsHealth,
@@ -130,26 +131,38 @@ function PaceBadge({ pace }: { pace: SprintPace }) {
   return <Badge tone={PACE_TONE[pace]}>{pace}</Badge>;
 }
 
+/** "NHC · Sprint-26-11" — the scoped projects, falling back to the sprint's own. */
+function sprintLabel(view: { sprint: SprintSummary; projects?: string[] }) {
+  const projects =
+    view.projects && view.projects.length > 0
+      ? view.projects.join(', ')
+      : view.sprint.projectKey;
+  return `${projects} · ${view.sprint.name}`;
+}
+
 /**
- * Multi-project sprint lifecycles: the default view is ONE CARD PER ACTIVE
- * SPRINT (each project runs its own cadence), ranked worst-pace-first. Pace is
+ * One card per selected project for each sprint it is running, scoped to that
+ * project's items — sprints here are monthly and shared by many projects, so a
+ * pooled card answered no one's question. Ranked worst-pace-first; pace is
  * cadence-normalized (completion% vs elapsed% of that sprint's own window).
- * Click a card — or pick any sprint incl. closed ones — for the detail.
+ * Nothing is shown until a project is picked. Click a card — or pick any
+ * sprint incl. closed ones — for the detail.
  */
 export function SprintHealthBoard() {
   const { scope, setScope } = useScope();
   const [projectSearch, setProjectSearch] = useState('');
   const projects = useProjects(projectSearch);
+  const hasProject = scope.projects.length > 0;
   const active = useActiveSprintsHealth(scope.projects);
   const { sprints, sprint, setSprint } = useSprintSelection();
-  const detail = useSprintHealth(sprint, scope.projects);
-  const d = detail.data;
+  const detail = useSprintHealth(hasProject ? sprint : null, scope.projects);
+  const d = hasProject ? detail.data : undefined;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Sprint Health"
-        subtitle="Every project runs its own sprint lifecycle — all concurrent active sprints at a glance, worst pace first. Click one to drill in."
+        subtitle="The ongoing sprint for each project you pick, over that project's own tickets and the GitHub work linked to them. Click one to drill in."
       />
 
       <FilterBar>
@@ -173,31 +186,40 @@ export function SprintHealthBoard() {
         <FreshnessNote />
       </FilterBar>
 
-      {active.isLoading && <LoadingCard />}
-      {active.isError && <ErrorCard error={active.error} />}
-      {active.data && (
+      {!hasProject && (
+        <Card>
+          <p className="py-4 text-center text-sm text-fg-faint">
+            Pick a project to see its ongoing sprint. Sprints here are shared
+            by many projects, so each project&apos;s figures are shown on their
+            own.
+          </p>
+        </Card>
+      )}
+      {hasProject && active.isLoading && <LoadingCard />}
+      {hasProject && active.isError && <ErrorCard error={active.error} />}
+      {hasProject && active.data && (
         <div>
           <h4 className="mb-2 text-sm font-medium text-fg-muted">
-            Active sprints ({active.data.rows.length})
+            Ongoing sprints ({active.data.rows.length})
           </h4>
           {active.data.rows.length === 0 ? (
             <Card>
               <p className="py-4 text-center text-sm text-fg-faint">
-                No active sprints in scope.
+                No ongoing sprint for this project.
               </p>
             </Card>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {active.data.rows.map((row) => (
                 <button
-                  key={row.sprint.externalId}
+                  key={`${row.projects?.join(',') ?? ''}:${row.sprint.externalId}`}
                   type="button"
                   onClick={() => setSprint(row.sprint.externalId)}
                   className={cnCard(sprint === row.sprint.externalId)}
                 >
                   <div className="flex items-center justify-between">
                     <span className="truncate font-medium text-fg-secondary">
-                      {row.sprint.projectKey} · {row.sprint.name}
+                      {sprintLabel(row)}
                     </span>
                     <PaceBadge pace={row.pace} />
                   </div>
@@ -237,15 +259,13 @@ export function SprintHealthBoard() {
         </div>
       )}
 
-      {detail.isLoading && sprint && <LoadingCard />}
-      {detail.isError && <ErrorCard error={detail.error} />}
+      {hasProject && detail.isLoading && sprint && <LoadingCard />}
+      {hasProject && detail.isError && <ErrorCard error={detail.error} />}
       {d && (
         <>
           <Card>
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-fg">
-                {d.sprint.projectKey} · {d.sprint.name}
-              </h3>
+              <h3 className="font-semibold text-fg">{sprintLabel(d)}</h3>
               <span className="space-x-2">
                 <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
                   {d.sprint.state}
@@ -295,7 +315,11 @@ export function SprintHealthBoard() {
               CheckInGrid above. */}
           <ReleaseCandidateList
             sprint={d.sprint.externalId}
-            projectKey={d.sprint.projectKey}
+            projectKey={
+              scope.projects.length === 1
+                ? scope.projects[0]
+                : d.sprint.projectKey
+            }
             projects={scope.projects}
           />
 
