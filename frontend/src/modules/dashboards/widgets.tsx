@@ -103,10 +103,20 @@ export function SprintPicker({
   sprints,
   selected,
   onChange,
+  labelOf = (s) => `${s.projectKey} · ${s.name} (${s.state})`,
+  placeholder = 'Select a sprint…',
 }: {
   sprints: SprintCatalogItem[];
   selected: string | null;
   onChange: (externalId: string) => void;
+  /**
+   * Defaults to `sprint.projectKey`, which is only the first project Jira saw
+   * in a shared sprint — a board that knows the selected projects should pass
+   * its own label.
+   */
+  labelOf?: (sprint: SprintCatalogItem) => string;
+  /** Shown while nothing is selected — including when there is nothing to pick. */
+  placeholder?: string;
 }) {
   return (
     <div>
@@ -117,11 +127,11 @@ export function SprintPicker({
         className="w-64 rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg outline-none focus:border-brand"
       >
         <option value="" disabled>
-          Select a sprint…
+          {placeholder}
         </option>
         {sprints.map((s) => (
           <option key={s.externalId} value={s.externalId}>
-            {s.projectKey} · {s.name} ({s.state})
+            {labelOf(s)}
           </option>
         ))}
       </select>

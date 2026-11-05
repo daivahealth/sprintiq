@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FreshnessNote } from './FreshnessNote';
 import { MultiSelect } from '../../components/multi-select';
@@ -13,6 +13,7 @@ import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
 import { useProjects } from './useCatalog';
 import {
+  type SprintHealthView,
   type SprintPace,
   type SprintSummary,
   type StaleSprint,
@@ -141,12 +142,58 @@ function sprintLabel(view: { sprint: SprintSummary; projects?: string[] }) {
 }
 
 /**
+ * Sprint Health's picker: the selected projects' ongoing sprints only, one
+ * option per sprint, labelled with the selected projects that run it.
+ *
+ * Not `useSprintSelection`: that lists the catalog's active AND closed sprints
+ * labelled by `sprint.projectKey`, so ACT's picker offered 59 sprints, 30 of
+ * them under another project's name ("AS2 · Sprint-26-10" — ACT's own October
+ * sprint, filed under AS2 because Jira saw AS2 in it first). A sprint in the
+ * URL that is not ongoing for these projects — a stale link, a hand-edited
+ * URL — is replaced by the ongoing one rather than shown.
+ */
+function useOngoingSprintSelection(rows: SprintHealthView[] | undefined) {
+  const { scope, setScope } = useScope();
+  const options = useMemo(() => {
+    const bySprint = new Map<string, { sprint: SprintSummary; projects: string[] }>();
+    for (const row of rows ?? []) {
+      const entry = bySprint.get(row.sprint.externalId) ?? {
+        sprint: row.sprint,
+        projects: [],
+      };
+      entry.projects.push(...(row.projects ?? []));
+      bySprint.set(row.sprint.externalId, entry);
+    }
+    return [...bySprint.values()].map((e) => ({
+      ...e,
+      projects: [...new Set(e.projects)].sort(),
+    }));
+  }, [rows]);
+  const setSprint = useCallback(
+    (externalId: string) => setScope({ sprint: externalId }),
+    [setScope],
+  );
+
+  const sprint = scope.sprint;
+  useEffect(() => {
+    if (rows === undefined) return;
+    if (!options.some((o) => o.sprint.externalId === sprint)) {
+      const next = options[0]?.sprint.externalId ?? null;
+      if (next !== sprint) setScope({ sprint: next });
+    }
+  }, [rows, options, sprint, setScope]);
+
+  const valid = options.some((o) => o.sprint.externalId === sprint);
+  return { options, sprint: valid ? sprint : null, setSprint };
+}
+
+/**
  * One card per selected project for each sprint it is running, scoped to that
  * project's items — sprints here are monthly and shared by many projects, so a
  * pooled card answered no one's question. Ranked worst-pace-first; pace is
  * cadence-normalized (completion% vs elapsed% of that sprint's own window).
- * Nothing is shown until a project is picked. Click a card — or pick any
- * sprint incl. closed ones — for the detail.
+ * Nothing is shown until a project is picked, and only ongoing sprints can be
+ * opened — closed ones are not offered.
  */
 export function SprintHealthBoard() {
   const { scope, setScope } = useScope();
@@ -154,9 +201,11 @@ export function SprintHealthBoard() {
   const projects = useProjects(projectSearch);
   const hasProject = scope.projects.length > 0;
   const active = useActiveSprintsHealth(scope.projects);
-  const { sprints, sprint, setSprint } = useSprintSelection();
+  const { options, sprint, setSprint } = useOngoingSprintSelection(
+    hasProject ? active.data?.rows : undefined,
+  );
   const detail = useSprintHealth(hasProject ? sprint : null, scope.projects);
-  const d = hasProject ? detail.data : undefined;
+  const d = hasProject && sprint ? detail.data : undefined;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -176,9 +225,19 @@ export function SprintHealthBoard() {
           emptyText="No projects found"
         />
         <SprintPicker
-          sprints={sprints}
+          sprints={options.map((o) => o.sprint)}
           selected={sprint}
           onChange={setSprint}
+          labelOf={(s) =>
+            sprintLabel(
+              options.find((o) => o.sprint.externalId === s.externalId) ?? {
+                sprint: s,
+              },
+            )
+          }
+          placeholder={
+            hasProject ? 'No ongoing sprint' : 'Pick a project first'
+          }
         />
         {/* These boards build their own FilterBar instead of the shared
             ScopeBar, so freshness has to be mounted explicitly — otherwise
@@ -526,8 +585,10 @@ function sprintDates(row: VelocityRow): string {
 }
 
 /**
- * One sprint's row. Clicking drills into that sprint on Sprint Health, which
- * is why sprint selection lives in the URL.
+ * One sprint's row. The running sprint's row drills into Sprint Health, which
+ * is why sprint selection lives in the URL; past sprints are not clickable,
+ * because Sprint Health opens only a project's ongoing sprint (DASHBOARDS.md
+ * §4.1.4).
  */
 function VelocitySprintRow({
   row,
@@ -538,18 +599,22 @@ function VelocitySprintRow({
   row: VelocityRow;
   max: number;
   byItems: boolean;
-  onOpen: () => void;
+  /** Absent for a sprint Sprint Health will not open — the row is then inert. */
+  onOpen?: () => void;
 }) {
   const value = byItems ? row.itemsDone : row.completedPoints;
   const total = byItems ? row.itemsTotal : row.committedPoints;
   const unit = byItems ? 'items' : 'pts';
 
+  const Row = onOpen ? 'button' : 'div';
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition hover:bg-subtle focus-visible:bg-subtle"
-      title={`Open ${row.sprint.name} on Sprint Health`}
+    <Row
+      {...(onOpen ? { type: 'button' as const, onClick: onOpen } : {})}
+      className={cn(
+        'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm',
+        onOpen && 'transition hover:bg-subtle focus-visible:bg-subtle',
+      )}
+      title={onOpen ? `Open ${row.sprint.name} on Sprint Health` : undefined}
     >
       <span className="w-40 shrink-0 truncate">
         <span className="font-medium text-fg-secondary">{row.sprint.name}</span>
@@ -601,7 +666,7 @@ function VelocitySprintRow({
           </span>
         ) : null}
       </span>
-    </button>
+    </Row>
   );
 }
 
@@ -631,7 +696,7 @@ export function VelocityBoard() {
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Velocity"
-        subtitle="How much each project completes per sprint, most recent first. Click a sprint to open it."
+        subtitle="How much each project completes per sprint, most recent first. Click the running sprint to open it on Sprint Health."
       />
       {/* Velocity is Jira-only — it sends projects and nothing else, so the
           repo/time/group-by axes would be controls that silently do nothing. */}
@@ -708,7 +773,11 @@ export function VelocityBoard() {
                   row={r}
                   max={max}
                   byItems={byItems}
-                  onOpen={() => openSprint(g.projectKey, r.sprint.externalId)}
+                  onOpen={
+                    r.inProgress
+                      ? () => openSprint(g.projectKey, r.sprint.externalId)
+                      : undefined
+                  }
                 />
               ))}
             </div>
