@@ -666,13 +666,18 @@ export class InsightsService {
     sprint: Sprint,
     projectKeys: string[] = [],
   ): Promise<SprintHealthView> {
+    // Work items as Jira's own sprint counts them: no epics (containers) and
+    // no subtasks. A subtask is part of its parent's work, and counting it
+    // made the card disagree with the board — NHIL on Sprint-26-11 read
+    // "1/7 done" (a Closed subtask of NHIL-835) where Jira shows 6 items, 0
+    // done. Commit linkage still reads subtask keys (SprintHealthDetailService).
     const items = (
       await this.planning.listItemsForSprint(
         tenantId,
         sprint.externalId,
         projectKeys,
       )
-    ).filter((i) => i.type !== 'epic');
+    ).filter((i) => i.type !== 'epic' && i.type !== 'subtask');
     const views = await this.toViews(tenantId, items);
 
     const done = views.filter((v) => v.done);

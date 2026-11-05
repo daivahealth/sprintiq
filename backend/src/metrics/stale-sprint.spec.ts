@@ -156,6 +156,23 @@ describe('InsightsService — sprints Jira still calls active', () => {
     expect(view.projectRequired).toBe(false);
   });
 
+  // Jira's sprint counts work items without subtasks; a Closed subtask made
+  // NHIL's card read "1/7 done" against the board's 6 items, 0 done.
+  it('counts work items as Jira does — no epics, no subtasks', async () => {
+    planning.listSprints.mockResolvedValue([sprint({})]);
+    planning.listItemsForSprint.mockResolvedValue([
+      { id: 'a', projectKey: 'NHIL', type: 'story', status: 'Ready for QA' },
+      { id: 'b', projectKey: 'NHIL', type: 'story', status: 'In Progress' },
+      { id: 'c', projectKey: 'NHIL', type: 'subtask', status: 'Closed' },
+      { id: 'd', projectKey: 'NHIL', type: 'epic', status: 'Done' },
+    ] as never);
+
+    const view = await service.activeSprintsHealth(['NHIL']);
+
+    expect(view.rows[0].itemsTotal).toBe(2);
+    expect(view.rows[0].itemsDone).toBe(0);
+  });
+
   it('reports a stale sprint once, however many selected projects are in it', async () => {
     planning.listSprints.mockResolvedValue([
       sprint({
