@@ -1,4 +1,4 @@
-import { Stat } from '../widgets';
+import { MetalStat as Stat } from './metal';
 import type { CommitActivityView, SprintCommitLinkage } from '../useInsights';
 
 /**

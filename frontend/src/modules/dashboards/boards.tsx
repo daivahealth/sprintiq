@@ -12,6 +12,7 @@ import { ProductivityPanel } from './sprint-health/ProductivityPanel';
 import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
 import { SprintWorkPanel } from './sprint-health/SprintWorkPanel';
+import { Tip } from './sprint-health/metal';
 import { useProjects } from './useCatalog';
 import {
   type SprintHealthView,
@@ -275,7 +276,7 @@ export function SprintHealthBoard() {
                   key={`${row.projects?.join(',') ?? ''}:${row.sprint.externalId}`}
                   type="button"
                   onClick={() => setSprint(row.sprint.externalId)}
-                  className={cnCard(sprint === row.sprint.externalId)}
+                  className={cnMetalCard(sprint === row.sprint.externalId)}
                 >
                   <div className="flex items-center justify-between">
                     <span className="truncate font-medium text-fg-secondary">
@@ -286,6 +287,7 @@ export function SprintHealthBoard() {
                   <PaceBar
                     completionPct={row.completionPct}
                     elapsedPct={row.elapsedPct}
+                    tip={paceExplainer(row)}
                   />
                   <div className="flex justify-between text-xs text-fg-subtle">
                     <span>
@@ -444,22 +446,52 @@ function cnCard(selected: boolean): string {
   );
 }
 
+/**
+ * Sprint Health's ongoing-sprint card: brushed steel with a sheen on hover
+ * (DESIGN-SYSTEM.md "Metallic accents" — this board only; Sprint Risk keeps
+ * `cnCard`). Selection is a brand ring, never a lift.
+ */
+function cnMetalCard(selected: boolean): string {
+  return cn(
+    'metal-surface metal-sheen space-y-2 rounded-xl p-4 text-left transition hover:border-brand/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40',
+    selected && 'border-brand ring-2 ring-brand/25',
+  );
+}
+
+/** "On-track: …" — what the pace badge means for this card, for the bar's tooltip. */
+function paceExplainer(row: SprintHealthView): string {
+  if (row.completionPct === null || row.elapsedPct === null) {
+    return 'Pace unknown: no estimated points, or no sprint dates.';
+  }
+  const gap = Math.round(row.elapsedPct - row.completionPct);
+  const done = `${Math.round(row.completionPct)}% of points done (${row.completedPoints} of ${row.committedPoints})`;
+  const time = `${Math.round(row.elapsedPct)}% of the sprint elapsed`;
+  const verdict =
+    gap <= 0
+      ? 'work is ahead of the calendar'
+      : `work is ${gap} points behind the calendar (on-track ≤ 10, at-risk ≤ 30)`;
+  return `${done} · ${time} — ${verdict}.`;
+}
+
 /** Completion vs elapsed on one track — the cadence-normalized pace visual. */
 function PaceBar({
   completionPct,
   elapsedPct,
+  tip,
 }: {
   completionPct: number | null;
   elapsedPct: number | null;
+  /** Hover/focus explanation; when given, the fill also gets the metallic finish. */
+  tip?: string;
 }) {
   // The "today" marker sits outside the clipped track and overhangs it, ringed
   // in the card's surface colour: drawn inside the fill as a faint 2px line it
   // read as a rendering glitch rather than a marker.
-  return (
-    <div className="relative py-1">
+  const bar = (
+    <div className="relative w-full py-1">
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
-          className="h-full rounded-full bg-brand"
+          className={cn('h-full rounded-full bg-brand', tip && 'metal-bar')}
           style={{ width: `${Math.min(100, completionPct ?? 0)}%` }}
         />
       </div>
@@ -467,10 +499,17 @@ function PaceBar({
         <div
           className="absolute inset-y-0 w-[3px] -translate-x-1/2 rounded-full bg-fg ring-2 ring-surface"
           style={{ left: `${Math.min(100, elapsedPct)}%` }}
-          title={`Today: ${Math.round(elapsedPct)}% of the sprint has elapsed`}
+          title={tip ? undefined : `Today: ${Math.round(elapsedPct)}% of the sprint has elapsed`}
         />
       )}
     </div>
+  );
+  return tip ? (
+    <Tip className="flex w-full" content={tip}>
+      {bar}
+    </Tip>
+  ) : (
+    bar
   );
 }
 

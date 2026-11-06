@@ -157,6 +157,18 @@ Standard easing: `cubic-bezier(0.16, 1, 0.3, 1)`.
 
 Explicitly **not** built, and not to be added incidentally: springs, card lift on hover, route/page transitions, layout animations on filter change. If a change seems to call for one of these, it's a deliberate design call, not a natural extension of the existing motion table.
 
+## Metallic accents (Sprint Health only)
+
+**Decided 2026-11-06, a deliberate exception** to the flat editorial direction above, scoped to the Sprint Health board. Asked for by the product owner ("more metallic and interactive"); the lighter of two options was chosen — accents, not a re-skin — so the board still reads as the same instrument.
+
+- **Tokens:** `--metal-hi`, `--metal-lo` (the brushed gradient's two ends), `--metal-edge` (bevel highlight), `--metal-shine` (grain and sheen), `--metal-shade` (bevel and bar shading). Defined in `:root`, `.light` and `.dark` like every token, as RGB channels.
+- **Classes** (`index.css`, `@layer components`): `metal-surface` (gradient + faint brushed grain + 1px border + inset bevel — no drop shadow), `metal-sheen` (one highlight sweep on hover/focus, 700ms, moved by `background-position` so the parent needs no `overflow: hidden` that would clip tooltips; hidden under `prefers-reduced-motion`), `metal-bar` (polished shading over a bar fill's own `bg-*` token).
+- **Components** (`modules/dashboards/sprint-health/metal.tsx`, not `components/ui` — they are not for other boards): `MetalStat` (a `Stat` on `metal-surface`; a toggle button with `aria-pressed` when given `onClick`) and `Tip` (CSS-only hover/focus tooltip on `bg-popover`, 150ms plain transition).
+- **Where:** ongoing-sprint cards and their pace bar, commit-activity tiles, and the Sprint work panel's tiles, bars and gap cards.
+- **Still not built, here either:** card lift on hover, drop shadows, springs, layout animation on filter change. Selection is a brand ring. The 700ms sheen is the one motion longer than the table above, and only decorates — no information depends on it.
+
+Using these on another board is a new decision, not a reuse.
+
 ## Density
 
 One page-shell width (`max-w-6xl`) — the pre-refactor split between `max-w-5xl` and `max-w-6xl` across dashboards had no rationale. `Card` padding is `p-4` (was `p-5`); table rows `py-2.5` (unchanged, already tight). This is an instrument-density product: prefer showing more rows/columns over generous whitespace.
