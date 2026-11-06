@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { PrReview, PullRequest, Sprint } from '@prisma/client';
+import { Commit, PrReview, PullRequest, Sprint, Story } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
 import { istDateKey } from '../common/time';
+import { CorrelationService } from '../correlation/correlation.service';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
 import {
   isAnonymizedAccount,
@@ -9,11 +10,14 @@ import {
 } from '../correlation/developer-identity.util';
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
-import { PlanningService } from '../modules/planning/planning.service';
+import {
+  PlanningService,
+  isJiraDone,
+} from '../modules/planning/planning.service';
 import { attributeCommit } from './developer-activity.service';
-import { InsightsService } from './insights.service';
 import { distinctCommitsBySha } from './commit-dedupe';
-import { partitionMerges } from './merge-commits';
+import { candidateTicketKeys, ticketKeysByCommit } from './developer-tickets';
+import { isMergeCommit, partitionMerges } from './merge-commits';
 
 /** The sprint's own elapsed window, clamped to now. */
 export interface SprintWindowDates {
@@ -24,14 +28,182 @@ export interface SprintWindowDates {
 }
 
 /**
- * `SprintWindowDates` plus the repos the sprint's project maps to.
+ * How the sprint's commits were found, and how much of the window they cover.
  *
- * `repos` costs its own read (`insights.repoToProjects`, an N+1 scan over
- * every project) on top of the dates, so it is a separate, wider type rather
- * than a field every caller pays for — see `window()`/`sprintWindow()` below.
+ * Git has no sprint field, so a commit belongs to the sprint only when its
+ * message or a branch it was on names one of the sprint's own tickets (in the
+ * projects in scope). Every count here is over authored commits in the
+ * sprint's window, each SHA once.
  */
-export interface SprintWindow extends SprintWindowDates {
-  repos: string[];
+export interface SprintCommitLinkage {
+  /** The sprint's tickets in scope — what a commit has to name. */
+  sprintTickets: number;
+  /** Commits naming a sprint ticket — the population every tile counts. */
+  linkedCommits: number;
+  /** Of `linkedCommits`, the ones whose branch named the ticket but whose message did not. */
+  linkedViaBranchOnly: number;
+  /** Commits naming a ticket of the projects in scope that is not in this sprint. */
+  otherTicketCommits: number;
+  /**
+   * Commits naming no ticket Jira knows — they cannot be placed in any
+   * project, so this is the whole tenant's figure for the window, the same
+   * whichever project is in scope.
+   */
+  noTicketCommits: number;
+  /** Repositories the linked commits landed in. */
+  reposTouched: string[];
+  /** The window read hit its row ceiling, so every count here is a floor. */
+  truncated: boolean;
+}
+
+/** The sprint's ticket-linked GitHub activity, shared by two panels. */
+interface LinkedWork {
+  /** Linked commits, merges included — callers split them. */
+  commits: Commit[];
+  /** PRs implementing a sprint ticket, opened inside the window. */
+  prs: PullRequest[];
+  /** Reviews on any PR implementing a sprint ticket, submitted inside the window. */
+  reviews: PrReview[];
+  /** Every PR implementing a sprint ticket, whenever it was opened. */
+  allPrs: PullRequest[];
+  /** PR refs (`repo#number`) per sprint story id. */
+  refsByStory: Map<string, string[]>;
+  /** Sprint ticket keys each linked commit names, by SHA. */
+  ticketsBySha: Map<string, string[]>;
+  /** Tickets of the projects in scope in NO sprint → authored commits naming them. */
+  offSprintKeys: Map<string, number>;
+  /** Tickets of the projects in scope in ANOTHER sprint → authored commits naming them. */
+  otherSprintKeys: Map<string, number>;
+  /** Keys shaped like a ticket of a project in scope that Jira does not know → commits. */
+  unknownKeys: Map<string, number>;
+  /** Authored commits naming no ticket-shaped key at all, by repository. */
+  untaggedByRepo: Map<string, number>;
+  linkage: SprintCommitLinkage;
+}
+
+/**
+ * One way Jira's record lags, or misses, the GitHub work on the same tickets
+ * — each with a known fix, which the board states beside it.
+ *
+ * Per ticket:
+ * - `progress-not-marked`: code exists but Jira has not started the ticket
+ *   (To Do, or a "ready for development" style status).
+ * - `jira-not-updated`: a PR is merged, none is open, and Jira still holds the
+ *   ticket in a development status.
+ * - `in-qa`: a PR is merged and Jira is in a QA/UAT/review/defect status —
+ *   the expected flow, reported for information only.
+ * - `done-before-merge`: Jira says done while its only PRs are still open.
+ * - `unassigned-with-code`: code exists, Jira has no assignee.
+ * - `no-code-linked`: Jira has the ticket in development, but no commit,
+ *   branch or PR names it.
+ *
+ * Sprint-wide (from commits, not tickets):
+ * - `ticket-not-in-sprint`: commits name tickets of this project that are in
+ *   no sprint (the backlog) — worked on, never planned.
+ * - `ticket-in-other-sprint`: commits name tickets of this project that sit in
+ *   another sprint — usually unfinished work not carried over.
+ * - `ticket-not-logged`: commits name a key of this project Jira has no
+ *   ticket for — never logged, or a typo.
+ * - `commits-not-tagged`: commits in the repositories this sprint's work lives
+ *   in name no ticket at all.
+ *
+ * QA vs development is read from the status NAME, because Jira's category
+ * puts both in "in progress"; the patterns are `QA_STATUS` / `NOT_STARTED_STATUS`.
+ */
+export type DataGapKind =
+  | 'progress-not-marked'
+  | 'jira-not-updated'
+  | 'in-qa'
+  | 'done-before-merge'
+  | 'unassigned-with-code'
+  | 'no-code-linked'
+  | 'ticket-not-in-sprint'
+  | 'ticket-in-other-sprint'
+  | 'ticket-not-logged'
+  | 'commits-not-tagged';
+
+export interface DataGapFinding {
+  kind: DataGapKind;
+  /** `action`: someone should fix the record. `info`: expected, shown for context. */
+  severity: 'action' | 'info';
+  /** Tickets affected (per-ticket kinds) or distinct keys / repos named (sprint-wide). */
+  count: number;
+  /** Authored commits behind a sprint-wide finding; null for per-ticket kinds. */
+  commits: number | null;
+  /** Up to `GAP_SAMPLE` keys (or repositories, for `commits-not-tagged`), most commits first. */
+  sample: string[];
+}
+
+/** Jira's three board columns — the status CATEGORY, not the status name. */
+export type JiraStatusBucket = 'todo' | 'in-progress' | 'done';
+
+/**
+ * How far a ticket's code has got, from GitHub alone: a merged PR, an open
+ * PR, commits naming it with no PR, or nothing.
+ */
+export type CodeState = 'merged' | 'in-review' | 'committed' | 'none';
+
+/**
+ * Jira and GitHub disagreeing about one ticket. GitHub is authoritative for
+ * code facts and Jira for workflow, so neither overwrites the other's figure —
+ * the disagreement is shown instead.
+ *
+ * - `github-ahead`: a PR is merged but Jira has not reached its done category
+ *   (often "Ready for QA" — QA is work GitHub cannot see).
+ * - `jira-ahead`: Jira says done while the ticket's only PRs are still open.
+ */
+export type SourceClash = 'github-ahead' | 'jira-ahead';
+
+export interface SprintTicketRow {
+  key: string;
+  title: string;
+  type: string;
+  /** Jira's status name, as the board shows it. */
+  status: string;
+  bucket: JiraStatusBucket;
+  storyPoints: number | null;
+  assigneeName: string | null;
+  epicKey: string | null;
+  /** The ticket's subtasks in this sprint — counted here, not as work items. */
+  subtasks: { total: number; done: number };
+  /** From GitHub; a subtask's commits and PRs roll up to its parent. */
+  code: {
+    state: CodeState;
+    prs: { ref: string; state: string; mergedAt: string | null }[];
+    /** Authored commits in the sprint window naming the ticket or a subtask. */
+    commits: number;
+    lastCommitAt: string | null;
+  };
+  clash: SourceClash | null;
+  /** The per-ticket `DataGapKind`s that apply, most actionable first. */
+  gaps: DataGapKind[];
+}
+
+export interface SprintEpicRow {
+  /** Null groups the work items that have no epic. */
+  key: string | null;
+  title: string | null;
+  items: number;
+  done: number;
+  points: number;
+}
+
+/**
+ * The sprint's Jira structure for the projects in scope — work items by
+ * board column, type and epic — beside what GitHub says about each one.
+ */
+export interface SprintWorkBreakdownView {
+  buckets: Record<JiraStatusBucket, { items: number; points: number }>;
+  byType: { type: string; items: number; done: number }[];
+  subtasks: { total: number; done: number };
+  epics: SprintEpicRow[];
+  code: Record<CodeState, number>;
+  clashes: { githubAhead: number; jiraAhead: number };
+  unestimated: number;
+  unassigned: number;
+  /** Where Jira lags or misses the GitHub work, most actionable first; empty when none. */
+  gaps: DataGapFinding[];
+  tickets: SprintTicketRow[];
 }
 
 export interface CommitActivityView {
@@ -48,11 +220,54 @@ export interface CommitActivityView {
   reviewedPct: number | null;
   avgHoursToFirstReview: number | null;
   prsWaitingOver24h: number;
-  repos: string[];
+  linkage: SprintCommitLinkage;
 }
 
 /** A PR waiting this long with no first review is flagged as waiting. */
 const REVIEW_WAIT_THRESHOLD_HOURS = 24;
+
+/**
+ * How long one sprint's linked work is reused. The sprint-health route asks
+ * for it from three panels at once; without this each re-read the window's
+ * commits (up to 20,000 rows) and their branches.
+ */
+const LINKED_WORK_TTL_MS = 30_000;
+
+/**
+ * Jira statuses that sit AFTER the code is written — QA, UAT, review, open
+ * defects. Merged code there is the expected flow, not a stale Jira.
+ */
+const QA_STATUS = /\b(qa|test|testing|uat|review|verif\w*|defects?)\b/i;
+
+/**
+ * "In progress" category statuses that still mean nobody has started — this
+ * tenant's "READY FOR DEVELOPMENT" is in Jira's indeterminate category.
+ */
+const NOT_STARTED_STATUS = /\bready for (dev\w*|design)\b/i;
+
+/** Keys or repos listed per finding — enough to act on, not a dump. */
+const GAP_SAMPLE = 8;
+
+/** Order findings are shown in: what to fix in Jira first, context last. */
+const GAP_ORDER: DataGapKind[] = [
+  'progress-not-marked',
+  'jira-not-updated',
+  'done-before-merge',
+  'ticket-not-in-sprint',
+  'ticket-in-other-sprint',
+  'ticket-not-logged',
+  'unassigned-with-code',
+  'commits-not-tagged',
+  'no-code-linked',
+  'in-qa',
+];
+
+/** Tickets list in-progress first: that is where a reader acts. */
+const BUCKET_ORDER: Record<JiraStatusBucket, number> = {
+  'in-progress': 0,
+  todo: 1,
+  done: 2,
+};
 
 export type ProductivityGrade = 'high' | 'medium' | 'low';
 
@@ -206,55 +421,45 @@ const CHECK_IN_PAGE_DAYS = 7;
  */
 @Injectable()
 export class SprintHealthDetailService {
+  private readonly linkedWorkCache = new Map<
+    string,
+    { at: number; work: Promise<LinkedWork> }
+  >();
+
   constructor(
     private readonly tenantContext: TenantContextService,
     private readonly prisma: PrismaService,
     private readonly planning: PlanningService,
     private readonly code: CodeService,
     private readonly identities: DeveloperIdentityService,
-    private readonly insights: InsightsService,
+    private readonly correlation: CorrelationService,
   ) {}
 
   /**
    * Five commit-activity tiles: who committed, PR flow, and review latency —
-   * all scoped to the sprint's own repos and its own window.
+   * over the sprint's own window and the GitHub work linked to its tickets.
    */
   async commitActivity(
     sprintExternalId: string,
     projects: string[] = [],
   ): Promise<CommitActivityView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId, projects);
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
     }
     const { win } = found;
 
-    // No repo mapped to this sprint's project contributes nothing — passing
-    // an empty `repos` filter through to `listCommitsPage` would instead read
-    // as "no filter" and return every repo in the tenant.
-    const [items, commitsPage, index, prs] = await Promise.all([
+    const [items, index] = await Promise.all([
       this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
-      win.repos.length > 0
-        ? this.code.listCommitsPage(tenantId, {
-            repos: win.repos,
-            from: win.from,
-            to: win.to,
-          })
-        : Promise.resolve({ commits: [], truncated: false }),
       this.identities.attributionIndex(tenantId),
-      win.repos.length > 0
-        ? this.prisma.pullRequest.findMany({
-            where: {
-              tenantId,
-              repoFullName: { in: win.repos },
-              openedAt: { gte: win.from, lte: win.to },
-            },
-          })
-        : Promise.resolve<PullRequest[]>([]),
     ]);
-    // Copied repos mapped to one project hold the same commits; count once.
-    const { commits } = distinctCommitsBySha(commitsPage.commits);
+    const { commits, prs, linkage } = await this.linkedWork(
+      tenantId,
+      win,
+      items,
+      projects,
+    );
 
     // Bots, deprovisioned accounts and admin-withheld entities stay OUT of
     // this head-count — it is read against a Jira-assignee denominator ("N of
@@ -319,7 +524,7 @@ export class SprintHealthDetailService {
       avgHoursToFirstReview:
         reviewHours.length > 0 ? round1(mean(reviewHours)) : null,
       prsWaitingOver24h,
-      repos: win.repos,
+      linkage,
     };
   }
 
@@ -336,45 +541,25 @@ export class SprintHealthDetailService {
     projects: string[] = [],
   ): Promise<ProductivityView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    const found = await this.window(tenantId, sprintExternalId, projects);
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
     }
     const { win } = found;
 
-    // Same discipline as `commitActivity`: an unmapped project reads no repo
-    // rather than reading every repo `listCommitsPage` treats `repos: []` as.
-    const [items, commitsPage, index, jiraIndex, prs, reviews] =
-      await Promise.all([
-        this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
-        win.repos.length > 0
-          ? this.code.listCommitsPage(tenantId, {
-              repos: win.repos,
-              from: win.from,
-              to: win.to,
-            })
-          : Promise.resolve({ commits: [], truncated: false }),
-        this.identities.attributionIndex(tenantId),
-        this.identities.jiraAssigneeIndex(tenantId),
-        win.repos.length > 0
-          ? this.prisma.pullRequest.findMany({
-              where: {
-                tenantId,
-                repoFullName: { in: win.repos },
-                openedAt: { gte: win.from, lte: win.to },
-              },
-            })
-          : Promise.resolve<PullRequest[]>([]),
-        win.repos.length > 0
-          ? this.prisma.prReview.findMany({
-              where: {
-                tenantId,
-                repoFullName: { in: win.repos },
-                submittedAt: { gte: win.from, lte: win.to },
-              },
-            })
-          : Promise.resolve<PrReview[]>([]),
-      ]);
+    const [items, index, jiraIndex] = await Promise.all([
+      this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
+      this.identities.attributionIndex(tenantId),
+      this.identities.jiraAssigneeIndex(tenantId),
+    ]);
+    // The same ticket-linked commits, PRs and reviews the commit-activity
+    // tiles count, so the two panels describe one body of work.
+    const { commits, prs, reviews } = await this.linkedWork(
+      tenantId,
+      win,
+      items,
+      projects,
+    );
 
     // Scoped to THIS SPRINT'S OWN item keys, not merely the project: a
     // tenant-wide (or project-wide) window would fold in a developer's
@@ -450,9 +635,7 @@ export class SprintHealthDetailService {
     // Authored commits only: a merge commit's lines are the merged branch's a
     // second time, credited to the merger (METRICS.md §0). This table shows
     // LOC by name, so the double count would land on a named person.
-    for (const commit of partitionMerges(
-      distinctCommitsBySha(commitsPage.commits).commits,
-    ).authored) {
+    for (const commit of partitionMerges(commits).authored) {
       const person = attributeCommit(commit, index);
       if (!person || isExcludedPerson(person)) {
         continue;
@@ -585,8 +768,6 @@ export class SprintHealthDetailService {
     projects: string[] = [],
   ): Promise<QualityCheckView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    // The dates-only window: this panel never dereferences `win.repos`, so it
-    // skips `window()`'s repo lookup (`insights.repoToProjects`) entirely.
     const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
@@ -684,8 +865,6 @@ export class SprintHealthDetailService {
     to?: Date,
   ): Promise<CheckInsView | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    // The dates-only window: this panel never dereferences `win.repos`, so it
-    // skips `window()`'s repo lookup (`insights.repoToProjects`) entirely.
     const found = await this.sprintWindow(tenantId, sprintExternalId);
     if (!found) {
       return null;
@@ -822,10 +1001,9 @@ export class SprintHealthDetailService {
     projects: string[] = [],
   ): Promise<ReleaseCandidateView[] | null> {
     const tenantId = this.tenantContext.requireTenantId();
-    // Neither `win.repos` nor even `win.from`/`win.to` is read below — only
-    // `sprint.projectKey` — so this reaches the sprint directly rather than
-    // through `window()`/`sprintWindow()`. That also lifts `window()`'s
-    // `!sprint?.startAt` gate, which this panel does not need: a sprint with
+    // `win.from`/`win.to` are never read below — only `sprint.projectKey` —
+    // so this reaches the sprint directly rather than through
+    // `sprintWindow()`. That also lifts its `!sprint?.startAt` gate, which this panel does not need: a sprint with
     // no recorded start date has no dates to compute, but its items still
     // carry releases worth reporting on.
     const sprint = await this.planning.findSprintByExternalId(
@@ -940,14 +1118,248 @@ export class SprintHealthDetailService {
   }
 
   /**
-   * The sprint's own elapsed window, clamped to now — WITHOUT the repos it
-   * maps to. Split from `window()` below because resolving `repos` costs its
-   * own read (`insights.repoToProjects`, an N+1 scan over every project),
-   * and three of the five panels on this board (`qualityCheck`, `checkIns`,
-   * and — via a still-lighter path — `releaseCandidates`) never dereference
-   * `win.repos`. `GET /sprint-health` calls `window()` three times
-   * concurrently plus one more each for check-ins/release-candidates; making
-   * repos opt-in cuts that N+1 down to the two panels that actually need it.
+   * The sprint's Jira structure for the projects in scope, each work item
+   * beside what GitHub says about its code.
+   *
+   * Work items are counted as Jira's sprint counts them — no epics, no
+   * subtasks — and "done" is Jira's status category, so the column totals
+   * match the board. Subtasks roll up into their parent; epics group.
+   *
+   * GitHub is the source for code facts (PR state, commits, merge time) and
+   * Jira for workflow (status, done, points). Where they disagree the row
+   * carries a `clash` rather than one silently overwriting the other.
+   */
+  async workBreakdown(
+    sprintExternalId: string,
+    projects: string[] = [],
+  ): Promise<SprintWorkBreakdownView | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const all = await this.planning.listItemsForSprint(
+      tenantId,
+      sprintExternalId,
+      projects,
+    );
+    const {
+      commits,
+      allPrs,
+      refsByStory,
+      ticketsBySha,
+      offSprintKeys,
+      otherSprintKeys,
+      unknownKeys,
+      untaggedByRepo,
+      linkage,
+    } = await this.linkedWork(tenantId, found.win, all, projects);
+
+    const workItems = all.filter(
+      (i) => i.type !== 'epic' && i.type !== 'subtask',
+    );
+    const workKeys = new Set(workItems.map((i) => i.externalKey));
+    // A subtask's code is its parent's code. One whose parent is not a work
+    // item in scope is not shown — Jira's sprint view nests it the same way.
+    const ownerOf = new Map<string, string>(
+      workItems.map((i) => [i.externalKey, i.externalKey]),
+    );
+    const subtaskCount = new Map<string, { total: number; done: number }>();
+    for (const sub of all) {
+      if (sub.type !== 'subtask' || !sub.parentKey) continue;
+      if (!workKeys.has(sub.parentKey)) continue;
+      ownerOf.set(sub.externalKey, sub.parentKey);
+      const c = subtaskCount.get(sub.parentKey) ?? { total: 0, done: 0 };
+      c.total += 1;
+      if (isJiraDone(sub)) c.done += 1;
+      subtaskCount.set(sub.parentKey, c);
+    }
+
+    const prByRef = new Map(
+      allPrs.map((pr) => [
+        `${pr.repoFullName}#${pr.externalNumber}`.toLowerCase(),
+        pr,
+      ]),
+    );
+    const prRefsOf = new Map<string, Set<string>>();
+    for (const item of all) {
+      const owner = ownerOf.get(item.externalKey);
+      if (!owner) continue;
+      const refs = prRefsOf.get(owner) ?? new Set<string>();
+      for (const ref of refsByStory.get(item.id) ?? []) {
+        refs.add(ref.toLowerCase());
+      }
+      prRefsOf.set(owner, refs);
+    }
+    const commitsOf = new Map<string, { n: number; last: Date | null }>();
+    for (const commit of partitionMerges(commits).authored) {
+      const owners = new Set(
+        (ticketsBySha.get(commit.sha) ?? [])
+          .map((k) => ownerOf.get(k))
+          .filter((k): k is string => Boolean(k)),
+      );
+      for (const owner of owners) {
+        const c = commitsOf.get(owner) ?? { n: 0, last: null };
+        c.n += 1;
+        if (commit.committedAt && (!c.last || commit.committedAt > c.last)) {
+          c.last = commit.committedAt;
+        }
+        commitsOf.set(owner, c);
+      }
+    }
+
+    const tickets: SprintTicketRow[] = workItems.map((item) => {
+      const prs = [...(prRefsOf.get(item.externalKey) ?? [])]
+        .map((ref) => prByRef.get(ref))
+        .filter((pr): pr is PullRequest => Boolean(pr))
+        .sort(
+          (a, b) =>
+            a.repoFullName.localeCompare(b.repoFullName) ||
+            Number(a.externalNumber) - Number(b.externalNumber),
+        );
+      const c = commitsOf.get(item.externalKey) ?? { n: 0, last: null };
+      const state: CodeState = prs.some((pr) => pr.state === 'merged')
+        ? 'merged'
+        : prs.some((pr) => pr.state === 'open')
+          ? 'in-review'
+          : c.n > 0
+            ? 'committed'
+            : 'none';
+      const bucket = bucketOf(item);
+      return {
+        key: item.externalKey,
+        title: item.title,
+        type: item.type,
+        status: item.status,
+        bucket,
+        storyPoints: item.storyPoints,
+        assigneeName: item.assigneeName,
+        epicKey: item.epicKey,
+        subtasks: subtaskCount.get(item.externalKey) ?? { total: 0, done: 0 },
+        code: {
+          state,
+          prs: prs.map((pr) => ({
+            ref: `${pr.repoFullName}#${pr.externalNumber}`,
+            state: pr.state,
+            mergedAt: pr.mergedAt ? pr.mergedAt.toISOString() : null,
+          })),
+          commits: c.n,
+          lastCommitAt: c.last ? c.last.toISOString() : null,
+        },
+        clash:
+          bucket !== 'done' && state === 'merged'
+            ? 'github-ahead'
+            : bucket === 'done' && state === 'in-review'
+              ? 'jira-ahead'
+              : null,
+        gaps: ticketGaps(
+          item,
+          bucket,
+          state,
+          prs.some((pr) => pr.state === 'open'),
+        ),
+      };
+    });
+    tickets.sort(
+      (a, b) =>
+        BUCKET_ORDER[a.bucket] - BUCKET_ORDER[b.bucket] ||
+        compareKeys(a.key, b.key),
+    );
+
+    const buckets: SprintWorkBreakdownView['buckets'] = {
+      todo: { items: 0, points: 0 },
+      'in-progress': { items: 0, points: 0 },
+      done: { items: 0, points: 0 },
+    };
+    const byType = new Map<string, { items: number; done: number }>();
+    const epicAgg = new Map<string | null, SprintEpicRow>();
+    const code: Record<CodeState, number> = {
+      merged: 0,
+      'in-review': 0,
+      committed: 0,
+      none: 0,
+    };
+    for (const t of tickets) {
+      const done = t.bucket === 'done';
+      buckets[t.bucket].items += 1;
+      buckets[t.bucket].points += t.storyPoints ?? 0;
+      const ty = byType.get(t.type) ?? { items: 0, done: 0 };
+      ty.items += 1;
+      if (done) ty.done += 1;
+      byType.set(t.type, ty);
+      const e = epicAgg.get(t.epicKey) ?? {
+        key: t.epicKey,
+        title: null,
+        items: 0,
+        done: 0,
+        points: 0,
+      };
+      e.items += 1;
+      if (done) e.done += 1;
+      e.points += t.storyPoints ?? 0;
+      epicAgg.set(t.epicKey, e);
+      code[t.code.state] += 1;
+    }
+    const epicKeys = [...epicAgg.keys()].filter((k): k is string => k !== null);
+    const epicTitles = new Map(
+      (await this.planning.findByKeys(tenantId, epicKeys)).map((e) => [
+        e.externalKey,
+        e.title,
+      ]),
+    );
+    const epics = [...epicAgg.values()]
+      .map((e) => ({
+        ...e,
+        title: e.key ? (epicTitles.get(e.key) ?? null) : null,
+      }))
+      // Biggest epics first; "no epic" last, however big it is.
+      .sort(
+        (a, b) =>
+          Number(a.key === null) - Number(b.key === null) ||
+          b.items - a.items ||
+          compareKeys(a.key ?? '', b.key ?? ''),
+      );
+
+    const counted = [...subtaskCount.values()];
+    return {
+      buckets,
+      byType: [...byType]
+        .map(([type, v]) => ({ type, ...v }))
+        .sort((a, b) => b.items - a.items || a.type.localeCompare(b.type)),
+      subtasks: {
+        total: counted.reduce((s, c) => s + c.total, 0),
+        done: counted.reduce((s, c) => s + c.done, 0),
+      },
+      epics,
+      code,
+      clashes: {
+        githubAhead: tickets.filter((t) => t.clash === 'github-ahead').length,
+        jiraAhead: tickets.filter((t) => t.clash === 'jira-ahead').length,
+      },
+      unestimated: tickets.filter((t) => t.storyPoints === null).length,
+      unassigned: tickets.filter((t) => !t.assigneeName).length,
+      gaps: dataGaps(tickets, {
+        offSprintKeys,
+        otherSprintKeys,
+        unknownKeys,
+        // Untagged commits are scoped to the repos this sprint's linked work
+        // landed in — a commit naming no ticket can't be placed in a project
+        // any other way, and the tenant-wide figure is not this team's.
+        untaggedByRepo: new Map(
+          [...untaggedByRepo].filter(([repo]) =>
+            linkage.reposTouched.includes(repo),
+          ),
+        ),
+      }),
+      tickets,
+    };
+  }
+
+  /**
+   * The sprint's own elapsed window, clamped to now. A running sprint is
+   * measured over the days it has actually had, not the days it was allotted:
+   * averaging 14 days of commits over a 21-day plan understates a team
+   * mid-sprint.
    */
   private async sprintWindow(
     tenantId: string,
@@ -967,33 +1379,286 @@ export class SprintHealthDetailService {
   }
 
   /**
-   * `sprintWindow()` plus the repos the sprint's project maps to — for the
-   * two panels (`commitActivity`, `productivity`) that actually read
-   * `win.repos`. A running sprint is measured over the days it has actually
-   * had, not the days it was allotted: averaging 14 days of commits over a
-   * 21-day plan understates a team mid-sprint.
+   * The GitHub work that belongs to this sprint: commits whose message or
+   * branch names one of `items`, the PRs implementing them, and the reviews
+   * on those PRs — all inside the sprint's window.
+   *
+   * Linked by ticket, not by repository. Mapping repos to projects (a repo
+   * counted if any of its PRs ever linked to the project) credited a shared
+   * repo's every commit to every project that had touched it: on the
+   * reference tenant ACT mapped to 87 repos holding 1,027 of November's
+   * 1,243 commits, and NHC to 32 holding 631, overlapping heavily. A commit
+   * naming no ticket cannot be placed this way, so it is counted in
+   * `noTicketCommits` rather than guessed at.
    */
-  private async window(
+  private linkedWork(
     tenantId: string,
-    sprintExternalId: string,
-    projects: string[] = [],
-  ): Promise<{ sprint: Sprint; win: SprintWindow } | null> {
-    const found = await this.sprintWindow(tenantId, sprintExternalId);
-    if (!found) {
-      return null;
+    win: SprintWindowDates,
+    items: Story[],
+    projects: string[],
+  ): Promise<LinkedWork> {
+    const now = Date.now();
+    for (const [k, v] of this.linkedWorkCache) {
+      if (now - v.at > LINKED_WORK_TTL_MS) this.linkedWorkCache.delete(k);
     }
-    const { sprint, win } = found;
-    // The projects the reader selected, or — when they selected none — the one
-    // the sprint row names. Falling back to `sprint.projectKey` alone was the
-    // bug: it is a single value assigned by first observation, so a sprint
-    // ACT merely participates in reports CMS's repos and none of ACT's.
-    const scope = projects.length > 0 ? projects : [sprint.projectKey];
-    const repoToProjects = await this.insights.repoToProjects(tenantId);
-    const repos = [...repoToProjects.entries()]
-      .filter(([, mapped]) => mapped.some((p) => scope.includes(p)))
-      .map(([repo]) => repo);
-    return { sprint, win: { ...win, repos } };
+    const key = [
+      tenantId,
+      win.from.getTime(),
+      [...projects].sort().join(','),
+      items
+        .map((item) => item.id)
+        .sort()
+        .join(','),
+    ].join('|');
+    const hit = this.linkedWorkCache.get(key);
+    if (hit) {
+      return hit.work;
+    }
+    const work = this.computeLinkedWork(tenantId, win, items, projects);
+    this.linkedWorkCache.set(key, { at: now, work });
+    work.catch(() => this.linkedWorkCache.delete(key));
+    return work;
   }
+
+  private async computeLinkedWork(
+    tenantId: string,
+    win: SprintWindowDates,
+    items: Story[],
+    projects: string[],
+  ): Promise<LinkedWork> {
+    const sprintKeys = new Set(items.map((item) => item.externalKey));
+    const [page, refsByStory] = await Promise.all([
+      this.code.listCommitsPage(tenantId, { from: win.from, to: win.to }),
+      this.correlation.prRefsByStoryId(
+        tenantId,
+        items.map((item) => item.id),
+      ),
+    ]);
+
+    // Keys are read across every copy of a commit before copies collapse: a
+    // copied repo holds the same SHA, and its branches can name the ticket
+    // when the original's do not.
+    const links = await this.code.branchesForCommits(tenantId, page.commits);
+    const keysById = ticketKeysByCommit(page.commits, links);
+    const keysBySha = new Map<string, Map<string, Set<string>>>();
+    for (const c of page.commits) {
+      const merged = keysBySha.get(c.sha) ?? new Map<string, Set<string>>();
+      for (const [key, sources] of keysById.get(`${c.repoFullName}@${c.sha}`) ??
+        []) {
+        const into = merged.get(key) ?? new Set<string>();
+        for (const s of sources) into.add(s);
+        merged.set(key, into);
+      }
+      keysBySha.set(c.sha, merged);
+    }
+
+    // Keys outside the sprint are resolved only to tell "another ticket of
+    // this project" apart from "a key Jira does not know" (`UTF-8`, a typo).
+    const outside = candidateTicketKeys(keysById).filter(
+      (key) => !sprintKeys.has(key),
+    );
+    const known = await this.planning.findByKeys(tenantId, outside);
+    const inScope = new Set(
+      known
+        .filter((s) => projects.length === 0 || projects.includes(s.projectKey))
+        .map((s) => s.externalKey),
+    );
+    const knownKeys = new Set(known.map((s) => s.externalKey));
+
+    const { commits } = distinctCommitsBySha(page.commits);
+    const linked: Commit[] = [];
+    const ticketsBySha = new Map<string, string[]>();
+    const repos = new Set<string>();
+    let linkedViaBranchOnly = 0;
+    let otherTicketCommits = 0;
+    let noTicketCommits = 0;
+    const offSprintKeys = new Map<string, number>();
+    const otherSprintKeys = new Map<string, number>();
+    const sprintOf = new Map(
+      known.map((s) => [s.externalKey, s.sprintExternalId]),
+    );
+    const unknownKeys = new Map<string, number>();
+    const untaggedByRepo = new Map<string, number>();
+    const bump = (m: Map<string, number>, k: string) =>
+      m.set(k, (m.get(k) ?? 0) + 1);
+    const inProjects = (key: string) =>
+      projects.includes(key.split('-')[0] ?? '');
+    for (const commit of commits) {
+      const keys = keysBySha.get(commit.sha) ?? new Map<string, Set<string>>();
+      const hits = [...keys].filter(([key]) => sprintKeys.has(key));
+      if (hits.length > 0) {
+        linked.push(commit);
+        ticketsBySha.set(
+          commit.sha,
+          hits.map(([key]) => key),
+        );
+        repos.add(commit.repoFullName);
+        continue;
+      }
+      // The disclosure counts are over authored commits, like the tiles.
+      if (isMergeCommit(commit)) continue;
+      const named = [...keys.keys()];
+      if (named.some((key) => inScope.has(key))) {
+        otherTicketCommits += 1;
+        for (const key of named) {
+          if (!inScope.has(key)) continue;
+          bump(sprintOf.get(key) ? otherSprintKeys : offSprintKeys, key);
+        }
+      } else if (!named.some((key) => knownKeys.has(key))) {
+        noTicketCommits += 1;
+        const unknown = named.filter(inProjects);
+        for (const key of unknown) bump(unknownKeys, key);
+        if (named.length === 0) bump(untaggedByRepo, commit.repoFullName);
+      }
+    }
+    for (const commit of partitionMerges(linked).authored) {
+      const keys = keysBySha.get(commit.sha)!;
+      const byMessage = [...keys].some(
+        ([key, sources]) => sprintKeys.has(key) && sources.has('message'),
+      );
+      if (!byMessage) linkedViaBranchOnly += 1;
+    }
+
+    const refs = [...new Set([...refsByStory.values()].flat())];
+    const allPrs = await this.code.listPullRequestsByRefs(tenantId, refs);
+    const reviews =
+      allPrs.length > 0
+        ? await this.prisma.prReview.findMany({
+            where: {
+              tenantId,
+              submittedAt: { gte: win.from, lte: win.to },
+              OR: allPrs.map((pr) => ({
+                repoFullName: pr.repoFullName,
+                externalNumber: pr.externalNumber,
+              })),
+            },
+          })
+        : [];
+
+    return {
+      commits: linked,
+      prs: allPrs.filter(
+        (pr) => pr.openedAt && pr.openedAt >= win.from && pr.openedAt <= win.to,
+      ),
+      reviews,
+      allPrs,
+      refsByStory,
+      ticketsBySha,
+      offSprintKeys,
+      otherSprintKeys,
+      unknownKeys,
+      untaggedByRepo,
+      linkage: {
+        sprintTickets: sprintKeys.size,
+        linkedCommits: partitionMerges(linked).authored.length,
+        linkedViaBranchOnly,
+        otherTicketCommits,
+        noTicketCommits,
+        reposTouched: [...repos].sort(),
+        truncated: page.truncated,
+      },
+    };
+  }
+}
+
+/** The per-ticket `DataGapKind`s for one work item, most actionable first. */
+function ticketGaps(
+  item: Story,
+  bucket: JiraStatusBucket,
+  state: CodeState,
+  hasOpenPr: boolean,
+): DataGapKind[] {
+  const gaps: DataGapKind[] = [];
+  const hasCode = state !== 'none';
+  const notStarted =
+    bucket === 'todo' ||
+    (bucket === 'in-progress' && NOT_STARTED_STATUS.test(item.status));
+  const inQa = bucket === 'in-progress' && QA_STATUS.test(item.status);
+  if (hasCode && notStarted) {
+    gaps.push('progress-not-marked');
+  } else if (bucket === 'in-progress' && state === 'merged') {
+    // An open PR beside the merged one means development is still going.
+    if (inQa) gaps.push('in-qa');
+    else if (!hasOpenPr) gaps.push('jira-not-updated');
+  }
+  if (bucket === 'done' && state === 'in-review') {
+    gaps.push('done-before-merge');
+  }
+  if (hasCode && !item.assigneeName) {
+    gaps.push('unassigned-with-code');
+  }
+  if (bucket === 'in-progress' && !notStarted && !inQa && !hasCode) {
+    gaps.push('no-code-linked');
+  }
+  return gaps;
+}
+
+/** Per-ticket gaps rolled up, plus the sprint-wide ones read from commits. */
+function dataGaps(
+  tickets: SprintTicketRow[],
+  commits: {
+    offSprintKeys: Map<string, number>;
+    otherSprintKeys: Map<string, number>;
+    unknownKeys: Map<string, number>;
+    untaggedByRepo: Map<string, number>;
+  },
+): DataGapFinding[] {
+  const out: DataGapFinding[] = [];
+  const perTicket = new Map<DataGapKind, string[]>();
+  for (const t of tickets) {
+    for (const g of t.gaps)
+      perTicket.set(g, [...(perTicket.get(g) ?? []), t.key]);
+  }
+  for (const [kind, keys] of perTicket) {
+    out.push({
+      kind,
+      severity:
+        kind === 'in-qa' || kind === 'no-code-linked' ? 'info' : 'action',
+      count: keys.length,
+      commits: null,
+      sample: keys.slice(0, GAP_SAMPLE),
+    });
+  }
+  const fromCommits = (
+    kind: DataGapKind,
+    m: Map<string, number>,
+  ): DataGapFinding | null => {
+    if (m.size === 0) return null;
+    const ranked = [...m].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+    return {
+      kind,
+      severity: 'action',
+      count: m.size,
+      commits: ranked.reduce((s, [, n]) => s + n, 0),
+      sample: ranked.slice(0, GAP_SAMPLE).map(([k]) => k),
+    };
+  };
+  for (const f of [
+    fromCommits('ticket-not-in-sprint', commits.offSprintKeys),
+    fromCommits('ticket-in-other-sprint', commits.otherSprintKeys),
+    fromCommits('ticket-not-logged', commits.unknownKeys),
+    fromCommits('commits-not-tagged', commits.untaggedByRepo),
+  ]) {
+    if (f) out.push(f);
+  }
+  return out.sort(
+    (a, b) => GAP_ORDER.indexOf(a.kind) - GAP_ORDER.indexOf(b.kind),
+  );
+}
+
+/** Jira's board column for an item, from its status category. */
+function bucketOf(item: Story): JiraStatusBucket {
+  if (isJiraDone(item)) return 'done';
+  return item.statusCategory === 'indeterminate' ? 'in-progress' : 'todo';
+}
+
+/** `NHC-9` before `NHC-10`: project, then issue number. */
+function compareKeys(a: string, b: string): number {
+  const [pa, na] = a.split('-');
+  const [pb, nb] = b.split('-');
+  return (pa ?? '').localeCompare(pb ?? '') || Number(na) - Number(nb);
 }
 
 /** IST calendar-day keys covered by [from, to], inclusive of both ends. */

@@ -96,6 +96,11 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
       </div>
 
       <p className="mt-3 text-xs text-fg-faint">{data.gradeRule}</p>
+      <p className="mt-1 text-xs text-fg-faint">
+        Commits, LOC, PRs and reviews count only work linked to this
+        sprint&apos;s tickets — a commit that names no sprint ticket is not on
+        this table.
+      </p>
     </Card>
   );
 }

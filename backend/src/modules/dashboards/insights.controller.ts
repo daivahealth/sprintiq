@@ -421,8 +421,9 @@ export class InsightsController {
   }
 
   /**
-   * Health of EVERY active sprint in scope — one card per project's concurrent
-   * sprint lifecycle, ranked worst-pace-first (multi-project default view).
+   * One card per selected project for each live sprint it has items in, over
+   * that project's items only, ranked worst-pace-first. With no project
+   * selected nothing is computed (`projectRequired`) — sprints are shared.
    */
   @Get('sprint-health/active')
   async activeSprintsHealth(@Query('projects') projects?: string) {
@@ -439,12 +440,13 @@ export class InsightsController {
     // A sprint can hold work from 25 projects; the panels answer for the
     // projects the reader has selected, not for the whole organisation.
     const scope = parseList(projects);
-    const [view, commitActivity, productivity, qualityCheck] =
+    const [view, commitActivity, productivity, qualityCheck, workBreakdown] =
       await Promise.all([
-        this.insights.sprintHealth(id),
+        this.insights.sprintHealth(id, scope),
         this.detail.commitActivity(id, scope),
         this.detail.productivity(id, scope),
         this.detail.qualityCheck(id, scope),
+        this.detail.workBreakdown(id, scope),
       ]);
     if (!view) {
       throw new NotFoundException('Sprint not found.');
@@ -454,6 +456,7 @@ export class InsightsController {
       commitActivity,
       productivity,
       qualityCheck,
+      workBreakdown,
       computedAt: new Date().toISOString(),
     };
   }

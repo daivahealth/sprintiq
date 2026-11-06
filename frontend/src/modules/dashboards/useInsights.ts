@@ -72,6 +72,12 @@ export type SprintPace = 'on-track' | 'at-risk' | 'behind' | 'unknown';
 
 export interface SprintHealthView {
   sprint: SprintSummary;
+  /**
+   * The projects these figures cover — the card's label, not
+   * `sprint.projectKey` (the first project Jira saw in a sprint shared by
+   * many). Optional: an older API omits it.
+   */
+  projects?: string[];
   committedPoints: number;
   completedPoints: number;
   completionPct: number | null;
@@ -500,8 +506,13 @@ export function useActiveSprintsHealth(projects: string[]) {
         rows: SprintHealthView[];
         stale?: StaleSprint[];
         staleGraceDays?: number;
+        /** No project selected: the API computed nothing and wants one. */
+        projectRequired?: boolean;
         computedAt: string;
       }>(`/api/dashboards/sprint-health/active?${params}`),
+    // A shared monthly sprint pooled across every project answers no one's
+    // question, so nothing is asked for until a project is picked.
+    enabled: projects.length > 0,
   });
 }
 
@@ -521,7 +532,102 @@ export interface CommitActivityView {
   reviewedPct: number | null;
   avgHoursToFirstReview: number | null;
   prsWaitingOver24h: number;
-  repos: string[];
+  /** How the commits were linked to the sprint. Optional: an older API sends `repos` instead. */
+  linkage?: SprintCommitLinkage;
+}
+
+/**
+ * Commits belong to the sprint when their message or branch names one of its
+ * tickets (backend `SprintCommitLinkage`). Every count is authored commits in
+ * the sprint's window, each SHA once.
+ */
+export interface SprintCommitLinkage {
+  sprintTickets: number;
+  linkedCommits: number;
+  linkedViaBranchOnly: number;
+  otherTicketCommits: number;
+  noTicketCommits: number;
+  reposTouched: string[];
+  truncated: boolean;
+}
+
+/** Jira's three board columns, from the status category (not the name). */
+export type JiraStatusBucket = 'todo' | 'in-progress' | 'done';
+
+/** A ticket's code progress, from GitHub alone. */
+export type CodeState = 'merged' | 'in-review' | 'committed' | 'none';
+
+/**
+ * Jira and GitHub disagreeing about one ticket. GitHub is the source for code
+ * facts and Jira for workflow; neither overrides the other's figure.
+ */
+export type SourceClash = 'github-ahead' | 'jira-ahead';
+
+export interface SprintTicketRow {
+  key: string;
+  title: string;
+  type: string;
+  status: string;
+  bucket: JiraStatusBucket;
+  storyPoints: number | null;
+  assigneeName: string | null;
+  epicKey: string | null;
+  subtasks: { total: number; done: number };
+  code: {
+    state: CodeState;
+    prs: { ref: string; state: string; mergedAt: string | null }[];
+    commits: number;
+    lastCommitAt: string | null;
+  };
+  clash: SourceClash | null;
+  /** Optional: an older API omits it. */
+  gaps?: DataGapKind[];
+}
+
+/**
+ * One way Jira lags or misses the GitHub work on the same tickets (backend
+ * `DataGapKind`); `GAP_COPY` in sprint-health/gap-copy.ts says what each
+ * means and the step that fixes it.
+ */
+export type DataGapKind =
+  | 'progress-not-marked'
+  | 'jira-not-updated'
+  | 'in-qa'
+  | 'done-before-merge'
+  | 'unassigned-with-code'
+  | 'no-code-linked'
+  | 'ticket-not-in-sprint'
+  | 'ticket-in-other-sprint'
+  | 'ticket-not-logged'
+  | 'commits-not-tagged';
+
+export interface DataGapFinding {
+  kind: DataGapKind;
+  severity: 'action' | 'info';
+  count: number;
+  commits: number | null;
+  sample: string[];
+}
+
+/** Backend `SprintWorkBreakdownView` — the sprint's Jira structure beside GitHub. */
+export interface SprintWorkBreakdownView {
+  buckets: Record<JiraStatusBucket, { items: number; points: number }>;
+  byType: { type: string; items: number; done: number }[];
+  subtasks: { total: number; done: number };
+  epics: {
+    key: string | null;
+    title: string | null;
+    items: number;
+    done: number;
+    points: number;
+  }[];
+  code: Record<CodeState, number>;
+  clashes: { githubAhead: number; jiraAhead: number };
+  unestimated: number;
+  unassigned: number;
+  /** Optional: an older API omits it. */
+  gaps?: DataGapFinding[];
+  tickets: SprintTicketRow[];
 }
 
 export type ProductivityGrade = 'high' | 'medium' | 'low';
@@ -634,6 +740,8 @@ export function useSprintHealth(sprint: string | null, projects: string[] = []) 
           commitActivity: CommitActivityView | null;
           productivity: ProductivityView | null;
           qualityCheck: QualityCheckView | null;
+          /** Missing from an older API; null when the sprint can't be resolved. */
+          workBreakdown?: SprintWorkBreakdownView | null;
           computedAt: string;
         }
       >(

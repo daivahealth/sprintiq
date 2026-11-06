@@ -1,9 +1,10 @@
-import { Stat } from '../widgets';
-import type { CommitActivityView } from '../useInsights';
+import { MetalStat as Stat } from './metal';
+import type { CommitActivityView, SprintCommitLinkage } from '../useInsights';
 
 /**
  * Sprint Health §Commit activity — five tiles over the sprint's own window
- * and its own repos (`sprint-health-detail.service.ts#commitActivity`).
+ * and the GitHub work linked to its tickets
+ * (`sprint-health-detail.service.ts#commitActivity`).
  *
  * Two nulls get the same discipline as everywhere else on these boards:
  * `avgHoursToFirstReview === null` renders `—`, never `0h` — a sprint where
@@ -43,12 +44,33 @@ export function CommitActivityTiles({ data }: { data: CommitActivityView }) {
       </div>
 
       {/* The scope judgement behind every number above — invisible otherwise. */}
-      <p className="mt-2 text-xs text-fg-faint">
-        Commits are counted by date across {data.repos.length} repo
-        {data.repos.length === 1 ? '' : 's'} linked to this project — Git has no
-        sprint field, so a repo that has never carried a linked PR contributes
-        nothing here.
-      </p>
+      {data.linkage && <LinkageNote linkage={data.linkage} />}
     </div>
+  );
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/**
+ * Git has no sprint field, so the tiles count only commits that name one of
+ * the sprint's tickets — and say how much of the window that leaves out, so a
+ * low count reads as "unlinked work" rather than "no work".
+ */
+function LinkageNote({ linkage }: { linkage: SprintCommitLinkage }) {
+  return (
+    <p className="mt-2 text-xs text-fg-faint">
+      Counts commits whose message or branch names one of this sprint&apos;s{' '}
+      {plural(linkage.sprintTickets, 'ticket')}: {linkage.linkedCommits} linked
+      {linkage.linkedViaBranchOnly > 0 &&
+        ` (${linkage.linkedViaBranchOnly} through the branch name only)`}
+      {linkage.reposTouched.length > 0 &&
+        ` across ${plural(linkage.reposTouched.length, 'repo')}`}
+      . PRs and reviews are the ones linked to these tickets. In the same dates,{' '}
+      {plural(linkage.otherTicketCommits, 'commit')} name other tickets in this
+      project, and {linkage.noTicketCommits} across every repository name no
+      ticket Jira knows, so they can&apos;t be placed in any project.
+      {linkage.truncated &&
+        ' The commit read hit its row limit, so these counts are a floor.'}
+    </p>
   );
 }

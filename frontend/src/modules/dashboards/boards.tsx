@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FreshnessNote } from './FreshnessNote';
 import { MultiSelect } from '../../components/multi-select';
@@ -11,9 +11,13 @@ import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
 import { ProductivityPanel } from './sprint-health/ProductivityPanel';
 import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
+import { SprintWorkPanel } from './sprint-health/SprintWorkPanel';
+import { Tip } from './sprint-health/metal';
 import { useProjects } from './useCatalog';
 import {
+  type SprintHealthView,
   type SprintPace,
+  type SprintSummary,
   type StaleSprint,
   type VelocityRow,
   useActiveSprintsHealth,
@@ -130,26 +134,86 @@ function PaceBadge({ pace }: { pace: SprintPace }) {
   return <Badge tone={PACE_TONE[pace]}>{pace}</Badge>;
 }
 
+/** "NHC · Sprint-26-11" — the scoped projects, falling back to the sprint's own. */
+function sprintLabel(view: { sprint: SprintSummary; projects?: string[] }) {
+  const projects =
+    view.projects && view.projects.length > 0
+      ? view.projects.join(', ')
+      : view.sprint.projectKey;
+  return `${projects} · ${view.sprint.name}`;
+}
+
 /**
- * Multi-project sprint lifecycles: the default view is ONE CARD PER ACTIVE
- * SPRINT (each project runs its own cadence), ranked worst-pace-first. Pace is
+ * Sprint Health's picker: the selected projects' ongoing sprints only, one
+ * option per sprint, labelled with the selected projects that run it.
+ *
+ * Not `useSprintSelection`: that lists the catalog's active AND closed sprints
+ * labelled by `sprint.projectKey`, so ACT's picker offered 59 sprints, 30 of
+ * them under another project's name ("AS2 · Sprint-26-10" — ACT's own October
+ * sprint, filed under AS2 because Jira saw AS2 in it first). A sprint in the
+ * URL that is not ongoing for these projects — a stale link, a hand-edited
+ * URL — is replaced by the ongoing one rather than shown.
+ */
+function useOngoingSprintSelection(rows: SprintHealthView[] | undefined) {
+  const { scope, setScope } = useScope();
+  const options = useMemo(() => {
+    const bySprint = new Map<string, { sprint: SprintSummary; projects: string[] }>();
+    for (const row of rows ?? []) {
+      const entry = bySprint.get(row.sprint.externalId) ?? {
+        sprint: row.sprint,
+        projects: [],
+      };
+      entry.projects.push(...(row.projects ?? []));
+      bySprint.set(row.sprint.externalId, entry);
+    }
+    return [...bySprint.values()].map((e) => ({
+      ...e,
+      projects: [...new Set(e.projects)].sort(),
+    }));
+  }, [rows]);
+  const setSprint = useCallback(
+    (externalId: string) => setScope({ sprint: externalId }),
+    [setScope],
+  );
+
+  const sprint = scope.sprint;
+  useEffect(() => {
+    if (rows === undefined) return;
+    if (!options.some((o) => o.sprint.externalId === sprint)) {
+      const next = options[0]?.sprint.externalId ?? null;
+      if (next !== sprint) setScope({ sprint: next });
+    }
+  }, [rows, options, sprint, setScope]);
+
+  const valid = options.some((o) => o.sprint.externalId === sprint);
+  return { options, sprint: valid ? sprint : null, setSprint };
+}
+
+/**
+ * One card per selected project for each sprint it is running, scoped to that
+ * project's items — sprints here are monthly and shared by many projects, so a
+ * pooled card answered no one's question. Ranked worst-pace-first; pace is
  * cadence-normalized (completion% vs elapsed% of that sprint's own window).
- * Click a card — or pick any sprint incl. closed ones — for the detail.
+ * Nothing is shown until a project is picked, and only ongoing sprints can be
+ * opened — closed ones are not offered.
  */
 export function SprintHealthBoard() {
   const { scope, setScope } = useScope();
   const [projectSearch, setProjectSearch] = useState('');
   const projects = useProjects(projectSearch);
+  const hasProject = scope.projects.length > 0;
   const active = useActiveSprintsHealth(scope.projects);
-  const { sprints, sprint, setSprint } = useSprintSelection();
-  const detail = useSprintHealth(sprint, scope.projects);
-  const d = detail.data;
+  const { options, sprint, setSprint } = useOngoingSprintSelection(
+    hasProject ? active.data?.rows : undefined,
+  );
+  const detail = useSprintHealth(hasProject ? sprint : null, scope.projects);
+  const d = hasProject && sprint ? detail.data : undefined;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Sprint Health"
-        subtitle="Every project runs its own sprint lifecycle — all concurrent active sprints at a glance, worst pace first. Click one to drill in."
+        subtitle="The ongoing sprint for each project you pick, over that project's own tickets and the GitHub work linked to them. Click one to drill in."
       />
 
       <FilterBar>
@@ -163,9 +227,19 @@ export function SprintHealthBoard() {
           emptyText="No projects found"
         />
         <SprintPicker
-          sprints={sprints}
+          sprints={options.map((o) => o.sprint)}
           selected={sprint}
           onChange={setSprint}
+          labelOf={(s) =>
+            sprintLabel(
+              options.find((o) => o.sprint.externalId === s.externalId) ?? {
+                sprint: s,
+              },
+            )
+          }
+          placeholder={
+            hasProject ? 'No ongoing sprint' : 'Pick a project first'
+          }
         />
         {/* These boards build their own FilterBar instead of the shared
             ScopeBar, so freshness has to be mounted explicitly — otherwise
@@ -173,45 +247,55 @@ export function SprintHealthBoard() {
         <FreshnessNote />
       </FilterBar>
 
-      {active.isLoading && <LoadingCard />}
-      {active.isError && <ErrorCard error={active.error} />}
-      {active.data && (
+      {!hasProject && (
+        <Card>
+          <p className="py-4 text-center text-sm text-fg-faint">
+            Pick a project to see its ongoing sprint. Sprints here are shared
+            by many projects, so each project&apos;s figures are shown on their
+            own.
+          </p>
+        </Card>
+      )}
+      {hasProject && active.isLoading && <LoadingCard />}
+      {hasProject && active.isError && <ErrorCard error={active.error} />}
+      {hasProject && active.data && (
         <div>
           <h4 className="mb-2 text-sm font-medium text-fg-muted">
-            Active sprints ({active.data.rows.length})
+            Ongoing sprints ({active.data.rows.length})
           </h4>
           {active.data.rows.length === 0 ? (
             <Card>
               <p className="py-4 text-center text-sm text-fg-faint">
-                No active sprints in scope.
+                No ongoing sprint for this project.
               </p>
             </Card>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {active.data.rows.map((row) => (
                 <button
-                  key={row.sprint.externalId}
+                  key={`${row.projects?.join(',') ?? ''}:${row.sprint.externalId}`}
                   type="button"
                   onClick={() => setSprint(row.sprint.externalId)}
-                  className={cnCard(sprint === row.sprint.externalId)}
+                  className={cnMetalCard(sprint === row.sprint.externalId)}
                 >
                   <div className="flex items-center justify-between">
                     <span className="truncate font-medium text-fg-secondary">
-                      {row.sprint.projectKey} · {row.sprint.name}
+                      {sprintLabel(row)}
                     </span>
                     <PaceBadge pace={row.pace} />
                   </div>
                   <PaceBar
                     completionPct={row.completionPct}
                     elapsedPct={row.elapsedPct}
+                    tip={paceExplainer(row)}
                   />
                   <div className="flex justify-between text-xs text-fg-subtle">
                     <span>
                       {row.completionPct === null
                         ? 'no estimated pts'
-                        : `${row.completionPct}% done`}
+                        : `${Math.round(row.completionPct)}% of points done`}
                       {row.elapsedPct !== null &&
-                        ` · ${row.elapsedPct}% elapsed`}
+                        ` · ${Math.round(row.elapsedPct)}% elapsed`}
                     </span>
                     <span>
                       {row.daysRemaining !== null && `${row.daysRemaining}d left`}
@@ -237,15 +321,13 @@ export function SprintHealthBoard() {
         </div>
       )}
 
-      {detail.isLoading && sprint && <LoadingCard />}
-      {detail.isError && <ErrorCard error={detail.error} />}
+      {hasProject && detail.isLoading && sprint && <LoadingCard />}
+      {hasProject && detail.isError && <ErrorCard error={detail.error} />}
       {d && (
         <>
           <Card>
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-fg">
-                {d.sprint.projectKey} · {d.sprint.name}
-              </h3>
+              <h3 className="font-semibold text-fg">{sprintLabel(d)}</h3>
               <span className="space-x-2">
                 <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
                   {d.sprint.state}
@@ -253,7 +335,14 @@ export function SprintHealthBoard() {
                 <PaceBadge pace={d.pace} />
               </span>
             </div>
+            <SprintFacts d={d} />
           </Card>
+
+          {d.workBreakdown ? (
+            <SprintWorkPanel data={d.workBreakdown} />
+          ) : d.workBreakdown === null ? (
+            <PanelUnavailable label="Sprint work" />
+          ) : null}
 
           {/* commitActivity/productivity/qualityCheck can each independently
               come back null — the backend returns null from those service
@@ -295,7 +384,11 @@ export function SprintHealthBoard() {
               CheckInGrid above. */}
           <ReleaseCandidateList
             sprint={d.sprint.externalId}
-            projectKey={d.sprint.projectKey}
+            projectKey={
+              scope.projects.length === 1
+                ? scope.projects[0]
+                : d.sprint.projectKey
+            }
             projects={scope.projects}
           />
 
@@ -303,6 +396,35 @@ export function SprintHealthBoard() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The sprint's Jira facts under its title: dates in IST (Jira stores the end
+ * as 18:30 UTC, which is midnight IST — a UTC date reads a day early), time
+ * left, and points done against committed.
+ */
+function SprintFacts({ d }: { d: SprintHealthView }) {
+  const day = (iso: string | null) =>
+    iso
+      ? new Date(iso).toLocaleDateString(undefined, {
+          day: 'numeric',
+          month: 'short',
+          timeZone: 'Asia/Kolkata',
+        })
+      : '—';
+  const facts = [
+    `${day(d.sprint.startAt)} – ${day(d.sprint.endAt)}`,
+    d.daysRemaining !== null &&
+      d.sprint.state === 'active' &&
+      `${d.daysRemaining} day${d.daysRemaining === 1 ? '' : 's'} left`,
+    d.elapsedPct !== null && `${Math.round(d.elapsedPct)}% elapsed`,
+    `${d.completedPoints}/${d.committedPoints} pts done` +
+      (d.completionPct !== null ? ` (${Math.round(d.completionPct)}%)` : ''),
+    `${d.itemsDone}/${d.itemsTotal} work items done`,
+  ].filter(Boolean);
+  return (
+    <p className="mt-1 text-xs tabular-nums text-fg-subtle">{facts.join(' · ')}</p>
   );
 }
 
@@ -324,28 +446,70 @@ function cnCard(selected: boolean): string {
   );
 }
 
+/**
+ * Sprint Health's ongoing-sprint card: brushed steel with a sheen on hover
+ * (DESIGN-SYSTEM.md "Metallic accents" — this board only; Sprint Risk keeps
+ * `cnCard`). Selection is a brand ring, never a lift.
+ */
+function cnMetalCard(selected: boolean): string {
+  return cn(
+    'metal-surface metal-sheen space-y-2 rounded-xl p-4 text-left transition hover:border-brand/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40',
+    selected && 'border-brand ring-2 ring-brand/25',
+  );
+}
+
+/** "On-track: …" — what the pace badge means for this card, for the bar's tooltip. */
+function paceExplainer(row: SprintHealthView): string {
+  if (row.completionPct === null || row.elapsedPct === null) {
+    return 'Pace unknown: no estimated points, or no sprint dates.';
+  }
+  const gap = Math.round(row.elapsedPct - row.completionPct);
+  const done = `${Math.round(row.completionPct)}% of points done (${row.completedPoints} of ${row.committedPoints})`;
+  const time = `${Math.round(row.elapsedPct)}% of the sprint elapsed`;
+  const verdict =
+    gap <= 0
+      ? 'work is ahead of the calendar'
+      : `work is ${gap} points behind the calendar (on-track ≤ 10, at-risk ≤ 30)`;
+  return `${done} · ${time} — ${verdict}.`;
+}
+
 /** Completion vs elapsed on one track — the cadence-normalized pace visual. */
 function PaceBar({
   completionPct,
   elapsedPct,
+  tip,
 }: {
   completionPct: number | null;
   elapsedPct: number | null;
+  /** Hover/focus explanation; when given, the fill also gets the metallic finish. */
+  tip?: string;
 }) {
-  return (
-    <div className="relative h-3 overflow-hidden rounded bg-muted">
-      <div
-        className="h-full rounded bg-brand"
-        style={{ width: `${completionPct ?? 0}%` }}
-      />
+  // The "today" marker sits outside the clipped track and overhangs it, ringed
+  // in the card's surface colour: drawn inside the fill as a faint 2px line it
+  // read as a rendering glitch rather than a marker.
+  const bar = (
+    <div className="relative w-full py-1">
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn('h-full rounded-full bg-brand', tip && 'metal-bar')}
+          style={{ width: `${Math.min(100, completionPct ?? 0)}%` }}
+        />
+      </div>
       {elapsedPct !== null && (
         <div
-          className="absolute top-0 h-full w-0.5 bg-fg-subtle"
-          style={{ left: `${elapsedPct}%` }}
-          title={`${elapsedPct}% of sprint elapsed`}
+          className="absolute inset-y-0 w-[3px] -translate-x-1/2 rounded-full bg-fg ring-2 ring-surface"
+          style={{ left: `${Math.min(100, elapsedPct)}%` }}
+          title={tip ? undefined : `Today: ${Math.round(elapsedPct)}% of the sprint has elapsed`}
         />
       )}
     </div>
+  );
+  return tip ? (
+    <Tip className="flex w-full" content={tip}>
+      {bar}
+    </Tip>
+  ) : (
+    bar
   );
 }
 
@@ -502,8 +666,10 @@ function sprintDates(row: VelocityRow): string {
 }
 
 /**
- * One sprint's row. Clicking drills into that sprint on Sprint Health, which
- * is why sprint selection lives in the URL.
+ * One sprint's row. The running sprint's row drills into Sprint Health, which
+ * is why sprint selection lives in the URL; past sprints are not clickable,
+ * because Sprint Health opens only a project's ongoing sprint (DASHBOARDS.md
+ * §4.1.4).
  */
 function VelocitySprintRow({
   row,
@@ -514,18 +680,22 @@ function VelocitySprintRow({
   row: VelocityRow;
   max: number;
   byItems: boolean;
-  onOpen: () => void;
+  /** Absent for a sprint Sprint Health will not open — the row is then inert. */
+  onOpen?: () => void;
 }) {
   const value = byItems ? row.itemsDone : row.completedPoints;
   const total = byItems ? row.itemsTotal : row.committedPoints;
   const unit = byItems ? 'items' : 'pts';
 
+  const Row = onOpen ? 'button' : 'div';
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition hover:bg-subtle focus-visible:bg-subtle"
-      title={`Open ${row.sprint.name} on Sprint Health`}
+    <Row
+      {...(onOpen ? { type: 'button' as const, onClick: onOpen } : {})}
+      className={cn(
+        'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm',
+        onOpen && 'transition hover:bg-subtle focus-visible:bg-subtle',
+      )}
+      title={onOpen ? `Open ${row.sprint.name} on Sprint Health` : undefined}
     >
       <span className="w-40 shrink-0 truncate">
         <span className="font-medium text-fg-secondary">{row.sprint.name}</span>
@@ -577,7 +747,7 @@ function VelocitySprintRow({
           </span>
         ) : null}
       </span>
-    </button>
+    </Row>
   );
 }
 
@@ -607,7 +777,7 @@ export function VelocityBoard() {
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Velocity"
-        subtitle="How much each project completes per sprint, most recent first. Click a sprint to open it."
+        subtitle="How much each project completes per sprint, most recent first. Click the running sprint to open it on Sprint Health."
       />
       {/* Velocity is Jira-only — it sends projects and nothing else, so the
           repo/time/group-by axes would be controls that silently do nothing. */}
@@ -684,7 +854,11 @@ export function VelocityBoard() {
                   row={r}
                   max={max}
                   byItems={byItems}
-                  onOpen={() => openSprint(g.projectKey, r.sprint.externalId)}
+                  onOpen={
+                    r.inProgress
+                      ? () => openSprint(g.projectKey, r.sprint.externalId)
+                      : undefined
+                  }
                 />
               ))}
             </div>

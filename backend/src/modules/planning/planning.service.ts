@@ -19,6 +19,22 @@ import { PrismaService } from '../../database/prisma.service';
 /** Statuses treated as "done" for velocity/health math (tenant-tunable later). */
 export const DONE_STATUSES = ['Done', 'Closed', 'Resolved'];
 
+/**
+ * Done as a Jira board's Done column counts it: the status CATEGORY, not the
+ * status name. Workflows here put "READY FOR UAT" and "Story Closed" in the
+ * done category, which `DONE_STATUSES` cannot know — on Sprint-26-11 that was
+ * 61 of ACT's done items. Falls back to the names for a row collected before
+ * the category was.
+ */
+export function isJiraDone(item: {
+  status: string;
+  statusCategory: string | null;
+}): boolean {
+  return item.statusCategory
+    ? item.statusCategory === 'done'
+    : DONE_STATUSES.includes(item.status);
+}
+
 /** Row cap for work-item TABLES. Aggregates must not use it — see `listWorkItems`. */
 const WORK_ITEM_DISPLAY_LIMIT = 500;
 
@@ -655,7 +671,15 @@ export class PlanningService implements OnModuleInit {
     tenantId: string,
     externalKeys: string[],
   ): Promise<
-    Pick<Story, 'externalKey' | 'projectKey' | 'type' | 'status' | 'title'>[]
+    Pick<
+      Story,
+      | 'externalKey'
+      | 'projectKey'
+      | 'type'
+      | 'status'
+      | 'title'
+      | 'sprintExternalId'
+    >[]
   > {
     if (externalKeys.length === 0) {
       return Promise.resolve([]);
@@ -668,6 +692,7 @@ export class PlanningService implements OnModuleInit {
         type: true,
         status: true,
         title: true,
+        sprintExternalId: true,
       },
     });
   }

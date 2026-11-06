@@ -59,7 +59,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
   it('keeps a genuinely running sprint in the ranked cards', async () => {
     planning.listSprints.mockResolvedValue([sprint({})]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.rows).toHaveLength(1);
     expect(view.stale).toHaveLength(0);
@@ -72,7 +72,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
       sprint({ endAt: new Date('2026-08-09T00:00:00.000Z') }),
     ]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.rows).toHaveLength(1);
     expect(view.stale).toHaveLength(0);
@@ -96,7 +96,7 @@ describe('InsightsService — sprints Jira still calls active', () => {
       }),
     ]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.rows.map((r) => r.sprint.externalId)).toEqual(['live']);
     expect(view.stale).toHaveLength(1);
@@ -107,10 +107,107 @@ describe('InsightsService — sprints Jira still calls active', () => {
   it('never calls a sprint stale when it has no end date to be past', async () => {
     planning.listSprints.mockResolvedValue([sprint({ endAt: null })]);
 
-    const view = await service.activeSprintsHealth([]);
+    const view = await service.activeSprintsHealth(['PAY']);
 
     expect(view.stale).toHaveLength(0);
     expect(view.rows).toHaveLength(1);
+  });
+
+  // A monthly sprint here is shared by two dozen projects; pooled, it
+  // answers no one's question, so nothing is computed without a project.
+  it('asks for a project instead of pooling every project into one card', async () => {
+    const view = await service.activeSprintsHealth([]);
+
+    expect(view.projectRequired).toBe(true);
+    expect(view.rows).toHaveLength(0);
+    expect(planning.listSprints).not.toHaveBeenCalled();
+  });
+
+  it('gives each project its own card for a shared sprint, over its own items', async () => {
+    const shared = sprint({ externalId: 'shared', projectKey: 'ACT' });
+    planning.listSprints.mockResolvedValue([shared]);
+    planning.listItemsForSprint.mockImplementation(
+      async (_t: string, _s: string, projects?: string[]) =>
+        [
+          { id: 'a', projectKey: 'ACT', type: 'story', status: 'Done' },
+          { id: 'b', projectKey: 'ACT', type: 'story', status: 'To Do' },
+          { id: 'c', projectKey: 'NHC', type: 'story', status: 'Done' },
+        ].filter(
+          (i) => !projects?.length || projects.includes(i.projectKey),
+        ) as never,
+    );
+
+    const view = await service.activeSprintsHealth(['ACT', 'NHC']);
+
+    expect(planning.listSprints).toHaveBeenCalledWith(
+      'tenant-a',
+      ['ACT'],
+      'active',
+    );
+    expect(planning.listSprints).toHaveBeenCalledWith(
+      'tenant-a',
+      ['NHC'],
+      'active',
+    );
+    const byProject = new Map(view.rows.map((r) => [r.projects[0], r]));
+    expect(view.rows).toHaveLength(2);
+    expect(byProject.get('ACT')!.itemsTotal).toBe(2);
+    expect(byProject.get('NHC')!.itemsTotal).toBe(1);
+    expect(view.projectRequired).toBe(false);
+  });
+
+  // Jira's sprint counts work items without subtasks; a Closed subtask made
+  // NHIL's card read "1/7 done" against the board's 6 items, 0 done.
+  it('counts work items as Jira does — no epics, no subtasks', async () => {
+    planning.listSprints.mockResolvedValue([sprint({})]);
+    planning.listItemsForSprint.mockResolvedValue([
+      { id: 'a', projectKey: 'NHIL', type: 'story', status: 'Ready for QA' },
+      { id: 'b', projectKey: 'NHIL', type: 'story', status: 'In Progress' },
+      { id: 'c', projectKey: 'NHIL', type: 'subtask', status: 'Closed' },
+      { id: 'd', projectKey: 'NHIL', type: 'epic', status: 'Done' },
+    ] as never);
+
+    const view = await service.activeSprintsHealth(['NHIL']);
+
+    expect(view.rows[0].itemsTotal).toBe(2);
+    expect(view.rows[0].itemsDone).toBe(0);
+  });
+
+  // The board's Done column is Jira's status category; ACT's workflow files
+  // "READY FOR UAT" there, which a status-name list never knew.
+  it('counts done by Jira status category, not status name', async () => {
+    planning.listSprints.mockResolvedValue([sprint({})]);
+    planning.listItemsForSprint.mockResolvedValue([
+      {
+        id: 'a',
+        type: 'story',
+        status: 'READY FOR UAT',
+        statusCategory: 'done',
+      },
+      {
+        id: 'b',
+        type: 'story',
+        status: 'Ready for QA',
+        statusCategory: 'indeterminate',
+      },
+    ] as never);
+
+    const view = await service.activeSprintsHealth(['ACT']);
+
+    expect(view.rows[0].itemsDone).toBe(1);
+  });
+
+  it('reports a stale sprint once, however many selected projects are in it', async () => {
+    planning.listSprints.mockResolvedValue([
+      sprint({
+        externalId: 'abandoned',
+        endAt: new Date('2022-03-30T00:00:00.000Z'),
+      }),
+    ]);
+
+    const view = await service.activeSprintsHealth(['ACT', 'NHC']);
+
+    expect(view.stale).toHaveLength(1);
   });
 
   it('applies the same split to Sprint Risk', async () => {

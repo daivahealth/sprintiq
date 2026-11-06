@@ -11,6 +11,7 @@ import { CodeService } from '../modules/code/code.service';
 import { ConnectionsService } from '../modules/connections/connections.service';
 import {
   DONE_STATUSES,
+  isJiraDone,
   PlanningService,
   WorkItemFilters,
 } from '../modules/planning/planning.service';
@@ -59,6 +60,13 @@ export type SprintPace = 'on-track' | 'at-risk' | 'behind' | 'unknown';
 
 export interface SprintHealthView {
   sprint: SprintSummary;
+  /**
+   * The projects these figures are scoped to — the card's label. Not
+   * `sprint.projectKey`: that is whichever project Jira was first seen with,
+   * and a monthly sprint here is shared by two dozen of them. Empty when the
+   * read was unscoped (every project's items in the sprint).
+   */
+  projects: string[];
   committedPoints: number;
   completedPoints: number;
   completionPct: number | null;
@@ -86,6 +94,12 @@ export interface ActiveSprintsHealthView {
   rows: SprintHealthView[];
   stale: StaleSprint[];
   staleGraceDays: number;
+  /**
+   * True when no project was selected. Nothing is computed then: one shared
+   * sprint pooled across every project answers no one's question, so the
+   * board asks the reader to pick a project instead.
+   */
+  projectRequired: boolean;
 }
 
 export interface ActiveSprintsRiskView {
@@ -573,39 +587,63 @@ export class InsightsService {
 
   async sprintHealth(
     sprintExternalId: string,
+    projectKeys: string[] = [],
   ): Promise<SprintHealthView | null> {
     const tenantId = this.tenantContext.requireTenantId();
     const sprint = await this.findSprint(tenantId, sprintExternalId);
     if (!sprint) {
       return null;
     }
-    return this.buildSprintHealth(tenantId, sprint);
+    return this.buildSprintHealth(tenantId, sprint, projectKeys);
   }
 
   /**
-   * Health for EVERY active sprint in scope — the multi-project answer: each
-   * project runs its own sprint lifecycle, so the default view is one card per
-   * concurrent active sprint, ranked worst-pace-first.
+   * One card per selected project for each sprint that project is running —
+   * scoped to THAT project's items in it.
+   *
+   * Sprints here are monthly and shared: Sprint-26-11 holds work from 23
+   * projects. Pooling them gave every project the same card, labelled with
+   * whichever project Jira saw first ("ACT · Sprint-26-11" for NHC too) and
+   * paced on all 23 projects' items. Each project now gets its own card over
+   * its own items, and with no project selected nothing is computed.
    */
   async activeSprintsHealth(
     projectKeys: string[],
   ): Promise<ActiveSprintsHealthView> {
     const tenantId = this.tenantContext.requireTenantId();
-    const sprints = await this.planning.listSprints(
-      tenantId,
-      projectKeys,
-      'active',
+    if (projectKeys.length === 0) {
+      return {
+        rows: [],
+        stale: [],
+        staleGraceDays: STALE_ACTIVE_SPRINT_GRACE_DAYS,
+        projectRequired: true,
+      };
+    }
+    const perProject = await Promise.all(
+      projectKeys.map(async (project) => ({
+        project,
+        sprints: await this.planning.listSprints(tenantId, [project], 'active'),
+      })),
     );
     // Split before computing: a sprint that ended years ago is not a live
     // lifecycle, and ranking it against real ones by "pace" is meaningless —
     // it is 100% elapsed by definition, so it always sorts to the top of a
     // worst-first list and pushes the sprint that needs attention down.
-    const live = sprints.filter((s) => !isStaleActive(s));
-    const stale = sprints.filter((s) => isStaleActive(s));
-
     const views = await Promise.all(
-      live.map((s) => this.buildSprintHealth(tenantId, s)),
+      perProject.flatMap(({ project, sprints }) =>
+        sprints
+          .filter((s) => !isStaleActive(s))
+          .map((s) => this.buildSprintHealth(tenantId, s, [project])),
+      ),
     );
+    // A stale sprint is reported once, however many selected projects still
+    // have items in it — it is one sprint for someone to close.
+    const stale = new Map<string, Sprint>();
+    for (const { sprints } of perProject) {
+      for (const s of sprints.filter((s) => isStaleActive(s))) {
+        stale.set(s.externalId, s);
+      }
+    }
     const paceRank: Record<SprintPace, number> = {
       behind: 0,
       'at-risk': 1,
@@ -618,19 +656,32 @@ export class InsightsService {
           paceRank[a.pace] - paceRank[b.pace] ||
           (a.completionPct ?? 0) - (b.completionPct ?? 0),
       ),
-      stale: stale.map(toStaleSprint),
+      stale: [...stale.values()].map(toStaleSprint),
       staleGraceDays: STALE_ACTIVE_SPRINT_GRACE_DAYS,
+      projectRequired: false,
     };
   }
 
   private async buildSprintHealth(
     tenantId: string,
     sprint: Sprint,
+    projectKeys: string[] = [],
   ): Promise<SprintHealthView> {
+    // Work items as Jira's own sprint counts them: no epics (containers) and
+    // no subtasks. A subtask is part of its parent's work, and counting it
+    // made the card disagree with the board — NHIL on Sprint-26-11 read
+    // "1/7 done" (a Closed subtask of NHIL-835) where Jira shows 6 items, 0
+    // done. Commit linkage still reads subtask keys (SprintHealthDetailService).
     const items = (
-      await this.planning.listItemsForSprint(tenantId, sprint.externalId)
-    ).filter((i) => i.type !== 'epic');
-    const views = await this.toViews(tenantId, items);
+      await this.planning.listItemsForSprint(
+        tenantId,
+        sprint.externalId,
+        projectKeys,
+      )
+    ).filter((i) => i.type !== 'epic' && i.type !== 'subtask');
+    // Done by Jira's status category, as the board's Done column is — other
+    // boards still match status names (DONE_STATUSES) until reconciled.
+    const views = await this.toViews(tenantId, items, isJiraDone);
 
     const done = views.filter((v) => v.done);
     const committedPoints = sumPoints(views);
@@ -651,6 +702,7 @@ export class InsightsService {
 
     return {
       sprint: toSprintSummary(sprint),
+      projects: [...projectKeys].sort(),
       committedPoints,
       completedPoints,
       completionPct,
@@ -1732,6 +1784,7 @@ export class InsightsService {
   private async toViews(
     tenantId: string,
     items: Story[],
+    doneOf: (item: Story) => boolean = isDone,
   ): Promise<WorkItemView[]> {
     const linkByStory = await this.correlation.prRefsByStoryId(
       tenantId,
@@ -1750,7 +1803,7 @@ export class InsightsService {
       title: i.title,
       type: i.type,
       status: i.status,
-      done: isDone(i),
+      done: doneOf(i),
       storyPoints: i.storyPoints,
       assigneeName: i.assigneeName,
       epicKey: i.epicKey,

@@ -63,6 +63,13 @@
   --chart-grid: 240 240 243;
   --chart-axis: 143 143 156;
   --chart-empty: 240 240 243;
+
+  /* Brushed steel — Sprint Health only (DESIGN-SYSTEM.md "Metallic accents"). */
+  --metal-hi: 252 252 253;
+  --metal-lo: 225 227 232;
+  --metal-edge: 255 255 255;
+  --metal-shine: 255 255 255;
+  --metal-shade: 60 64 74;
 }
 
 /*
@@ -124,6 +131,13 @@
   --chart-grid: 240 240 243;
   --chart-axis: 143 143 156;
   --chart-empty: 240 240 243;
+
+  /* Brushed steel — Sprint Health only (DESIGN-SYSTEM.md "Metallic accents"). */
+  --metal-hi: 252 252 253;
+  --metal-lo: 225 227 232;
+  --metal-edge: 255 255 255;
+  --metal-shine: 255 255 255;
+  --metal-shade: 60 64 74;
 }
 
 .dark {
@@ -179,6 +193,12 @@
   --chart-grid: 42 42 49;
   --chart-axis: 138 138 150;
   --chart-empty: 45 45 52;
+
+  --metal-hi: 50 52 60;
+  --metal-lo: 22 23 28;
+  --metal-edge: 88 91 102;
+  --metal-shine: 255 255 255;
+  --metal-shade: 0 0 0;
 }
 
 html,
@@ -189,4 +209,72 @@ body,
 
 body {
   @apply bg-canvas text-fg antialiased;
+}
+
+/*
+ * Metallic accents — Sprint Health only, a recorded exception to the flat
+ * editorial direction (DESIGN-SYSTEM.md "Metallic accents"). Brushed steel
+ * from the --metal-* tokens: a soft vertical gradient, faint brushed grain and
+ * a 1px bevel (inset highlight — no drop shadow, no lift).
+ */
+@layer components {
+  .metal-surface {
+    background-image:
+      repeating-linear-gradient(
+        90deg,
+        rgb(var(--metal-shine) / 0.04) 0 1px,
+        transparent 1px 3px
+      ),
+      linear-gradient(170deg, rgb(var(--metal-hi)) 0%, rgb(var(--metal-lo)) 100%);
+    border: 1px solid rgb(var(--border-strong));
+    box-shadow:
+      inset 0 1px 0 rgb(var(--metal-edge) / 0.9),
+      inset 0 -1px 0 rgb(var(--metal-shade) / 0.12);
+  }
+
+  /*
+   * A highlight that sweeps across once on hover or keyboard focus. Moved by
+   * background-position inside the element's own box, so the parent needs no
+   * overflow: hidden — which would clip any tooltip inside it.
+   */
+  .metal-sheen {
+    position: relative;
+  }
+  .metal-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background-image: linear-gradient(
+      105deg,
+      transparent 40%,
+      rgb(var(--metal-shine) / 0.28) 50%,
+      transparent 60%
+    );
+    background-size: 250% 100%;
+    background-position: 100% 0;
+    background-repeat: no-repeat;
+    transition: background-position 700ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .metal-sheen:hover::after,
+  .metal-sheen:focus-visible::after {
+    background-position: 0 0;
+  }
+
+  /* Polished fill for a bar segment, layered over its own bg-* colour. */
+  .metal-bar {
+    background-image: linear-gradient(
+      180deg,
+      rgb(var(--metal-shine) / 0.38) 0%,
+      transparent 50%,
+      rgb(var(--metal-shade) / 0.18) 100%
+    );
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .metal-sheen::after {
+      display: none;
+    }
+  }
 }
