@@ -11,6 +11,7 @@ import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
 import { ProductivityPanel } from './sprint-health/ProductivityPanel';
 import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
+import { SprintWorkPanel } from './sprint-health/SprintWorkPanel';
 import { useProjects } from './useCatalog';
 import {
   type SprintHealthView,
@@ -332,7 +333,14 @@ export function SprintHealthBoard() {
                 <PaceBadge pace={d.pace} />
               </span>
             </div>
+            <SprintFacts d={d} />
           </Card>
+
+          {d.workBreakdown ? (
+            <SprintWorkPanel data={d.workBreakdown} />
+          ) : d.workBreakdown === null ? (
+            <PanelUnavailable label="Sprint work" />
+          ) : null}
 
           {/* commitActivity/productivity/qualityCheck can each independently
               come back null — the backend returns null from those service
@@ -386,6 +394,35 @@ export function SprintHealthBoard() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The sprint's Jira facts under its title: dates in IST (Jira stores the end
+ * as 18:30 UTC, which is midnight IST — a UTC date reads a day early), time
+ * left, and points done against committed.
+ */
+function SprintFacts({ d }: { d: SprintHealthView }) {
+  const day = (iso: string | null) =>
+    iso
+      ? new Date(iso).toLocaleDateString(undefined, {
+          day: 'numeric',
+          month: 'short',
+          timeZone: 'Asia/Kolkata',
+        })
+      : '—';
+  const facts = [
+    `${day(d.sprint.startAt)} – ${day(d.sprint.endAt)}`,
+    d.daysRemaining !== null &&
+      d.sprint.state === 'active' &&
+      `${d.daysRemaining} day${d.daysRemaining === 1 ? '' : 's'} left`,
+    d.elapsedPct !== null && `${Math.round(d.elapsedPct)}% elapsed`,
+    `${d.completedPoints}/${d.committedPoints} pts done` +
+      (d.completionPct !== null ? ` (${Math.round(d.completionPct)}%)` : ''),
+    `${d.itemsDone}/${d.itemsTotal} work items done`,
+  ].filter(Boolean);
+  return (
+    <p className="mt-1 text-xs tabular-nums text-fg-subtle">{facts.join(' · ')}</p>
   );
 }
 

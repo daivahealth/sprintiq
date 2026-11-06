@@ -10,7 +10,10 @@ import {
 } from '../correlation/developer-identity.util';
 import { PrismaService } from '../database/prisma.service';
 import { CodeService } from '../modules/code/code.service';
-import { PlanningService } from '../modules/planning/planning.service';
+import {
+  PlanningService,
+  isJiraDone,
+} from '../modules/planning/planning.service';
 import { attributeCommit } from './developer-activity.service';
 import { distinctCommitsBySha } from './commit-dedupe';
 import { candidateTicketKeys, ticketKeysByCommit } from './developer-tickets';
@@ -61,7 +64,81 @@ interface LinkedWork {
   prs: PullRequest[];
   /** Reviews on any PR implementing a sprint ticket, submitted inside the window. */
   reviews: PrReview[];
+  /** Every PR implementing a sprint ticket, whenever it was opened. */
+  allPrs: PullRequest[];
+  /** PR refs (`repo#number`) per sprint story id. */
+  refsByStory: Map<string, string[]>;
+  /** Sprint ticket keys each linked commit names, by SHA. */
+  ticketsBySha: Map<string, string[]>;
   linkage: SprintCommitLinkage;
+}
+
+/** Jira's three board columns — the status CATEGORY, not the status name. */
+export type JiraStatusBucket = 'todo' | 'in-progress' | 'done';
+
+/**
+ * How far a ticket's code has got, from GitHub alone: a merged PR, an open
+ * PR, commits naming it with no PR, or nothing.
+ */
+export type CodeState = 'merged' | 'in-review' | 'committed' | 'none';
+
+/**
+ * Jira and GitHub disagreeing about one ticket. GitHub is authoritative for
+ * code facts and Jira for workflow, so neither overwrites the other's figure —
+ * the disagreement is shown instead.
+ *
+ * - `github-ahead`: a PR is merged but Jira has not reached its done category
+ *   (often "Ready for QA" — QA is work GitHub cannot see).
+ * - `jira-ahead`: Jira says done while the ticket's only PRs are still open.
+ */
+export type SourceClash = 'github-ahead' | 'jira-ahead';
+
+export interface SprintTicketRow {
+  key: string;
+  title: string;
+  type: string;
+  /** Jira's status name, as the board shows it. */
+  status: string;
+  bucket: JiraStatusBucket;
+  storyPoints: number | null;
+  assigneeName: string | null;
+  epicKey: string | null;
+  /** The ticket's subtasks in this sprint — counted here, not as work items. */
+  subtasks: { total: number; done: number };
+  /** From GitHub; a subtask's commits and PRs roll up to its parent. */
+  code: {
+    state: CodeState;
+    prs: { ref: string; state: string; mergedAt: string | null }[];
+    /** Authored commits in the sprint window naming the ticket or a subtask. */
+    commits: number;
+    lastCommitAt: string | null;
+  };
+  clash: SourceClash | null;
+}
+
+export interface SprintEpicRow {
+  /** Null groups the work items that have no epic. */
+  key: string | null;
+  title: string | null;
+  items: number;
+  done: number;
+  points: number;
+}
+
+/**
+ * The sprint's Jira structure for the projects in scope — work items by
+ * board column, type and epic — beside what GitHub says about each one.
+ */
+export interface SprintWorkBreakdownView {
+  buckets: Record<JiraStatusBucket, { items: number; points: number }>;
+  byType: { type: string; items: number; done: number }[];
+  subtasks: { total: number; done: number };
+  epics: SprintEpicRow[];
+  code: Record<CodeState, number>;
+  clashes: { githubAhead: number; jiraAhead: number };
+  unestimated: number;
+  unassigned: number;
+  tickets: SprintTicketRow[];
 }
 
 export interface CommitActivityView {
@@ -83,6 +160,20 @@ export interface CommitActivityView {
 
 /** A PR waiting this long with no first review is flagged as waiting. */
 const REVIEW_WAIT_THRESHOLD_HOURS = 24;
+
+/**
+ * How long one sprint's linked work is reused. The sprint-health route asks
+ * for it from three panels at once; without this each re-read the window's
+ * commits (up to 20,000 rows) and their branches.
+ */
+const LINKED_WORK_TTL_MS = 30_000;
+
+/** Tickets list in-progress first: that is where a reader acts. */
+const BUCKET_ORDER: Record<JiraStatusBucket, number> = {
+  'in-progress': 0,
+  todo: 1,
+  done: 2,
+};
 
 export type ProductivityGrade = 'high' | 'medium' | 'low';
 
@@ -236,6 +327,11 @@ const CHECK_IN_PAGE_DAYS = 7;
  */
 @Injectable()
 export class SprintHealthDetailService {
+  private readonly linkedWorkCache = new Map<
+    string,
+    { at: number; work: Promise<LinkedWork> }
+  >();
+
   constructor(
     private readonly tenantContext: TenantContextService,
     private readonly prisma: PrismaService,
@@ -928,6 +1024,216 @@ export class SprintHealthDetailService {
   }
 
   /**
+   * The sprint's Jira structure for the projects in scope, each work item
+   * beside what GitHub says about its code.
+   *
+   * Work items are counted as Jira's sprint counts them — no epics, no
+   * subtasks — and "done" is Jira's status category, so the column totals
+   * match the board. Subtasks roll up into their parent; epics group.
+   *
+   * GitHub is the source for code facts (PR state, commits, merge time) and
+   * Jira for workflow (status, done, points). Where they disagree the row
+   * carries a `clash` rather than one silently overwriting the other.
+   */
+  async workBreakdown(
+    sprintExternalId: string,
+    projects: string[] = [],
+  ): Promise<SprintWorkBreakdownView | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const all = await this.planning.listItemsForSprint(
+      tenantId,
+      sprintExternalId,
+      projects,
+    );
+    const { commits, allPrs, refsByStory, ticketsBySha } =
+      await this.linkedWork(tenantId, found.win, all, projects);
+
+    const workItems = all.filter(
+      (i) => i.type !== 'epic' && i.type !== 'subtask',
+    );
+    const workKeys = new Set(workItems.map((i) => i.externalKey));
+    // A subtask's code is its parent's code. One whose parent is not a work
+    // item in scope is not shown — Jira's sprint view nests it the same way.
+    const ownerOf = new Map<string, string>(
+      workItems.map((i) => [i.externalKey, i.externalKey]),
+    );
+    const subtaskCount = new Map<string, { total: number; done: number }>();
+    for (const sub of all) {
+      if (sub.type !== 'subtask' || !sub.parentKey) continue;
+      if (!workKeys.has(sub.parentKey)) continue;
+      ownerOf.set(sub.externalKey, sub.parentKey);
+      const c = subtaskCount.get(sub.parentKey) ?? { total: 0, done: 0 };
+      c.total += 1;
+      if (isJiraDone(sub)) c.done += 1;
+      subtaskCount.set(sub.parentKey, c);
+    }
+
+    const prByRef = new Map(
+      allPrs.map((pr) => [
+        `${pr.repoFullName}#${pr.externalNumber}`.toLowerCase(),
+        pr,
+      ]),
+    );
+    const prRefsOf = new Map<string, Set<string>>();
+    for (const item of all) {
+      const owner = ownerOf.get(item.externalKey);
+      if (!owner) continue;
+      const refs = prRefsOf.get(owner) ?? new Set<string>();
+      for (const ref of refsByStory.get(item.id) ?? []) {
+        refs.add(ref.toLowerCase());
+      }
+      prRefsOf.set(owner, refs);
+    }
+    const commitsOf = new Map<string, { n: number; last: Date | null }>();
+    for (const commit of partitionMerges(commits).authored) {
+      const owners = new Set(
+        (ticketsBySha.get(commit.sha) ?? [])
+          .map((k) => ownerOf.get(k))
+          .filter((k): k is string => Boolean(k)),
+      );
+      for (const owner of owners) {
+        const c = commitsOf.get(owner) ?? { n: 0, last: null };
+        c.n += 1;
+        if (commit.committedAt && (!c.last || commit.committedAt > c.last)) {
+          c.last = commit.committedAt;
+        }
+        commitsOf.set(owner, c);
+      }
+    }
+
+    const tickets: SprintTicketRow[] = workItems.map((item) => {
+      const prs = [...(prRefsOf.get(item.externalKey) ?? [])]
+        .map((ref) => prByRef.get(ref))
+        .filter((pr): pr is PullRequest => Boolean(pr))
+        .sort(
+          (a, b) =>
+            a.repoFullName.localeCompare(b.repoFullName) ||
+            Number(a.externalNumber) - Number(b.externalNumber),
+        );
+      const c = commitsOf.get(item.externalKey) ?? { n: 0, last: null };
+      const state: CodeState = prs.some((pr) => pr.state === 'merged')
+        ? 'merged'
+        : prs.some((pr) => pr.state === 'open')
+          ? 'in-review'
+          : c.n > 0
+            ? 'committed'
+            : 'none';
+      const bucket = bucketOf(item);
+      return {
+        key: item.externalKey,
+        title: item.title,
+        type: item.type,
+        status: item.status,
+        bucket,
+        storyPoints: item.storyPoints,
+        assigneeName: item.assigneeName,
+        epicKey: item.epicKey,
+        subtasks: subtaskCount.get(item.externalKey) ?? { total: 0, done: 0 },
+        code: {
+          state,
+          prs: prs.map((pr) => ({
+            ref: `${pr.repoFullName}#${pr.externalNumber}`,
+            state: pr.state,
+            mergedAt: pr.mergedAt ? pr.mergedAt.toISOString() : null,
+          })),
+          commits: c.n,
+          lastCommitAt: c.last ? c.last.toISOString() : null,
+        },
+        clash:
+          bucket !== 'done' && state === 'merged'
+            ? 'github-ahead'
+            : bucket === 'done' && state === 'in-review'
+              ? 'jira-ahead'
+              : null,
+      };
+    });
+    tickets.sort(
+      (a, b) =>
+        BUCKET_ORDER[a.bucket] - BUCKET_ORDER[b.bucket] ||
+        compareKeys(a.key, b.key),
+    );
+
+    const buckets: SprintWorkBreakdownView['buckets'] = {
+      todo: { items: 0, points: 0 },
+      'in-progress': { items: 0, points: 0 },
+      done: { items: 0, points: 0 },
+    };
+    const byType = new Map<string, { items: number; done: number }>();
+    const epicAgg = new Map<string | null, SprintEpicRow>();
+    const code: Record<CodeState, number> = {
+      merged: 0,
+      'in-review': 0,
+      committed: 0,
+      none: 0,
+    };
+    for (const t of tickets) {
+      const done = t.bucket === 'done';
+      buckets[t.bucket].items += 1;
+      buckets[t.bucket].points += t.storyPoints ?? 0;
+      const ty = byType.get(t.type) ?? { items: 0, done: 0 };
+      ty.items += 1;
+      if (done) ty.done += 1;
+      byType.set(t.type, ty);
+      const e = epicAgg.get(t.epicKey) ?? {
+        key: t.epicKey,
+        title: null,
+        items: 0,
+        done: 0,
+        points: 0,
+      };
+      e.items += 1;
+      if (done) e.done += 1;
+      e.points += t.storyPoints ?? 0;
+      epicAgg.set(t.epicKey, e);
+      code[t.code.state] += 1;
+    }
+    const epicKeys = [...epicAgg.keys()].filter((k): k is string => k !== null);
+    const epicTitles = new Map(
+      (await this.planning.findByKeys(tenantId, epicKeys)).map((e) => [
+        e.externalKey,
+        e.title,
+      ]),
+    );
+    const epics = [...epicAgg.values()]
+      .map((e) => ({
+        ...e,
+        title: e.key ? (epicTitles.get(e.key) ?? null) : null,
+      }))
+      // Biggest epics first; "no epic" last, however big it is.
+      .sort(
+        (a, b) =>
+          Number(a.key === null) - Number(b.key === null) ||
+          b.items - a.items ||
+          compareKeys(a.key ?? '', b.key ?? ''),
+      );
+
+    const counted = [...subtaskCount.values()];
+    return {
+      buckets,
+      byType: [...byType]
+        .map(([type, v]) => ({ type, ...v }))
+        .sort((a, b) => b.items - a.items || a.type.localeCompare(b.type)),
+      subtasks: {
+        total: counted.reduce((s, c) => s + c.total, 0),
+        done: counted.reduce((s, c) => s + c.done, 0),
+      },
+      epics,
+      code,
+      clashes: {
+        githubAhead: tickets.filter((t) => t.clash === 'github-ahead').length,
+        jiraAhead: tickets.filter((t) => t.clash === 'jira-ahead').length,
+      },
+      unestimated: tickets.filter((t) => t.storyPoints === null).length,
+      unassigned: tickets.filter((t) => !t.assigneeName).length,
+      tickets,
+    };
+  }
+
+  /**
    * The sprint's own elapsed window, clamped to now. A running sprint is
    * measured over the days it has actually had, not the days it was allotted:
    * averaging 14 days of commits over a 21-day plan understates a team
@@ -963,7 +1269,36 @@ export class SprintHealthDetailService {
    * naming no ticket cannot be placed this way, so it is counted in
    * `noTicketCommits` rather than guessed at.
    */
-  private async linkedWork(
+  private linkedWork(
+    tenantId: string,
+    win: SprintWindowDates,
+    items: Story[],
+    projects: string[],
+  ): Promise<LinkedWork> {
+    const now = Date.now();
+    for (const [k, v] of this.linkedWorkCache) {
+      if (now - v.at > LINKED_WORK_TTL_MS) this.linkedWorkCache.delete(k);
+    }
+    const key = [
+      tenantId,
+      win.from.getTime(),
+      [...projects].sort().join(','),
+      items
+        .map((item) => item.id)
+        .sort()
+        .join(','),
+    ].join('|');
+    const hit = this.linkedWorkCache.get(key);
+    if (hit) {
+      return hit.work;
+    }
+    const work = this.computeLinkedWork(tenantId, win, items, projects);
+    this.linkedWorkCache.set(key, { at: now, work });
+    work.catch(() => this.linkedWorkCache.delete(key));
+    return work;
+  }
+
+  private async computeLinkedWork(
     tenantId: string,
     win: SprintWindowDates,
     items: Story[],
@@ -1010,6 +1345,7 @@ export class SprintHealthDetailService {
 
     const { commits } = distinctCommitsBySha(page.commits);
     const linked: Commit[] = [];
+    const ticketsBySha = new Map<string, string[]>();
     const repos = new Set<string>();
     let linkedViaBranchOnly = 0;
     let otherTicketCommits = 0;
@@ -1019,6 +1355,10 @@ export class SprintHealthDetailService {
       const hits = [...keys].filter(([key]) => sprintKeys.has(key));
       if (hits.length > 0) {
         linked.push(commit);
+        ticketsBySha.set(
+          commit.sha,
+          hits.map(([key]) => key),
+        );
         repos.add(commit.repoFullName);
         continue;
       }
@@ -1060,6 +1400,9 @@ export class SprintHealthDetailService {
         (pr) => pr.openedAt && pr.openedAt >= win.from && pr.openedAt <= win.to,
       ),
       reviews,
+      allPrs,
+      refsByStory,
+      ticketsBySha,
       linkage: {
         sprintTickets: sprintKeys.size,
         linkedCommits: partitionMerges(linked).authored.length,
@@ -1071,6 +1414,19 @@ export class SprintHealthDetailService {
       },
     };
   }
+}
+
+/** Jira's board column for an item, from its status category. */
+function bucketOf(item: Story): JiraStatusBucket {
+  if (isJiraDone(item)) return 'done';
+  return item.statusCategory === 'indeterminate' ? 'in-progress' : 'todo';
+}
+
+/** `NHC-9` before `NHC-10`: project, then issue number. */
+function compareKeys(a: string, b: string): number {
+  const [pa, na] = a.split('-');
+  const [pb, nb] = b.split('-');
+  return (pa ?? '').localeCompare(pb ?? '') || Number(na) - Number(nb);
 }
 
 /** IST calendar-day keys covered by [from, to], inclusive of both ends. */

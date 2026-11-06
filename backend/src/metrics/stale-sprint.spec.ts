@@ -173,6 +173,30 @@ describe('InsightsService — sprints Jira still calls active', () => {
     expect(view.rows[0].itemsDone).toBe(0);
   });
 
+  // The board's Done column is Jira's status category; ACT's workflow files
+  // "READY FOR UAT" there, which a status-name list never knew.
+  it('counts done by Jira status category, not status name', async () => {
+    planning.listSprints.mockResolvedValue([sprint({})]);
+    planning.listItemsForSprint.mockResolvedValue([
+      {
+        id: 'a',
+        type: 'story',
+        status: 'READY FOR UAT',
+        statusCategory: 'done',
+      },
+      {
+        id: 'b',
+        type: 'story',
+        status: 'Ready for QA',
+        statusCategory: 'indeterminate',
+      },
+    ] as never);
+
+    const view = await service.activeSprintsHealth(['ACT']);
+
+    expect(view.rows[0].itemsDone).toBe(1);
+  });
+
   it('reports a stale sprint once, however many selected projects are in it', async () => {
     planning.listSprints.mockResolvedValue([
       sprint({

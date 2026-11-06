@@ -551,6 +551,56 @@ export interface SprintCommitLinkage {
   truncated: boolean;
 }
 
+/** Jira's three board columns, from the status category (not the name). */
+export type JiraStatusBucket = 'todo' | 'in-progress' | 'done';
+
+/** A ticket's code progress, from GitHub alone. */
+export type CodeState = 'merged' | 'in-review' | 'committed' | 'none';
+
+/**
+ * Jira and GitHub disagreeing about one ticket. GitHub is the source for code
+ * facts and Jira for workflow; neither overrides the other's figure.
+ */
+export type SourceClash = 'github-ahead' | 'jira-ahead';
+
+export interface SprintTicketRow {
+  key: string;
+  title: string;
+  type: string;
+  status: string;
+  bucket: JiraStatusBucket;
+  storyPoints: number | null;
+  assigneeName: string | null;
+  epicKey: string | null;
+  subtasks: { total: number; done: number };
+  code: {
+    state: CodeState;
+    prs: { ref: string; state: string; mergedAt: string | null }[];
+    commits: number;
+    lastCommitAt: string | null;
+  };
+  clash: SourceClash | null;
+}
+
+/** Backend `SprintWorkBreakdownView` — the sprint's Jira structure beside GitHub. */
+export interface SprintWorkBreakdownView {
+  buckets: Record<JiraStatusBucket, { items: number; points: number }>;
+  byType: { type: string; items: number; done: number }[];
+  subtasks: { total: number; done: number };
+  epics: {
+    key: string | null;
+    title: string | null;
+    items: number;
+    done: number;
+    points: number;
+  }[];
+  code: Record<CodeState, number>;
+  clashes: { githubAhead: number; jiraAhead: number };
+  unestimated: number;
+  unassigned: number;
+  tickets: SprintTicketRow[];
+}
+
 export type ProductivityGrade = 'high' | 'medium' | 'low';
 
 export interface ProductivityRow {
@@ -661,6 +711,8 @@ export function useSprintHealth(sprint: string | null, projects: string[] = []) 
           commitActivity: CommitActivityView | null;
           productivity: ProductivityView | null;
           qualityCheck: QualityCheckView | null;
+          /** Missing from an older API; null when the sprint can't be resolved. */
+          workBreakdown?: SprintWorkBreakdownView | null;
           computedAt: string;
         }
       >(

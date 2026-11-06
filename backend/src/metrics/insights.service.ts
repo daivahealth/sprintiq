@@ -11,6 +11,7 @@ import { CodeService } from '../modules/code/code.service';
 import { ConnectionsService } from '../modules/connections/connections.service';
 import {
   DONE_STATUSES,
+  isJiraDone,
   PlanningService,
   WorkItemFilters,
 } from '../modules/planning/planning.service';
@@ -678,7 +679,9 @@ export class InsightsService {
         projectKeys,
       )
     ).filter((i) => i.type !== 'epic' && i.type !== 'subtask');
-    const views = await this.toViews(tenantId, items);
+    // Done by Jira's status category, as the board's Done column is — other
+    // boards still match status names (DONE_STATUSES) until reconciled.
+    const views = await this.toViews(tenantId, items, isJiraDone);
 
     const done = views.filter((v) => v.done);
     const committedPoints = sumPoints(views);
@@ -1781,6 +1784,7 @@ export class InsightsService {
   private async toViews(
     tenantId: string,
     items: Story[],
+    doneOf: (item: Story) => boolean = isDone,
   ): Promise<WorkItemView[]> {
     const linkByStory = await this.correlation.prRefsByStoryId(
       tenantId,
@@ -1799,7 +1803,7 @@ export class InsightsService {
       title: i.title,
       type: i.type,
       status: i.status,
-      done: isDone(i),
+      done: doneOf(i),
       storyPoints: i.storyPoints,
       assigneeName: i.assigneeName,
       epicKey: i.epicKey,
