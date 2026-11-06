@@ -580,6 +580,33 @@ export interface SprintTicketRow {
     lastCommitAt: string | null;
   };
   clash: SourceClash | null;
+  /** Optional: an older API omits it. */
+  gaps?: DataGapKind[];
+}
+
+/**
+ * One way Jira lags or misses the GitHub work on the same tickets (backend
+ * `DataGapKind`); `GAP_COPY` in sprint-health/gap-copy.ts says what each
+ * means and the step that fixes it.
+ */
+export type DataGapKind =
+  | 'progress-not-marked'
+  | 'jira-not-updated'
+  | 'in-qa'
+  | 'done-before-merge'
+  | 'unassigned-with-code'
+  | 'no-code-linked'
+  | 'ticket-not-in-sprint'
+  | 'ticket-in-other-sprint'
+  | 'ticket-not-logged'
+  | 'commits-not-tagged';
+
+export interface DataGapFinding {
+  kind: DataGapKind;
+  severity: 'action' | 'info';
+  count: number;
+  commits: number | null;
+  sample: string[];
 }
 
 /** Backend `SprintWorkBreakdownView` — the sprint's Jira structure beside GitHub. */
@@ -598,6 +625,8 @@ export interface SprintWorkBreakdownView {
   clashes: { githubAhead: number; jiraAhead: number };
   unestimated: number;
   unassigned: number;
+  /** Optional: an older API omits it. */
+  gaps?: DataGapFinding[];
   tickets: SprintTicketRow[];
 }
 

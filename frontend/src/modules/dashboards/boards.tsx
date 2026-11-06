@@ -291,9 +291,9 @@ export function SprintHealthBoard() {
                     <span>
                       {row.completionPct === null
                         ? 'no estimated pts'
-                        : `${row.completionPct}% done`}
+                        : `${Math.round(row.completionPct)}% of points done`}
                       {row.elapsedPct !== null &&
-                        ` · ${row.elapsedPct}% elapsed`}
+                        ` · ${Math.round(row.elapsedPct)}% elapsed`}
                     </span>
                     <span>
                       {row.daysRemaining !== null && `${row.daysRemaining}d left`}
@@ -452,17 +452,22 @@ function PaceBar({
   completionPct: number | null;
   elapsedPct: number | null;
 }) {
+  // The "today" marker sits outside the clipped track and overhangs it, ringed
+  // in the card's surface colour: drawn inside the fill as a faint 2px line it
+  // read as a rendering glitch rather than a marker.
   return (
-    <div className="relative h-3 overflow-hidden rounded bg-muted">
-      <div
-        className="h-full rounded bg-brand"
-        style={{ width: `${completionPct ?? 0}%` }}
-      />
+    <div className="relative py-1">
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-brand"
+          style={{ width: `${Math.min(100, completionPct ?? 0)}%` }}
+        />
+      </div>
       {elapsedPct !== null && (
         <div
-          className="absolute top-0 h-full w-0.5 bg-fg-subtle"
-          style={{ left: `${elapsedPct}%` }}
-          title={`${elapsedPct}% of sprint elapsed`}
+          className="absolute inset-y-0 w-[3px] -translate-x-1/2 rounded-full bg-fg ring-2 ring-surface"
+          style={{ left: `${Math.min(100, elapsedPct)}%` }}
+          title={`Today: ${Math.round(elapsedPct)}% of the sprint has elapsed`}
         />
       )}
     </div>

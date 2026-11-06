@@ -70,7 +70,68 @@ interface LinkedWork {
   refsByStory: Map<string, string[]>;
   /** Sprint ticket keys each linked commit names, by SHA. */
   ticketsBySha: Map<string, string[]>;
+  /** Tickets of the projects in scope in NO sprint → authored commits naming them. */
+  offSprintKeys: Map<string, number>;
+  /** Tickets of the projects in scope in ANOTHER sprint → authored commits naming them. */
+  otherSprintKeys: Map<string, number>;
+  /** Keys shaped like a ticket of a project in scope that Jira does not know → commits. */
+  unknownKeys: Map<string, number>;
+  /** Authored commits naming no ticket-shaped key at all, by repository. */
+  untaggedByRepo: Map<string, number>;
   linkage: SprintCommitLinkage;
+}
+
+/**
+ * One way Jira's record lags, or misses, the GitHub work on the same tickets
+ * — each with a known fix, which the board states beside it.
+ *
+ * Per ticket:
+ * - `progress-not-marked`: code exists but Jira has not started the ticket
+ *   (To Do, or a "ready for development" style status).
+ * - `jira-not-updated`: a PR is merged, none is open, and Jira still holds the
+ *   ticket in a development status.
+ * - `in-qa`: a PR is merged and Jira is in a QA/UAT/review/defect status —
+ *   the expected flow, reported for information only.
+ * - `done-before-merge`: Jira says done while its only PRs are still open.
+ * - `unassigned-with-code`: code exists, Jira has no assignee.
+ * - `no-code-linked`: Jira has the ticket in development, but no commit,
+ *   branch or PR names it.
+ *
+ * Sprint-wide (from commits, not tickets):
+ * - `ticket-not-in-sprint`: commits name tickets of this project that are in
+ *   no sprint (the backlog) — worked on, never planned.
+ * - `ticket-in-other-sprint`: commits name tickets of this project that sit in
+ *   another sprint — usually unfinished work not carried over.
+ * - `ticket-not-logged`: commits name a key of this project Jira has no
+ *   ticket for — never logged, or a typo.
+ * - `commits-not-tagged`: commits in the repositories this sprint's work lives
+ *   in name no ticket at all.
+ *
+ * QA vs development is read from the status NAME, because Jira's category
+ * puts both in "in progress"; the patterns are `QA_STATUS` / `NOT_STARTED_STATUS`.
+ */
+export type DataGapKind =
+  | 'progress-not-marked'
+  | 'jira-not-updated'
+  | 'in-qa'
+  | 'done-before-merge'
+  | 'unassigned-with-code'
+  | 'no-code-linked'
+  | 'ticket-not-in-sprint'
+  | 'ticket-in-other-sprint'
+  | 'ticket-not-logged'
+  | 'commits-not-tagged';
+
+export interface DataGapFinding {
+  kind: DataGapKind;
+  /** `action`: someone should fix the record. `info`: expected, shown for context. */
+  severity: 'action' | 'info';
+  /** Tickets affected (per-ticket kinds) or distinct keys / repos named (sprint-wide). */
+  count: number;
+  /** Authored commits behind a sprint-wide finding; null for per-ticket kinds. */
+  commits: number | null;
+  /** Up to `GAP_SAMPLE` keys (or repositories, for `commits-not-tagged`), most commits first. */
+  sample: string[];
 }
 
 /** Jira's three board columns — the status CATEGORY, not the status name. */
@@ -114,6 +175,8 @@ export interface SprintTicketRow {
     lastCommitAt: string | null;
   };
   clash: SourceClash | null;
+  /** The per-ticket `DataGapKind`s that apply, most actionable first. */
+  gaps: DataGapKind[];
 }
 
 export interface SprintEpicRow {
@@ -138,6 +201,8 @@ export interface SprintWorkBreakdownView {
   clashes: { githubAhead: number; jiraAhead: number };
   unestimated: number;
   unassigned: number;
+  /** Where Jira lags or misses the GitHub work, most actionable first; empty when none. */
+  gaps: DataGapFinding[];
   tickets: SprintTicketRow[];
 }
 
@@ -167,6 +232,35 @@ const REVIEW_WAIT_THRESHOLD_HOURS = 24;
  * commits (up to 20,000 rows) and their branches.
  */
 const LINKED_WORK_TTL_MS = 30_000;
+
+/**
+ * Jira statuses that sit AFTER the code is written — QA, UAT, review, open
+ * defects. Merged code there is the expected flow, not a stale Jira.
+ */
+const QA_STATUS = /\b(qa|test|testing|uat|review|verif\w*|defects?)\b/i;
+
+/**
+ * "In progress" category statuses that still mean nobody has started — this
+ * tenant's "READY FOR DEVELOPMENT" is in Jira's indeterminate category.
+ */
+const NOT_STARTED_STATUS = /\bready for (dev\w*|design)\b/i;
+
+/** Keys or repos listed per finding — enough to act on, not a dump. */
+const GAP_SAMPLE = 8;
+
+/** Order findings are shown in: what to fix in Jira first, context last. */
+const GAP_ORDER: DataGapKind[] = [
+  'progress-not-marked',
+  'jira-not-updated',
+  'done-before-merge',
+  'ticket-not-in-sprint',
+  'ticket-in-other-sprint',
+  'ticket-not-logged',
+  'unassigned-with-code',
+  'commits-not-tagged',
+  'no-code-linked',
+  'in-qa',
+];
 
 /** Tickets list in-progress first: that is where a reader acts. */
 const BUCKET_ORDER: Record<JiraStatusBucket, number> = {
@@ -1049,8 +1143,17 @@ export class SprintHealthDetailService {
       sprintExternalId,
       projects,
     );
-    const { commits, allPrs, refsByStory, ticketsBySha } =
-      await this.linkedWork(tenantId, found.win, all, projects);
+    const {
+      commits,
+      allPrs,
+      refsByStory,
+      ticketsBySha,
+      offSprintKeys,
+      otherSprintKeys,
+      unknownKeys,
+      untaggedByRepo,
+      linkage,
+    } = await this.linkedWork(tenantId, found.win, all, projects);
 
     const workItems = all.filter(
       (i) => i.type !== 'epic' && i.type !== 'subtask',
@@ -1149,6 +1252,12 @@ export class SprintHealthDetailService {
             : bucket === 'done' && state === 'in-review'
               ? 'jira-ahead'
               : null,
+        gaps: ticketGaps(
+          item,
+          bucket,
+          state,
+          prs.some((pr) => pr.state === 'open'),
+        ),
       };
     });
     tickets.sort(
@@ -1229,6 +1338,19 @@ export class SprintHealthDetailService {
       },
       unestimated: tickets.filter((t) => t.storyPoints === null).length,
       unassigned: tickets.filter((t) => !t.assigneeName).length,
+      gaps: dataGaps(tickets, {
+        offSprintKeys,
+        otherSprintKeys,
+        unknownKeys,
+        // Untagged commits are scoped to the repos this sprint's linked work
+        // landed in — a commit naming no ticket can't be placed in a project
+        // any other way, and the tenant-wide figure is not this team's.
+        untaggedByRepo: new Map(
+          [...untaggedByRepo].filter(([repo]) =>
+            linkage.reposTouched.includes(repo),
+          ),
+        ),
+      }),
       tickets,
     };
   }
@@ -1350,6 +1472,17 @@ export class SprintHealthDetailService {
     let linkedViaBranchOnly = 0;
     let otherTicketCommits = 0;
     let noTicketCommits = 0;
+    const offSprintKeys = new Map<string, number>();
+    const otherSprintKeys = new Map<string, number>();
+    const sprintOf = new Map(
+      known.map((s) => [s.externalKey, s.sprintExternalId]),
+    );
+    const unknownKeys = new Map<string, number>();
+    const untaggedByRepo = new Map<string, number>();
+    const bump = (m: Map<string, number>, k: string) =>
+      m.set(k, (m.get(k) ?? 0) + 1);
+    const inProjects = (key: string) =>
+      projects.includes(key.split('-')[0] ?? '');
     for (const commit of commits) {
       const keys = keysBySha.get(commit.sha) ?? new Map<string, Set<string>>();
       const hits = [...keys].filter(([key]) => sprintKeys.has(key));
@@ -1364,10 +1497,18 @@ export class SprintHealthDetailService {
       }
       // The disclosure counts are over authored commits, like the tiles.
       if (isMergeCommit(commit)) continue;
-      if ([...keys.keys()].some((key) => inScope.has(key))) {
+      const named = [...keys.keys()];
+      if (named.some((key) => inScope.has(key))) {
         otherTicketCommits += 1;
-      } else if (![...keys.keys()].some((key) => knownKeys.has(key))) {
+        for (const key of named) {
+          if (!inScope.has(key)) continue;
+          bump(sprintOf.get(key) ? otherSprintKeys : offSprintKeys, key);
+        }
+      } else if (!named.some((key) => knownKeys.has(key))) {
         noTicketCommits += 1;
+        const unknown = named.filter(inProjects);
+        for (const key of unknown) bump(unknownKeys, key);
+        if (named.length === 0) bump(untaggedByRepo, commit.repoFullName);
       }
     }
     for (const commit of partitionMerges(linked).authored) {
@@ -1403,6 +1544,10 @@ export class SprintHealthDetailService {
       allPrs,
       refsByStory,
       ticketsBySha,
+      offSprintKeys,
+      otherSprintKeys,
+      unknownKeys,
+      untaggedByRepo,
       linkage: {
         sprintTickets: sprintKeys.size,
         linkedCommits: partitionMerges(linked).authored.length,
@@ -1414,6 +1559,93 @@ export class SprintHealthDetailService {
       },
     };
   }
+}
+
+/** The per-ticket `DataGapKind`s for one work item, most actionable first. */
+function ticketGaps(
+  item: Story,
+  bucket: JiraStatusBucket,
+  state: CodeState,
+  hasOpenPr: boolean,
+): DataGapKind[] {
+  const gaps: DataGapKind[] = [];
+  const hasCode = state !== 'none';
+  const notStarted =
+    bucket === 'todo' ||
+    (bucket === 'in-progress' && NOT_STARTED_STATUS.test(item.status));
+  const inQa = bucket === 'in-progress' && QA_STATUS.test(item.status);
+  if (hasCode && notStarted) {
+    gaps.push('progress-not-marked');
+  } else if (bucket === 'in-progress' && state === 'merged') {
+    // An open PR beside the merged one means development is still going.
+    if (inQa) gaps.push('in-qa');
+    else if (!hasOpenPr) gaps.push('jira-not-updated');
+  }
+  if (bucket === 'done' && state === 'in-review') {
+    gaps.push('done-before-merge');
+  }
+  if (hasCode && !item.assigneeName) {
+    gaps.push('unassigned-with-code');
+  }
+  if (bucket === 'in-progress' && !notStarted && !inQa && !hasCode) {
+    gaps.push('no-code-linked');
+  }
+  return gaps;
+}
+
+/** Per-ticket gaps rolled up, plus the sprint-wide ones read from commits. */
+function dataGaps(
+  tickets: SprintTicketRow[],
+  commits: {
+    offSprintKeys: Map<string, number>;
+    otherSprintKeys: Map<string, number>;
+    unknownKeys: Map<string, number>;
+    untaggedByRepo: Map<string, number>;
+  },
+): DataGapFinding[] {
+  const out: DataGapFinding[] = [];
+  const perTicket = new Map<DataGapKind, string[]>();
+  for (const t of tickets) {
+    for (const g of t.gaps)
+      perTicket.set(g, [...(perTicket.get(g) ?? []), t.key]);
+  }
+  for (const [kind, keys] of perTicket) {
+    out.push({
+      kind,
+      severity:
+        kind === 'in-qa' || kind === 'no-code-linked' ? 'info' : 'action',
+      count: keys.length,
+      commits: null,
+      sample: keys.slice(0, GAP_SAMPLE),
+    });
+  }
+  const fromCommits = (
+    kind: DataGapKind,
+    m: Map<string, number>,
+  ): DataGapFinding | null => {
+    if (m.size === 0) return null;
+    const ranked = [...m].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+    return {
+      kind,
+      severity: 'action',
+      count: m.size,
+      commits: ranked.reduce((s, [, n]) => s + n, 0),
+      sample: ranked.slice(0, GAP_SAMPLE).map(([k]) => k),
+    };
+  };
+  for (const f of [
+    fromCommits('ticket-not-in-sprint', commits.offSprintKeys),
+    fromCommits('ticket-in-other-sprint', commits.otherSprintKeys),
+    fromCommits('ticket-not-logged', commits.unknownKeys),
+    fromCommits('commits-not-tagged', commits.untaggedByRepo),
+  ]) {
+    if (f) out.push(f);
+  }
+  return out.sort(
+    (a, b) => GAP_ORDER.indexOf(a.kind) - GAP_ORDER.indexOf(b.kind),
+  );
 }
 
 /** Jira's board column for an item, from its status category. */

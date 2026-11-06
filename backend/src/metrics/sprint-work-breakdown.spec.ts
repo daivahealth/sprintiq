@@ -220,6 +220,94 @@ describe('SprintHealthDetailService.workBreakdown', () => {
     expect(code.listCommitsPage).toHaveBeenCalledTimes(1);
   });
 
+  describe('where Jira lags the GitHub work', () => {
+    beforeEach(() => {
+      planning.listItemsForSprint.mockResolvedValue([
+        // Merged, nothing open, still "In Development": Jira not updated.
+        item('NHC-30', { status: 'In Development' }),
+        // Commits exist, Jira never started it.
+        item('NHC-31', {
+          status: 'READY FOR DEVELOPMENT',
+          assigneeName: null,
+        }),
+        // Merged and waiting on QA: the expected flow.
+        item('NHC-32', { status: 'Ready for QA' }),
+        // In development, nothing names it.
+        item('NHC-33', { status: 'In Development' }),
+      ] as never);
+      code.listCommitsPage.mockResolvedValue({
+        commits: [
+          commit('a', 'NHC-31 start'),
+          commit('b', 'NHC-50 backlog work'),
+          commit('c', 'NHC-50 more'),
+          commit('d', 'NHC-60 carried over'),
+          commit('e', 'NHC-99 typo or never logged'),
+          commit('f', 'quick fix'),
+          { ...commit('g', 'NHC-30 done'), repoFullName: 'org/app' },
+        ],
+        truncated: false,
+      } as never);
+      code.listPullRequestsByRefs.mockResolvedValue([
+        pr('1', 'merged'),
+        pr('3', 'merged'),
+      ] as never);
+      correlation.prRefsByStoryId.mockResolvedValue(
+        new Map([
+          ['id-NHC-30', ['org/app#1']],
+          ['id-NHC-32', ['org/app#3']],
+        ]),
+      );
+      planning.findByKeys.mockImplementation((async (
+        _t: string,
+        keys: string[],
+      ) =>
+        [
+          { externalKey: 'NHC-50', projectKey: 'NHC', sprintExternalId: null },
+          { externalKey: 'NHC-60', projectKey: 'NHC', sprintExternalId: '41' },
+        ].filter((s) => keys.includes(s.externalKey))) as never);
+    });
+
+    it('names the flow that fixes each ticket, and reports QA as expected rather than stale', async () => {
+      const view = (await service.workBreakdown('42', ['NHC']))!;
+      const gapsOf = new Map(view.tickets.map((t) => [t.key, t.gaps]));
+
+      expect(gapsOf.get('NHC-30')).toEqual(['jira-not-updated']);
+      expect(gapsOf.get('NHC-31')).toEqual([
+        'progress-not-marked',
+        'unassigned-with-code',
+      ]);
+      expect(gapsOf.get('NHC-32')).toEqual(['in-qa']);
+      expect(gapsOf.get('NHC-33')).toEqual(['no-code-linked']);
+    });
+
+    it('reads backlog, other-sprint, unlogged and untagged work from the commits', async () => {
+      const view = (await service.workBreakdown('42', ['NHC']))!;
+      const byKind = new Map(view.gaps.map((g) => [g.kind, g]));
+
+      expect(byKind.get('ticket-not-in-sprint')).toMatchObject({
+        count: 1,
+        commits: 2,
+        sample: ['NHC-50'],
+      });
+      expect(byKind.get('ticket-in-other-sprint')).toMatchObject({
+        count: 1,
+        sample: ['NHC-60'],
+      });
+      expect(byKind.get('ticket-not-logged')).toMatchObject({
+        sample: ['NHC-99'],
+      });
+      expect(byKind.get('commits-not-tagged')).toMatchObject({
+        count: 1,
+        commits: 1,
+        sample: ['org/app'],
+      });
+      expect(byKind.get('in-qa')!.severity).toBe('info');
+      // Most actionable first, expected flow last.
+      expect(view.gaps[0].kind).toBe('progress-not-marked');
+      expect(view.gaps.at(-1)!.kind).toBe('in-qa');
+    });
+  });
+
   it("returns null for another tenant's sprint", async () => {
     planning.findSprintByExternalId.mockResolvedValue(null);
 

@@ -671,7 +671,15 @@ export class PlanningService implements OnModuleInit {
     tenantId: string,
     externalKeys: string[],
   ): Promise<
-    Pick<Story, 'externalKey' | 'projectKey' | 'type' | 'status' | 'title'>[]
+    Pick<
+      Story,
+      | 'externalKey'
+      | 'projectKey'
+      | 'type'
+      | 'status'
+      | 'title'
+      | 'sprintExternalId'
+    >[]
   > {
     if (externalKeys.length === 0) {
       return Promise.resolve([]);
@@ -684,6 +692,7 @@ export class PlanningService implements OnModuleInit {
         type: true,
         status: true,
         title: true,
+        sprintExternalId: true,
       },
     });
   }

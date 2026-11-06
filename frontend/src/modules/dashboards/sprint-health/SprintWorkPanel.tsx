@@ -10,10 +10,13 @@ import {
 import { Stat, TypeBadge } from '../widgets';
 import type {
   CodeState,
+  DataGapKind,
   JiraStatusBucket,
   SprintTicketRow,
   SprintWorkBreakdownView,
 } from '../useInsights';
+import { DataGapsList } from './DataGapsList';
+import { GAP_COPY } from './gap-copy';
 
 /**
  * Sprint Health §Sprint work — the sprint's Jira structure for the selected
@@ -46,7 +49,13 @@ const CODE_TONE: Record<CodeState, 'good' | 'warn' | 'neutral'> = {
   none: 'neutral',
 };
 
-type Filter = 'all' | JiraStatusBucket | 'clash';
+type Filter = 'all' | JiraStatusBucket | 'needs-update';
+
+/** Gaps that are context, not a record to fix — they don't make a row "needs update". */
+const INFO_GAPS: DataGapKind[] = ['in-qa', 'no-code-linked'];
+
+const needsUpdate = (t: SprintTicketRow) =>
+  (t.gaps ?? []).some((g) => !INFO_GAPS.includes(g));
 
 /** Rows shown before "Show all" — ACT's sprint alone has 260 work items. */
 const PAGE = 25;
@@ -57,8 +66,14 @@ export function SprintWorkPanel({ data }: { data: SprintWorkBreakdownView }) {
 
   const total = data.tickets.length;
   const clashCount = data.clashes.githubAhead + data.clashes.jiraAhead;
+  const needsUpdateCount = data.tickets.filter(needsUpdate).length;
+  const project = data.tickets[0]?.key.split('-')[0] ?? 'PROJ';
   const rows = data.tickets.filter((t) =>
-    filter === 'all' ? true : filter === 'clash' ? t.clash !== null : t.bucket === filter,
+    filter === 'all'
+      ? true
+      : filter === 'needs-update'
+        ? needsUpdate(t)
+        : t.bucket === filter,
   );
   const visible = showAll ? rows : rows.slice(0, PAGE);
 
@@ -133,6 +148,8 @@ export function SprintWorkPanel({ data }: { data: SprintWorkBreakdownView }) {
         </p>
       </div>
 
+      {data.gaps && <DataGapsList gaps={data.gaps} project={project} />}
+
       {data.epics.length > 0 && (
         <div>
           <h4 className="mb-2 text-sm font-medium text-fg-muted">By epic</h4>
@@ -183,7 +200,7 @@ export function SprintWorkPanel({ data }: { data: SprintWorkBreakdownView }) {
               },
               { value: 'todo', label: `To do ${data.buckets.todo.items}` },
               { value: 'done', label: `Done ${data.buckets.done.items}` },
-              { value: 'clash', label: `Disagree ${clashCount}` },
+              { value: 'needs-update', label: `Needs update ${needsUpdateCount}` },
             ]}
           />
         </div>
@@ -285,7 +302,8 @@ function TicketTable({ rows }: { rows: SprintTicketRow[] }) {
 }
 
 function CodeCell({ ticket }: { ticket: SprintTicketRow }) {
-  const { code, clash } = ticket;
+  const { code } = ticket;
+  const gaps = ticket.gaps ?? [];
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -295,19 +313,25 @@ function CodeCell({ ticket }: { ticket: SprintTicketRow }) {
             {code.commits} commit{code.commits === 1 ? '' : 's'}
           </span>
         )}
-        {clash && (
-          <span
-            className="text-xs font-medium text-warning-fg"
-            title={
-              clash === 'github-ahead'
-                ? 'A PR is merged but Jira has not reached done. Jira keeps the done count.'
-                : 'Done in Jira while its only PRs are still open.'
-            }
-          >
-            {clash === 'github-ahead' ? '⚑ ahead of Jira' : '⚑ PR still open'}
-          </span>
-        )}
       </div>
+      {gaps.length > 0 && (
+        <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+          {gaps.map((g) => (
+            <span
+              key={g}
+              className={
+                INFO_GAPS.includes(g)
+                  ? 'text-xs text-fg-subtle'
+                  : 'text-xs font-medium text-warning-fg'
+              }
+              title={GAP_COPY[g].fix(ticket.key.split('-')[0] ?? 'PROJ')}
+            >
+              {INFO_GAPS.includes(g) ? '' : '⚑ '}
+              {GAP_COPY[g].label}
+            </span>
+          ))}
+        </div>
+      )}
       {code.prs.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {code.prs.map((pr) => (
