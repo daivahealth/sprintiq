@@ -83,6 +83,12 @@ npm run build    # production build
 npm run lint
 ```
 
+**Checkout under OneDrive?** If `npm run dev` fails with `EPERM: operation not permitted, rmdir '…node_modules\.vite\deps'`, OneDrive has turned Vite's dependency cache into cloud placeholders that Vite cannot delete. Keep the cache outside OneDrive by setting `VITE_CACHE_DIR` (read by `vite.config.ts`; unset, Vite uses its default `node_modules/.vite`):
+
+```powershell
+$env:VITE_CACHE_DIR = "$env:LOCALAPPDATA\sprintiq-vite-cache"; npm run dev
+```
+
 Styling is token-based (semantic Tailwind colors, light/dark via a `dark` class) — see [DESIGN-SYSTEM.md](DESIGN-SYSTEM.md) before adding a new screen, primitive, or color. Fonts (Inter Variable, JetBrains Mono Variable) are self-hosted under `frontend/src/assets/fonts/`, no external font CDN.
 
 ### Full stack (Docker)

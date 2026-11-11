@@ -33,9 +33,14 @@ This is a third, independent exception to the ethics rule. It inherits nothing f
 
 - Per-person LOC is the default view on one page, for one person at a time. This is a deliberate shift, and the conditions above are what keep it from becoming a score.
 - **This does not extend LOC to anything else about people.** It is not an input to the Sprint Health grade (still tickets, PRs and reviews only), the digest, the Watchlist or any ordering of people:
-  - the Overview roster still never sorts by LOC;
+  - the Overview roster still never sorts by LOC (*superseded 2026-11-11, see below*);
   - the daily timeline's drill-down still lists contributors by commits, alphabetically.
   Each of those would need its own decision.
+- **Amended 2026-11-11 (product owner): the Overview's Active developers roster may be sorted by changed LOC.** The roster's column headings became sort controls (name, commits, changed LOC, PRs opened, PRs merged; [features/DASHBOARDS.md §4.4.1](../features/DASHBOARDS.md)), and the product owner chose to include changed LOC. This covers that one column on that one roster, under these conditions:
+  1. **The reader's act, never the default.** The roster opens A–Z. A LOC order exists only after a click on the heading, is held in page state and is never persisted, sent to the server or shared by link.
+  2. **The rule stays on display.** The roster's provenance note keeps saying that changed LOC is volume, not productivity.
+  3. **Unknown is not least.** A row whose API sends no LOC renders **—** and sorts last in both directions.
+  4. **Nothing else changes.** No positions, medals or totals are added. LOC is still not an input to the Sprint Health grade, the digest, the Watchlist or the timeline drill-down, and the API still never orders by it. Extending the sort anywhere else needs the decision taken again.
 - **Merge commits inflated LOC; they are now excluded (2026-10-15).** This decision assumed a merge commit records no line changes. Measured on 2026-10-15, 98% of merge commits carry line counts: GitHub reports a merge commit's diff against its first parent, so a merged branch's lines were counted twice and credited to whoever merged it. Merges were 43% of all changed lines. METRICS.md §0's merge exclusion now applies to this page too: totals and the daily chart count authored commits only, the page states how many merges it left out, and the recent-commits list marks a merge rather than showing its lines as this person's. Condition 2's disclosure therefore covers commits with no recorded lines *and* excluded merges.
 - Line stats are only as complete as collection. Commits ingested without stats show 0 lines until the commit-stats reconciler fills them, which is why condition 2 exists.
 

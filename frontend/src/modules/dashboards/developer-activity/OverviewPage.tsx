@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import {
   Badge,
   Card,
@@ -36,6 +37,13 @@ import {
 import { CurrentLensNote } from './CurrentLensNote';
 import { developerHref } from './developer-href';
 import { activeDevelopersTile } from './active-developers-tile';
+import {
+  DEFAULT_ROSTER_SORT,
+  nextRosterSort,
+  sortRoster,
+  type RosterSort,
+  type RosterSortKey,
+} from './roster-sort';
 import { hasDailyLoc, timelineMetric } from './timeline-metric';
 import {
   EmptyWindowNote,
@@ -60,9 +68,10 @@ import {
  * simply the names behind the "Active developers" tile it sits above.
  * Same window, same set, one is the count and the other the list.
  *
- * It is not a ranking. Alphabetical by default, with "Most commits" as the
- * reader's explicit act — the identical treatment the day drill-down gets, and
- * for the identical reason (DASHBOARDS.md §4.1.3).
+ * It is not a ranking. Alphabetical by default; the column headings sort it
+ * (name, commits, changed LOC, PRs opened, PRs merged), only ever as the
+ * reader's explicit act and never persisted (DASHBOARDS.md §4.4.1, ADR-0011
+ * amendment 2026-11-11).
  */
 export function OverviewPage() {
   const { range, setRange } = useSectionRange();
@@ -245,9 +254,9 @@ export function OverviewPage() {
  * counts. Every row
  * opens that person's page with the window carried across.
  *
- * Sorting by commits is available and is never the default: the API hands this
- * over alphabetically and the toggle is the reader's explicit act, never
- * persisted (DASHBOARDS.md §4.1.3, CLAUDE.md's no-ranking rule). There are no
+ * Column sorting is available and is never the default: the roster opens
+ * alphabetically and any other order is the reader's click on a heading, never
+ * persisted (DASHBOARDS.md §4.4.1, CLAUDE.md's no-ranking rule). There are no
  * positions, medals or totals — a row is what one person did, not where they
  * placed.
  */
@@ -314,7 +323,9 @@ function ActiveDevelopers({
   range: ActivityRange;
 }) {
   const withCopilot = showCopilotColumn(copilot);
-  const [sort, setSort] = useState<'name' | 'commits'>('name');
+  // Never persisted: every order other than A–Z is the reader's click
+  // (DASHBOARDS.md §4.4.1, ADR-0011 amendment 2026-11-11).
+  const [sort, setSort] = useState<RosterSort>(DEFAULT_ROSTER_SORT);
 
   // Nothing to show is the empty-window case, which CommitTimeline already
   // explains properly below. A second empty card would say it twice.
@@ -322,47 +333,38 @@ function ActiveDevelopers({
     return null;
   }
 
-  const rows =
-    sort === 'commits'
-      ? [...developers].sort(
-          (a, b) =>
-            b.commits - a.commits || a.displayName.localeCompare(b.displayName),
-        )
-      : developers;
+  const rows = sortRoster(developers, sort);
+  const header = (key: RosterSortKey, label: string, className = 'py-2 pr-4') => (
+    <SortableHeader
+      label={label}
+      sortKey={key}
+      sort={sort}
+      onSort={(k) => setSort(nextRosterSort(sort, k))}
+      className={className}
+    />
+  );
 
   return (
     <Card className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="font-semibold text-fg">Active developers</h3>
-          <p className="text-xs text-fg-subtle">
-            {developers.length} with a commit that changed files in this window — select one
-            for their profile
-          </p>
-        </div>
-        <SegmentedControl
-          label="Sort"
-          value={sort}
-          onChange={setSort}
-          options={[
-            { value: 'name', label: 'A–Z' },
-            { value: 'commits', label: 'Most commits' },
-          ]}
-        />
+      <div>
+        <h3 className="font-semibold text-fg">Active developers</h3>
+        <p className="text-xs text-fg-subtle">
+          {developers.length} with a commit that changed files in this window —
+          select one for their profile, or a column heading to sort
+        </p>
       </div>
 
       <div className="max-h-96 overflow-y-auto">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-surface">
             <TableHeadRow>
-              <th className="py-2 pr-4">Developer</th>
+              {header('name', 'Developer')}
+              {/* Role sorting is deferred. */}
               <th className="py-2 pr-4">Role</th>
-              <th className="py-2 pr-4">Commits</th>
-              <th className="py-2 pr-4">Changed LOC</th>
-              <th className="py-2 pr-4">PRs opened</th>
-              <th className={withCopilot ? 'py-2 pr-4' : 'py-2'}>
-                PRs merged
-              </th>
+              {header('commits', 'Commits')}
+              {header('loc', 'Changed LOC')}
+              {header('prsOpened', 'PRs opened')}
+              {header('prsMerged', 'PRs merged', withCopilot ? 'py-2 pr-4' : 'py-2')}
               {/* Deliberately not a sort option (ADR-0012): Copilot use is
                   context beside a person, never an order to read them in. */}
               {withCopilot && <th className="py-2">Copilot</th>}
@@ -445,6 +447,47 @@ function ActiveDevelopers({
         <ProvenanceNote>{copilotCaption(copilot)}</ProvenanceNote>
       )}
     </Card>
+  );
+}
+
+/**
+ * A roster column heading that sorts on click: the active column shows its
+ * direction, and `aria-sort` tells assistive tech the same thing.
+ */
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  className,
+}: {
+  label: string;
+  sortKey: RosterSortKey;
+  sort: RosterSort;
+  onSort: (key: RosterSortKey) => void;
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
+  const Icon = !active ? ChevronsUpDown : sort.dir === 'asc' ? ChevronUp : ChevronDown;
+  const nextDir = active ? (sort.dir === 'asc' ? 'descending' : 'ascending') : null;
+  return (
+    <th
+      className={className}
+      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        title={nextDir ? `Sort ${nextDir}` : `Sort by ${label.toLowerCase()}`}
+        className={`inline-flex items-center gap-1 uppercase tracking-[inherit] hover:text-fg focus-visible:text-fg focus-visible:outline-none ${active ? 'text-fg' : ''}`}
+      >
+        {label}
+        <Icon
+          aria-hidden
+          className={`h-3 w-3 ${active ? '' : 'text-fg-faint'}`}
+        />
+      </button>
+    </th>
   );
 }
 
