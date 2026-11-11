@@ -152,16 +152,10 @@ describe('trendTicks', () => {
 });
 
 describe('monthAxisLabel', () => {
-  it('names the month short, with the year only where it turns over', () => {
-    // Twelve labels on one axis: repeating the year on each is noise, but
-    // dropping it entirely makes a 12-month axis ambiguous about which
-    // January it starts in.
-    expect(monthAxisLabel('2026-03', '2026-02')).toBe('Mar');
-    expect(monthAxisLabel('2026-01', '2025-12')).toBe('Jan 26');
-  });
-
-  it('labels the first month with its year, having nothing before it', () => {
-    expect(monthAxisLabel('2025-10', undefined)).toBe('Oct 25');
+  it('names every month with its full year, not only where the year turns over', () => {
+    expect(monthAxisLabel('2026-03')).toBe('Mar 2026');
+    expect(monthAxisLabel('2026-01')).toBe('Jan 2026');
+    expect(monthAxisLabel('2025-10')).toBe('Oct 2025');
   });
 });
 

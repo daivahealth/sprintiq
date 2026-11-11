@@ -53,7 +53,7 @@ describe('CommitChart', () => {
     const svg = render(SERIES, 'loc');
     const [day1, , day3] = pointHeights(svg);
     expect(day3).toBeGreaterThan(day1);
-    expect(svg).toContain('aria-label="Changed lines of code per day"');
+    expect(svg).toContain('aria-label="Lines changed per day (added + removed), by date (IST)"');
     expect(svg).toContain('4k');
     expect(svg).toContain('stroke-chart-2');
   });
@@ -62,7 +62,7 @@ describe('CommitChart', () => {
     const svg = render(SERIES, 'commits');
     const [day1, , day3] = pointHeights(svg);
     expect(day1).toBeGreaterThan(day3);
-    expect(svg).toContain('aria-label="Commits per day"');
+    expect(svg).toContain('aria-label="Commits per day, by date (IST)"');
     expect(svg).toContain('stroke-chart-1');
   });
 

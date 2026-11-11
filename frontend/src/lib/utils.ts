@@ -122,22 +122,6 @@ export function istDayAxis(
   return out;
 }
 
-/**
- * How many day-labels to skip on a chart's x-axis so they don't collide.
- *
- * Thinning only kicks in once labels would actually overlap. The previous rule
- * was an unconditional `ceil(days / 6)`, tuned for the 30-day view and never
- * reconsidered for shorter ones — at 7 days it returned 2 and dropped three of
- * the week's seven dates for no reason, since seven `MM-DD` labels fit across
- * the axis with room to spare.
- */
-export function dayLabelStride(dayCount: number): number {
-  const MAX_LABELS_THAT_FIT = 10;
-  if (dayCount <= MAX_LABELS_THAT_FIT) {
-    return 1;
-  }
-  return Math.ceil(dayCount / 6);
-}
 
 /**
  * A count shortened for an axis label: `4.5k`, `99k`, `2.4M`.

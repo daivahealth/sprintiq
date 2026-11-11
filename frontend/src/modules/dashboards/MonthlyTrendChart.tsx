@@ -1,4 +1,23 @@
-import { formatCompact, istTodayKey } from '../../lib/utils';
+import { useState, type MouseEvent } from 'react';
+import { istTodayKey } from '../../lib/utils';
+import {
+  CHART_PAD,
+  MONTH_LABEL_SLOT_PX,
+  MONTH_LABEL_STACKED_SLOT_PX,
+  STACKED_LABEL_EXTRA_PX,
+  axisLabelIndices,
+  monthLongLabel,
+  plotBox,
+  slotAt,
+} from './chart-axes';
+import {
+  ChartTooltip,
+  Crosshair,
+  HoverDot,
+  XAxis,
+  YAxis,
+} from './ChartFrame';
+import { useMeasuredWidth } from './use-measured-width';
 import {
   collectedRuns,
   monthAxisLabel,
@@ -13,19 +32,21 @@ import {
  *
  * A line rather than bars because the question is the shape of a year — where
  * volume climbed, where it fell away — and twelve separated bars make the
- * reader do that differencing by eye. Bars are right for the daily chart, whose
- * columns are discrete days you click into; these are a trajectory.
+ * reader do that differencing by eye.
  *
- * One metric at a time, which is what the toggle buys: CommitChart has to draw
- * its LOC overlay on a "relative scale" to share an axis with commits, and a
- * relative axis cannot answer "how much". Here the axis is absolute and labelled
- * in the metric's own units.
+ * One metric at a time, which is what the toggle buys: the axis is absolute
+ * and labelled in the metric's own units. Both axes are titled (2026-11-11),
+ * and hovering a month shows its figures.
  */
 export type TrendMetric = 'commits' | 'loc';
 
-const W = 720;
-const H = 220;
-const PAD = { top: 14, right: 12, bottom: 30, left: 46 };
+const H = 256;
+
+const MONTHLY_Y_TITLE: Record<TrendMetric, string> = {
+  commits: 'Commits per month',
+  loc: 'Lines changed per month (added + removed)',
+};
+const MONTHLY_X_TITLE = 'Month (IST)';
 
 export function MonthlyTrendChart({
   months,
@@ -34,6 +55,9 @@ export function MonthlyTrendChart({
   months: TrendMonth[];
   metric: TrendMetric;
 }) {
+  const [ref, width] = useMeasuredWidth<HTMLDivElement>();
+  const [hovered, setHovered] = useState<number | null>(null);
+
   const value = (m: TrendMonth) =>
     metric === 'commits' ? m.commits : m.locChanged;
 
@@ -45,13 +69,18 @@ export function MonthlyTrendChart({
   const ticks = trendTicks(Math.max(0, ...measured.map(value)));
   const top = ticks[ticks.length - 1];
 
-  const plotW = W - PAD.left - PAD.right;
-  const plotH = H - PAD.top - PAD.bottom;
+  // Every month label carries its year ("Sep 2026"). Where twelve of those do
+  // not fit side by side, each one stacks — month over year — rather than
+  // the axis dropping months; only on a phone-width chart does it thin.
+  const inlineFits =
+    (width - CHART_PAD.left - CHART_PAD.right) / Math.max(1, months.length) >=
+    MONTH_LABEL_SLOT_PX;
+  const box = plotBox(width, H, inlineFits ? 0 : STACKED_LABEL_EXTRA_PX);
   // Half a step in from each edge, so the first and last markers are not
   // sitting on the axis line.
-  const step = plotW / months.length;
-  const x = (i: number) => PAD.left + i * step + step / 2;
-  const y = (v: number) => PAD.top + plotH - (v / top) * plotH;
+  const step = box.plotW / months.length;
+  const x = (i: number) => box.left + i * step + step / 2;
+  const y = (v: number) => box.top + box.plotH - (v / top) * box.plotH;
 
   const runs = collectedRuns(months);
   // Derived here rather than sent by the API: which month is in progress is a
@@ -66,7 +95,6 @@ export function MonthlyTrendChart({
   const gaps = collectedRuns(
     months.map((m) => ({ ...m, collected: !m.collected })),
   );
-  const label = metric === 'commits' ? 'Commits' : 'Lines of code changed';
 
   if (runs.length === 0) {
     return (
@@ -77,23 +105,56 @@ export function MonthlyTrendChart({
     );
   }
 
+  const lineTone = metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2';
+  // Class names are written out rather than composed, so Tailwind's scanner
+  // can see them: a class built by joining a prefix to a variable compiles to
+  // nothing and the mark loses its colour. The design-system suite enforces
+  // this repo-wide.
+  const solidTone = metric === 'commits' ? 'fill-chart-1' : 'fill-chart-2';
+
+  const shown = axisLabelIndices(
+    months.length,
+    box.plotW,
+    inlineFits ? MONTH_LABEL_SLOT_PX : MONTH_LABEL_STACKED_SLOT_PX,
+  );
+  const xLabels = shown.map((i) => {
+    const label = monthAxisLabel(months[i].month);
+    const [name, year] = label.split(' ');
+    return {
+      key: months[i].month,
+      x: x(i),
+      ...(inlineFits ? { text: label } : { text: name, sub: year }),
+      muted: !months[i].collected,
+    };
+  });
+
+  const onMove = (e: MouseEvent<SVGRectElement>) => {
+    const rect = e.currentTarget.ownerSVGElement?.getBoundingClientRect();
+    if (!rect) return;
+    setHovered(slotAt(e.clientX - rect.left, box.left, step, months.length, true));
+  };
+
+  const hoverMonth = hovered !== null ? months[hovered] : null;
+
   return (
-    <div>
+    <div ref={ref} className="relative" onMouseLeave={() => setHovered(null)}>
       <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="w-full"
+        width={width}
+        height={H}
+        viewBox={`0 0 ${width} ${H}`}
+        className="block w-full"
         role="img"
-        aria-label={`${label} per month, last 12 months`}
+        aria-label={`${MONTHLY_Y_TITLE[metric]}, last 12 months, by month (IST)`}
       >
         {/* The uncollected span, drawn behind everything as absence rather
             than as a value. */}
         {gaps.map((run) => (
           <rect
             key={run[0].point.month}
-            x={PAD.left + run[0].index * step}
-            y={PAD.top}
+            x={box.left + run[0].index * step}
+            y={box.top}
             width={run.length * step}
-            height={plotH}
+            height={box.plotH}
             className="fill-chart-empty"
             opacity={0.55}
           >
@@ -103,27 +164,9 @@ export function MonthlyTrendChart({
           </rect>
         ))}
 
-        {/* y grid + labels, in the metric's own units */}
-        {ticks.map((t) => (
-          <g key={t}>
-            <line
-              x1={PAD.left}
-              x2={W - PAD.right}
-              y1={y(t)}
-              y2={y(t)}
-              className="stroke-chart-grid"
-              strokeWidth={1}
-            />
-            <text
-              x={PAD.left - 6}
-              y={y(t) + 3}
-              textAnchor="end"
-              className="fill-chart-axis text-[10px]"
-            >
-              {formatCompact(t)}
-            </text>
-          </g>
-        ))}
+        <YAxis box={box} ticks={ticks} y={y} title={MONTHLY_Y_TITLE[metric]} />
+
+        {hovered !== null && <Crosshair box={box} x={x(hovered)} />}
 
         {/* One polyline per contiguous collected run: the break at the
             backfill edge is made of absence, not painted over a point that is
@@ -135,7 +178,7 @@ export function MonthlyTrendChart({
               .map((p) => `${x(p.index).toFixed(1)},${y(value(p.point)).toFixed(1)}`)
               .join(' ')}
             fill="none"
-            className={metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2'}
+            className={lineTone}
             strokeWidth={2}
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -150,7 +193,7 @@ export function MonthlyTrendChart({
               .map((p) => `${x(p.index).toFixed(1)},${y(value(p.point)).toFixed(1)}`)
               .join(' ')}
             fill="none"
-            className={metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2'}
+            className={lineTone}
             strokeWidth={2}
             strokeDasharray="4 3"
             strokeLinecap="round"
@@ -165,22 +208,10 @@ export function MonthlyTrendChart({
           // value is not final, so the shape survives being read without the
           // caption underneath it.
           const isPartial = p.point.month === partialMonth;
-          // Class names are written out rather than composed, so Tailwind's
-          // scanner can see them: a stroke class built by joining a prefix to
-          // a variable compiles to nothing and the marker loses its colour.
-          // The design-system suite enforces this repo-wide.
-          const solidTone =
-            metric === 'commits' ? 'fill-chart-1' : 'fill-chart-2';
-          const hollowTone =
-            metric === 'commits' ? 'stroke-chart-1' : 'stroke-chart-2';
-          // Assembled as ONE string rather than interpolated as sibling JSX
-          // children. `<title>` accepts a single text child; handing React an
-          // array warns ("received an array with more than 1 element") and the
-          // markup it produces does not survive hydration reliably — the
-          // tooltip is the only thing naming the month a point belongs to, so
-          // losing it costs the reader the chart's labels.
+          // ONE string, not sibling JSX children: `<title>` accepts a single
+          // text child, and an array warns and does not hydrate reliably.
           const tooltip =
-            `${monthAxisLabel(p.point.month, undefined)}` +
+            `${monthAxisLabel(p.point.month)}` +
             `${isPartial ? ' (month to date)' : ''} · ` +
             `${p.point.commits.toLocaleString()} commit${p.point.commits === 1 ? '' : 's'} · ` +
             `${p.point.locChanged.toLocaleString()} LOC changed`;
@@ -189,35 +220,67 @@ export function MonthlyTrendChart({
               key={p.point.month}
               cx={x(p.index)}
               cy={y(value(p.point))}
-              r={isPartial ? 3.5 : 3}
+              r={3.5}
               // The page background, so the ring reads as hollow rather than
               // as a differently-coloured dot.
               fill={isPartial ? 'rgb(var(--surface))' : undefined}
               strokeWidth={isPartial ? 2 : 0}
-              className={isPartial ? hollowTone : solidTone}
+              className={isPartial ? lineTone : solidTone}
             >
               <title>{tooltip}</title>
             </circle>
           );
         })}
 
-        {/* x labels — twelve fit across this width, so every month is named. */}
-        {months.map((m, i) => (
-          <text
-            key={`label-${m.month}`}
-            x={x(i)}
-            y={H - 10}
-            textAnchor="middle"
-            className={
-              m.collected
-                ? 'fill-chart-axis text-[10px]'
-                : 'fill-chart-axis text-[10px] opacity-50'
-            }
-          >
-            {monthAxisLabel(m.month, months[i - 1]?.month)}
-          </text>
-        ))}
+        {hoverMonth && hovered !== null && hoverMonth.collected && (
+          <HoverDot cx={x(hovered)} cy={y(value(hoverMonth))} tone={solidTone} />
+        )}
+
+        <XAxis box={box} labels={xLabels} title={MONTHLY_X_TITLE} />
+
+        {/* One hover surface over the plot: the nearest month follows the
+            pointer, so the small markers are not the only target. */}
+        <rect
+          x={box.left}
+          y={box.top}
+          width={box.plotW}
+          height={box.plotH}
+          fill="transparent"
+          onMouseMove={onMove}
+          data-hover-surface
+        />
       </svg>
+
+      {hoverMonth && hovered !== null && (
+        <ChartTooltip
+          box={box}
+          x={x(hovered)}
+          heading={
+            monthLongLabel(hoverMonth.month) +
+            (hoverMonth.month === partialMonth ? ' (month to date)' : '')
+          }
+          rows={
+            hoverMonth.collected
+              ? [
+                  {
+                    key: 'commits',
+                    label: 'Commits',
+                    value: hoverMonth.commits.toLocaleString('en-US'),
+                    swatch: 'bg-chart-1',
+                    emphasis: metric === 'commits',
+                  },
+                  {
+                    key: 'loc',
+                    label: 'Lines changed',
+                    value: hoverMonth.locChanged.toLocaleString('en-US'),
+                    swatch: 'bg-chart-2',
+                    emphasis: metric === 'loc',
+                  },
+                ]
+              : [{ key: 'none', label: 'Not collected yet', value: '—' }]
+          }
+        />
+      )}
     </div>
   );
 }
