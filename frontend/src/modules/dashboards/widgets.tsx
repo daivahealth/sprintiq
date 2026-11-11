@@ -42,17 +42,33 @@ export function Stat({
   );
 }
 
-/** Horizontal CSS bars — dependency-free chart for counts/points per key. */
+/**
+ * Horizontal CSS bars — dependency-free chart for counts/points per key.
+ *
+ * `columns` names what the rows are and what the bar length measures (e.g.
+ * "Priority" / "Bugs"), as a header row over the label and value columns —
+ * a bar list's two axes. Pass it wherever the heading alone does not say
+ * the unit.
+ */
 export function BarList({
   rows,
   color = 'bg-brand',
+  columns,
 }: {
   rows: { label: string; value: number; secondary?: string }[];
   color?: string;
+  columns?: { label: string; value: string };
 }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <div className="space-y-2">
+      {columns && rows.length > 0 && (
+        <div className="flex items-center gap-3 text-[11px] font-medium text-fg-subtle">
+          <span className="w-44 truncate">{columns.label}</span>
+          <span className="flex-1" aria-hidden />
+          <span className="w-24 text-right">{columns.value}</span>
+        </div>
+      )}
       {rows.map((r) => (
         <div key={r.label} className="flex items-center gap-3 text-sm">
           <span className="w-44 truncate text-fg-muted">{r.label}</span>

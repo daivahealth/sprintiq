@@ -172,19 +172,13 @@ const MONTH_NAMES = [
 ];
 
 /**
- * An axis label for one month, given the month before it.
+ * An axis label for one month: `Nov 2025`.
  *
- * The year appears only where it changes (and on the first label, which has no
- * predecessor to have changed from). Printing it twelve times is noise;
- * printing it never leaves a year-long axis unable to say which January it
- * starts in.
+ * Every label carries its full year (product request 2026-11-11). Showing it
+ * only where it changed left most of the axis as bare month names, and a
+ * reader landing on "Mar" had to scan left to learn which March it was.
  */
-export function monthAxisLabel(
-  month: string,
-  previous: string | undefined,
-): string {
+export function monthAxisLabel(month: string): string {
   const [year, index] = month.split('-');
-  const name = MONTH_NAMES[Number(index) - 1];
-  const turnsOver = !previous || previous.slice(0, 4) !== year;
-  return turnsOver ? `${name} ${year.slice(2)}` : name;
+  return `${MONTH_NAMES[Number(index) - 1]} ${year}`;
 }

@@ -1,4 +1,20 @@
-import { dayLabelStride, formatCompact, istDayAxis } from '../../lib/utils';
+import { useState } from 'react';
+import { istDayAxis } from '../../lib/utils';
+import {
+  DAY_LABEL_SLOT_PX,
+  axisLabelIndices,
+  dayAxisLabel,
+  dayLongLabel,
+  plotBox,
+} from './chart-axes';
+import {
+  ChartTooltip,
+  Crosshair,
+  HoverDot,
+  XAxis,
+  YAxis,
+} from './ChartFrame';
+import { useMeasuredWidth } from './use-measured-width';
 import { trendTicks } from './monthly-trend';
 
 /**
@@ -12,13 +28,15 @@ import { trendTicks } from './monthly-trend';
  * by eye. A day with nothing is a point on the zero line, not a gap: inside the
  * window it is a measurement, not missing data.
  *
+ * Both axes are titled (2026-11-11): Y names the quantity and its unit, X says
+ * the points are calendar days in IST. Hovering shows a crosshair and a
+ * tooltip with both quantities, whichever is drawn.
+ *
  * Used by the Developer page and the Overview's daily chart. On the Overview a
  * day is still something you open: pass `onSelectDay` and every day gets a
- * full-height hit target, so a click anywhere in its column selects it — a
- * 4px marker would be a far worse target than the bar it replaced.
+ * full-height hit target, so a click anywhere in its column selects it.
  *
- * Changed LOC is the default view on the Developer page (ADR-0011). Native
- * <title> tooltips carry both quantities whichever is drawn.
+ * Changed LOC is the default view on the Developer page (ADR-0011).
  */
 export type DailyMetric = 'loc' | 'commits';
 
@@ -28,11 +46,15 @@ export interface DayPoint {
   locChanged: number;
 }
 
-const W = 720;
-const H = 180;
-const PAD = { top: 12, right: 12, bottom: 26, left: 40 };
+const H = 236;
 /** Above this many days a marker per day turns into noise; the line alone reads better. */
 const MAX_MARKED_DAYS = 62;
+
+const DAILY_Y_TITLE: Record<DailyMetric, string> = {
+  loc: 'Lines changed per day (added + removed)',
+  commits: 'Commits per day',
+};
+const DAILY_X_TITLE = 'Date (IST)';
 
 export function CommitChart({
   series,
@@ -52,6 +74,8 @@ export function CommitChart({
   /** Makes each day clickable. Called with the day's `YYYY-MM-DD`. */
   onSelectDay?: (date: string) => void;
 }) {
+  const [ref, width] = useMeasuredWidth<HTMLDivElement>();
+  const [hovered, setHovered] = useState<number | null>(null);
   const days = buildFullWindow(series, windowDays, endKey);
   const totalCommits = days.reduce((s, d) => s + d.commits, 0);
 
@@ -80,21 +104,23 @@ export function CommitChart({
     );
   }
 
+  const box = plotBox(width, H);
   const ticks = trendTicks(max);
   const top = ticks[ticks.length - 1] || 1;
-  const plotW = W - PAD.left - PAD.right;
-  const plotH = H - PAD.top - PAD.bottom;
-  const step = plotW / days.length;
+  const step = box.plotW / days.length;
 
   // Half a step in from each edge, so the first and last points do not sit on
   // the axis line — the same placement as the 12-month trend.
-  const x = (i: number) => PAD.left + i * step + step / 2;
-  const y = (v: number) => PAD.top + plotH - (v / top) * plotH;
+  const x = (i: number) => box.left + i * step + step / 2;
+  const y = (v: number) => box.top + box.plotH - (v / top) * box.plotH;
 
-  // Thinned only when the labels would actually collide — see dayLabelStride.
-  const labelEvery = dayLabelStride(days.length);
-  const label =
-    metric === 'loc' ? 'Changed lines of code per day' : 'Commits per day';
+  const shown = axisLabelIndices(days.length, box.plotW, DAY_LABEL_SLOT_PX);
+  const xLabels = shown.map((i, n) => ({
+    key: days[i].date,
+    x: x(i),
+    text: dayAxisLabel(days[i].date, n > 0 ? days[shown[n - 1]].date : undefined),
+  }));
+
   // The 12-month trend's colours, so one quantity is one colour on the page.
   // Written out in full rather than composed: Tailwind's scanner cannot see a
   // class built from a prefix and a variable.
@@ -102,143 +128,143 @@ export function CommitChart({
   const fill = metric === 'loc' ? 'fill-chart-2' : 'fill-chart-1';
   const marked = days.length <= MAX_MARKED_DAYS;
 
-  const tooltip = (d: DayPoint) =>
+  const summary = (d: DayPoint) =>
     `${d.date} · ${d.locChanged.toLocaleString('en-US')} lines changed · ` +
     `${d.commits} commit${d.commits === 1 ? '' : 's'}`;
 
+  const hoverDay = hovered !== null ? days[hovered] : null;
+
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={label}>
-        {ticks.map((t) => (
-          <g key={t}>
-            <line
-              x1={PAD.left}
-              x2={W - PAD.right}
-              y1={y(t)}
-              y2={y(t)}
-              className="stroke-chart-grid"
-              strokeWidth={1}
-            />
-            <text
-              x={PAD.left - 6}
-              y={y(t) + 3}
-              textAnchor="end"
-              className="fill-chart-axis text-[10px]"
-            >
-              {formatCompact(t)}
-            </text>
-          </g>
-        ))}
+      <div ref={ref} className="relative" onMouseLeave={() => setHovered(null)}>
+        <svg
+          width={width}
+          height={H}
+          viewBox={`0 0 ${width} ${H}`}
+          className="block w-full"
+          role="img"
+          aria-label={`${DAILY_Y_TITLE[metric]}, by date (IST)`}
+        >
+          <YAxis box={box} ticks={ticks} y={y} title={DAILY_Y_TITLE[metric]} />
 
-        {/* The opened day, as a column behind the line. */}
-        {days.map((d, i) =>
-          d.date === selectedDate ? (
-            <rect
-              key={`sel-${d.date}`}
-              x={PAD.left + i * step}
-              y={PAD.top}
-              width={step}
-              height={plotH}
-              className="fill-brand-muted"
-              opacity={0.35}
-            />
-          ) : null,
-        )}
+          {/* The opened day, as a column behind the line. */}
+          {days.map((d, i) =>
+            d.date === selectedDate ? (
+              <rect
+                key={`sel-${d.date}`}
+                x={box.left + i * step}
+                y={box.top}
+                width={step}
+                height={box.plotH}
+                className="fill-brand-muted"
+                opacity={0.35}
+              />
+            ) : null,
+          )}
 
-        <polyline
-          points={days
-            .map((d, i) => `${x(i).toFixed(1)},${y(value(d)).toFixed(1)}`)
-            .join(' ')}
-          fill="none"
-          className={stroke}
-          strokeWidth={2}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
+          {hovered !== null && <Crosshair box={box} x={x(hovered)} />}
 
-        {days.map((d, i) =>
-          marked || d.date === selectedDate ? (
-            <circle
-              key={`pt-${d.date}`}
-              cx={x(i)}
-              cy={y(value(d))}
-              r={d.date === selectedDate ? 4 : 2.5}
-              className={value(d) > 0 ? fill : 'fill-chart-empty'}
-            >
-              <title>{tooltip(d)}</title>
-            </circle>
-          ) : null,
-        )}
-
-        {/* Full-height, invisible hit targets: the tooltip for every day, and
-            the click target when days are selectable. */}
-        {days.map((d, i) => (
-          <rect
-            key={`hit-${d.date}`}
-            data-day={d.date}
-            x={PAD.left + i * step}
-            y={PAD.top}
-            width={step}
-            height={plotH}
-            fill="transparent"
-            className={
-              onSelectDay
-                ? 'cursor-pointer outline-none focus-visible:fill-brand-muted/40'
-                : undefined
-            }
-            // Keyboard parity with the buttons this replaced: each day is a
-            // focusable button when the chart is interactive.
-            {...(onSelectDay
-              ? {
-                  role: 'button',
-                  tabIndex: 0,
-                  'aria-label': tooltip(d),
-                  'aria-pressed': d.date === selectedDate,
-                  onClick: () => onSelectDay(d.date),
-                  onKeyDown: (e: { key: string; preventDefault: () => void }) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      onSelectDay(d.date);
-                    }
-                  },
-                }
-              : {})}
-          >
-            <title>{tooltip(d)}</title>
-          </rect>
-        ))}
-
-        {days.map((d, i) =>
-          i % labelEvery === 0 || i === days.length - 1 ? (
-            <text
-              key={`label-${d.date}`}
-              x={x(i)}
-              y={H - 8}
-              textAnchor="middle"
-              className="fill-chart-axis text-[10px]"
-            >
-              {d.date.slice(5)}
-            </text>
-          ) : null,
-        )}
-      </svg>
-      <div className="mt-1 flex items-center gap-4 text-xs text-fg-faint">
-        <span className="flex items-center gap-1.5">
-          <span
-            className={
-              metric === 'loc'
-                ? 'h-0.5 w-3 rounded-full bg-chart-2'
-                : 'h-0.5 w-3 rounded-full bg-chart-1'
-            }
+          <polyline
+            points={days
+              .map((d, i) => `${x(i).toFixed(1)},${y(value(d)).toFixed(1)}`)
+              .join(' ')}
+            fill="none"
+            className={stroke}
+            strokeWidth={2}
+            strokeLinejoin="round"
+            strokeLinecap="round"
           />
-          {metric === 'loc' ? 'changed lines (added + removed)' : 'commits'}
-        </span>
-        <span className="ml-auto">
-          {onSelectDay
-            ? 'hover a day for exact values · click to see who committed'
-            : 'hover a day for exact values'}
-        </span>
+
+          {days.map((d, i) =>
+            marked || d.date === selectedDate ? (
+              <circle
+                key={`pt-${d.date}`}
+                cx={x(i)}
+                cy={y(value(d))}
+                r={d.date === selectedDate ? 4 : 3}
+                className={value(d) > 0 ? fill : 'fill-chart-empty'}
+              >
+                <title>{summary(d)}</title>
+              </circle>
+            ) : null,
+          )}
+
+          {hoverDay && hovered !== null && (
+            <HoverDot cx={x(hovered)} cy={y(value(hoverDay))} tone={fill} />
+          )}
+
+          <XAxis box={box} labels={xLabels} title={DAILY_X_TITLE} />
+
+          {/* Full-height, invisible hit targets: hover for the tooltip, and
+              the click target when days are selectable. */}
+          {days.map((d, i) => (
+            <rect
+              key={`hit-${d.date}`}
+              data-day={d.date}
+              x={box.left + i * step}
+              y={box.top}
+              width={step}
+              height={box.plotH}
+              fill="transparent"
+              onMouseEnter={() => setHovered(i)}
+              className={
+                onSelectDay
+                  ? 'cursor-pointer outline-none focus-visible:fill-brand-muted/40'
+                  : undefined
+              }
+              // Keyboard parity: each day is a focusable button when the chart
+              // is interactive, and focusing one shows its tooltip.
+              {...(onSelectDay
+                ? {
+                    role: 'button',
+                    tabIndex: 0,
+                    'aria-label': summary(d),
+                    'aria-pressed': d.date === selectedDate,
+                    onFocus: () => setHovered(i),
+                    onBlur: () => setHovered(null),
+                    onClick: () => onSelectDay(d.date),
+                    onKeyDown: (e: { key: string; preventDefault: () => void }) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelectDay(d.date);
+                      }
+                    },
+                  }
+                : {})}
+            />
+          ))}
+        </svg>
+
+        {hoverDay && hovered !== null && (
+          <ChartTooltip
+            box={box}
+            x={x(hovered)}
+            heading={dayLongLabel(hoverDay.date)}
+            rows={[
+              {
+                key: 'loc',
+                label: 'Lines changed',
+                value: hoverDay.locChanged.toLocaleString('en-US'),
+                swatch: 'bg-chart-2',
+                emphasis: metric === 'loc',
+              },
+              {
+                key: 'commits',
+                label: 'Commits',
+                value: hoverDay.commits.toLocaleString('en-US'),
+                swatch: 'bg-chart-1',
+                emphasis: metric === 'commits',
+              },
+            ]}
+            footer={onSelectDay ? 'Click to see who committed' : undefined}
+          />
+        )}
       </div>
+      <p className="mt-1 text-right text-xs text-fg-faint">
+        {onSelectDay
+          ? 'Hover a day for exact values · click to see who committed'
+          : 'Hover a day for exact values'}
+      </p>
     </div>
   );
 }

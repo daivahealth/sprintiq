@@ -3,6 +3,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { MonthlyTrendChart } from './MonthlyTrendChart';
 import type { TrendMonth } from './monthly-trend';
+import { FALLBACK_CHART_WIDTH, STACKED_LABEL_EXTRA_PX, plotBox } from './chart-axes';
+
+// The chart lays out at the fallback width when rendered on the server. At
+// 720px twelve "Sep 2026" labels do not fit inline, so they stack and the
+// plot gives up the room for a second label line.
+const BOX = plotBox(FALLBACK_CHART_WIDTH, 256, STACKED_LABEL_EXTRA_PX);
 
 function m(month: string, commits: number, loc: number, collected = true): TrendMonth {
   return { month, commits, additions: loc, deletions: 0, locChanged: loc, collected };
@@ -33,6 +39,18 @@ const YEAR: TrendMonth[] = [
   m('2019-09', 30, 900_000),
 ];
 
+describe('month labels', () => {
+  it('labels all twelve months, every one with its year', () => {
+    const svg = render(YEAR, 'commits');
+    // Stacked at this width: month name, then the year on its own line.
+    const stacked = [...svg.matchAll(/<tspan[^>]*>(\w{3})<\/tspan><tspan[^>]*>(\d{4})<\/tspan>/g)];
+    expect(stacked.map(([, name, year]) => `${name} ${year}`)).toEqual([
+      'Oct 2018', 'Nov 2018', 'Dec 2018', 'Jan 2019', 'Feb 2019', 'Mar 2019',
+      'Apr 2019', 'May 2019', 'Jun 2019', 'Jul 2019', 'Aug 2019', 'Sep 2019',
+    ]);
+  });
+});
+
 describe('rendered SVG', () => {
   it('contains no NaN or undefined coordinates', () => {
     for (const metric of ['commits', 'loc'] as const) {
@@ -48,9 +66,9 @@ describe('rendered SVG', () => {
       const svg = render(YEAR, metric);
       for (const [, cx, cy] of svg.matchAll(/cx="([\d.]+)" cy="([\d.]+)"/g)) {
         expect(Number(cx)).toBeGreaterThanOrEqual(0);
-        expect(Number(cx)).toBeLessThanOrEqual(720);
+        expect(Number(cx)).toBeLessThanOrEqual(BOX.width);
         expect(Number(cy)).toBeGreaterThanOrEqual(0);
-        expect(Number(cy)).toBeLessThanOrEqual(220);
+        expect(Number(cy)).toBeLessThanOrEqual(BOX.height);
       }
     }
   });
@@ -73,17 +91,18 @@ describe('rendered SVG', () => {
     const svg = render(holed, 'commits');
     expect([...svg.matchAll(/<polyline/g)].length).toBe(2);
     expect([...svg.matchAll(/<circle/g)].length).toBe(8);
-    expect([...svg.matchAll(/<rect/g)].length).toBe(2);
+    // The two shaded gaps; the transparent hover surface is not one.
+    expect([...svg.matchAll(/<rect[^>]*fill-chart-empty/g)].length).toBe(2);
   });
 
   it('shades exactly the uncollected band, starting at the left edge', () => {
     const svg = render(YEAR, 'commits');
     const rect = svg.match(/<rect x="([\d.]+)"[^>]*width="([\d.]+)"/);
     expect(rect).not.toBeNull();
-    // Plot spans x=46..708 over 12 months => step 55.17. Three uncollected
-    // months start at the plot's left edge and cover three bands.
-    expect(Number(rect![1])).toBeCloseTo(46, 1);
-    expect(Number(rect![2])).toBeCloseTo(3 * ((720 - 46 - 12) / 12), 1);
+    // Three uncollected months start at the plot's left edge and cover
+    // three of the twelve bands.
+    expect(Number(rect![1])).toBeCloseTo(BOX.left, 1);
+    expect(Number(rect![2])).toBeCloseTo(3 * (BOX.plotW / 12), 1);
   });
 
   it('puts a bigger value higher on the canvas (y is inverted correctly)', () => {
@@ -106,9 +125,9 @@ describe('rendered SVG', () => {
   it('anchors the zero gridline at the plot floor for both metrics', () => {
     for (const metric of ['commits', 'loc'] as const) {
       const svg = render(YEAR, metric);
-      // First tick line is y=0 -> should sit at PAD.top + plotH = 14 + 176 = 190.
+      // First tick line is y=0 -> it sits on the plot floor.
       const firstLine = svg.match(/<line[^>]*y1="([\d.]+)"/);
-      expect(Number(firstLine![1])).toBeCloseTo(190, 1);
+      expect(Number(firstLine![1])).toBeCloseTo(BOX.bottom, 1);
     }
   });
 

@@ -6,6 +6,7 @@ import { Badge, Card, FilterBar, ProvenanceNote } from '../../components/ui';
 import { useScope } from '../../lib/scope';
 import { cn, formatHours, timeAgo } from '../../lib/utils';
 import { ScopeBar } from './ScopeBar';
+import { dayWithYearLabel } from './chart-axes';
 import { CheckInGrid } from './sprint-health/CheckInGrid';
 import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
 import { ProductivityPanel } from './sprint-health/ProductivityPanel';
@@ -1034,8 +1035,9 @@ export function ProductivityBoard() {
               Items completed per week
             </h4>
             <BarList
+              columns={{ label: 'Week starting (Sun, IST)', value: 'Items · points' }}
               rows={weeks.map((w) => ({
-                label: `wk ${w.weekStart}`,
+                label: dayWithYearLabel(w.weekStart),
                 value: w.itemsCompleted,
                 secondary: `${w.pointsCompleted} pts`,
               }))}
@@ -1047,8 +1049,9 @@ export function ProductivityBoard() {
             </h4>
             <BarList
               color="bg-success"
+              columns={{ label: 'Week starting (Sun, IST)', value: 'PRs merged · LOC' }}
               rows={weeks.map((w) => ({
-                label: `wk ${w.weekStart}`,
+                label: dayWithYearLabel(w.weekStart),
                 value: w.prsMerged,
                 secondary: `${w.locChanged} LOC`,
               }))}

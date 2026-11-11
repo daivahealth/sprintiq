@@ -35,7 +35,7 @@ describe('ProjectActivityChart', () => {
   it('plots changed lines of code per project', () => {
     const svg = render([row('BIG', 1, 5_000), row('BUSY', 20, 50)]);
     expect(svg).toContain(
-      'aria-label="Changed lines of code per day by project"',
+      'aria-label="Lines changed per day (added + removed) by project, by date (IST)"',
     );
     expect(svg).toMatch(/BIG · [\d-]+ · 5,000 lines changed · 1 commit</);
   });

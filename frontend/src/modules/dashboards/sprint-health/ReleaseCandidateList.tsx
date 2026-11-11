@@ -145,6 +145,7 @@ function ReleaseCandidateCard({
       <div>
         <h4 className="mb-2 text-sm font-medium text-fg-muted">Bugs by priority</h4>
         <BarList
+          columns={{ label: 'Priority', value: 'Bugs' }}
           rows={rc.bugsByPriority.map((b) => ({ label: b.priority, value: b.count }))}
           color="bg-danger"
         />

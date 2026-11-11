@@ -28,11 +28,10 @@ import { useSectionRange } from './window';
  * Nothing here is a finding about a person's performance, and the page says so
  * rather than relying on the reader to infer it.
  *
- * Two orthogonal lenses, deliberately not merged: recency (has anything been
- * heard from this person) and assignment (does the plan know what they are
- * working on). They are independent — an *active* developer with nothing
- * assigned is exactly the case worth seeing — so folding assignment into the
- * recency buckets would bury the people it is meant to surface.
+ * One lens since 2026-11-11: recency (has anything been heard from this
+ * person). The assignment lens ("committing without assigned work") was
+ * removed because its definition could never find anyone; planning-gap
+ * questions belong to Sprint Health (api/README.md §12 #69).
  */
 
 const SIGNAL_LABEL: Record<SignalType, string> = {
@@ -107,11 +106,11 @@ export function WatchlistPage() {
         />
       </div>
 
-      <CurrentLensNote
-        range={range}
-        lens="Assigned Jira work, the planning gap and exclusions"
-      />
-      <PlanningGap view={d} />
+      <CurrentLensNote range={range} lens="Jira account links and exclusions" />
+      {/* "Committing without assigned work" (the planning gap) was removed on
+          2026-11-11, as on Overview: it counted anyone with no open Jira item
+          anywhere, and real backlogs never run out, so it was always empty
+          (api/README.md §12 #69). Sprint Health owns that question. */}
       <UnlinkedPanel view={d} />
       <InactiveAccountsPanel view={d} />
       <ExclusionPanel view={d} />
@@ -216,81 +215,6 @@ function DeveloperCard({ dev }: { dev: WatchlistDeveloper }) {
         )}
       </p>
     </Link>
-  );
-}
-
-/**
- * Committing, with nothing assigned in Jira — the planning gap.
- *
- * Gated on the assignee bridge twice over: the list only ever contains people
- * the bridge matched, and the caveat below states the match rate whether or not
- * the list is empty. Without that, an unmatched assignee is indistinguishable
- * from a developer working off-plan, and the page would be accusing people of
- * the platform's own data gap.
- */
-function PlanningGap({ view }: { view: WatchlistView }) {
-  const { committingWithoutAssignedWork: rows, assigneeCoverage } = view;
-  const bridgeUnusable = assigneeCoverage.assigneesMatched === 0;
-  const unlinked = assigneeCoverage.unlinkedDevelopers ?? [];
-  const { range } = useSectionRange();
-
-  return (
-    <Card className="space-y-3">
-      <div>
-        <h3 className="font-semibold text-fg">
-          Committing without assigned work
-        </h3>
-        <p className="text-xs text-fg-subtle">
-          Landed commits in this window, but no open Jira item assigned to them
-          — work the plan cannot see
-        </p>
-      </div>
-
-      {bridgeUnusable ? (
-        <p className="rounded-md border border-border bg-subtle p-3 text-sm text-fg-muted">
-          No Jira assignee could be matched to a developer yet, so this cannot
-          be reported. Until the bridge matches someone, an empty list here
-          would mean “we cannot tell”, not “nobody”.
-        </p>
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-2">
-            {rows.map((dev) => (
-              <Link
-                key={dev.developer}
-                to={developerHref(dev.developer, range)}
-                className="rounded-md border border-warning-border bg-warning-bg px-2 py-1 text-xs text-warning-fg hover:opacity-80"
-              >
-                {dev.displayName}
-              </Link>
-            ))}
-            {rows.length === 0 && (
-              <p className="text-sm text-fg-muted">
-                Everyone who committed in this window has assigned work.
-              </p>
-            )}
-          </div>
-
-          {unlinked.length > 0 && (
-            <p className="rounded-md border border-border bg-subtle p-2.5 text-xs text-fg-muted">
-              {/* Names the specific people, not a percentage. A ratio tells a
-                  reader to distrust the list; a list of names tells them which
-                  rows to distrust — and is short enough to act on. */}
-              <span className="font-medium text-fg">{unlinked.length}</span> of{' '}
-              {assigneeCoverage.developersInWindow} developers who committed
-              have no Jira account matched ({assigneeCoverage.coveragePct}%
-              linked):{' '}
-              <span className="text-fg-secondary">
-                {unlinked.slice(0, 6).join(', ')}
-                {unlinked.length > 6 && ` +${unlinked.length - 6} more`}
-              </span>
-              . Their assigned work is invisible here, so they are excluded from
-              the list above rather than named in it.
-            </p>
-          )}
-        </>
-      )}
-    </Card>
   );
 }
 

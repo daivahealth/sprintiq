@@ -34,7 +34,6 @@ import {
   copilotCellText,
   showCopilotColumn,
 } from './copilot-column';
-import { CurrentLensNote } from './CurrentLensNote';
 import { developerHref } from './developer-href';
 import { activeDevelopersTile } from './active-developers-tile';
 import {
@@ -82,11 +81,16 @@ export function OverviewPage() {
   if (query.isError) return <ErrorCard error={query.error} />;
   if (!d) return null;
 
-  const { totals, attribution, assigneeCoverage } = d;
+  const { totals, attribution } = d;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* Three tiles since 2026-11-11: "Committing, nothing assigned" was
+          removed (product request). It counted committers with no open Jira
+          item anywhere, and every linked developer carries years of open
+          backlog, so it read 0 permanently. Planning-gap questions belong to
+          Sprint Health. */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Stat
           label="Commits"
           value={totals.commits.toLocaleString()}
@@ -110,28 +114,7 @@ export function OverviewPage() {
           value={totals.prsOpened}
           hint={`${totals.prsMerged} merged`}
         />
-        {/* The planning gap, and the one tile that must never render a null as
-            a zero: "0 people committing off-plan" and "we could not tell" are
-            opposite findings. */}
-        <Stat
-          label="Committing, nothing assigned"
-          value={
-            totals.committingWithoutAssignedWork === null
-              ? '—'
-              : totals.committingWithoutAssignedWork
-          }
-          hint={
-            totals.committingWithoutAssignedWork === null
-              ? 'no Jira assignees matched yet'
-              : 'see Watchlist'
-          }
-        />
       </div>
-
-      <CurrentLensNote
-        range={range}
-        lens="The Jira assignment behind “Committing, nothing assigned”"
-      />
 
       {/* Below the totals, not above them: the tiles say how much happened in
           this window, and the roster then says who that was. Reading the names
@@ -169,7 +152,7 @@ export function OverviewPage() {
           </p>
         )}
 
-        <dl className="grid gap-3 sm:grid-cols-2">
+        <dl className="grid gap-3">
           <div className="rounded-md border border-border bg-subtle p-3">
             <dt className="text-xs font-medium text-fg-secondary">
               Commit attribution
@@ -203,39 +186,9 @@ export function OverviewPage() {
               )}
             </dd>
           </div>
-
-          <div className="rounded-md border border-border bg-subtle p-3">
-            <dt className="text-xs font-medium text-fg-secondary">
-              Jira assignee matching
-            </dt>
-            <dd className="mt-1 text-sm text-fg-muted">
-              {assigneeCoverage.developersInWindow === 0 ? (
-                'Nobody committed in this window, so there is no bridge coverage to report.'
-              ) : (
-                <>
-                  <span className="font-medium text-fg">
-                    {assigneeCoverage.developersLinked}
-                  </span>{' '}
-                  of {assigneeCoverage.developersInWindow} developers who
-                  committed are linked to a Jira account (
-                  {assigneeCoverage.coveragePct}%).{' '}
-                  {assigneeCoverage.unlinkedDevelopers.length > 0 && (
-                    <>
-                      Assigned work is invisible for{' '}
-                      <span className="text-fg-secondary">
-                        {assigneeCoverage.unlinkedDevelopers
-                          .slice(0, 4)
-                          .join(', ')}
-                        {assigneeCoverage.unlinkedDevelopers.length > 4 &&
-                          ` +${assigneeCoverage.unlinkedDevelopers.length - 4} more`}
-                      </span>
-                      .
-                    </>
-                  )}
-                </>
-              )}
-            </dd>
-          </div>
+          {/* "Jira assignee matching" lived here to qualify the removed
+              "Committing, nothing assigned" tile; nothing else on Overview
+              reads Jira assignment. The Watchlist keeps its own copy. */}
         </dl>
 
         <ProvenanceNote>
@@ -617,9 +570,11 @@ function formatMonthBoundary(iso: string | null): string {
  * both readings without the duplication: the shape of the window at a glance,
  * the names when you ask for a day.
  *
- * The sort toggle is preserved verbatim from §4.1.3: alphabetical by default
- * per the no-ranking rule, with "Most commits" as a recorded, owner-requested
- * deviation that is only ever the reader's explicit act and is never persisted.
+ * A day's contributors are listed alphabetically, as the API sends them. The
+ * "A–Z | Most commits" toggle that sat in this header was removed on
+ * 2026-11-11 (product request): it sat beside the chart's metric toggle but
+ * sorted nothing on the chart — only the names under an opened day — so it
+ * read as a control that did nothing.
  */
 function CommitTimeline({
   days,
@@ -631,9 +586,8 @@ function CommitTimeline({
   emptyState: React.ReactNode;
 }) {
   const [open, setOpen] = useState<string | null>(null);
-  const [sort, setSort] = useState<'name' | 'commits'>('name');
   // Changed LOC leads, as on the 12-month trend; commits stay one click away.
-  // Like the sort, never persisted.
+  // Never persisted.
   const [requested, setRequested] = useState<TrendMetric>('loc');
   const locAvailable = hasDailyLoc(days);
   const metric = timelineMetric(days, requested);
@@ -648,8 +602,6 @@ function CommitTimeline({
   );
   const header = (
     <Header
-      sort={sort}
-      setSort={setSort}
       metric={metric}
       setMetric={locAvailable ? setRequested : undefined}
     />
@@ -665,15 +617,7 @@ function CommitTimeline({
   }
 
   const openDay = days.find((d) => d.date === open);
-  const developers = openDay
-    ? sort === 'commits'
-      ? [...openDay.developers].sort(
-          (a, b) =>
-            b.commits - a.commits ||
-            a.displayName.localeCompare(b.displayName),
-        )
-      : openDay.developers
-    : [];
+  const developers = openDay ? openDay.developers : [];
 
   return (
     <Card className="space-y-4">
@@ -740,14 +684,13 @@ function CommitTimeline({
 
       {byLoc && (
         <ProvenanceNote>
-          Bars are team totals of changed lines (added + removed) — volume, not
+          The line is team totals of changed lines (added + removed) — volume, not
           productivity. Contributors are listed by commits, never by lines.
           {withoutLines > 0 && (
             <>
               {' '}
               {withoutLines} commit{withoutLines === 1 ? '' : 's'} in this
               window recorded no line changes (line stats not collected yet, or
-              collected yet, or
               commits that change no lines), so line totals may be partial.
             </>
           )}
@@ -761,13 +704,9 @@ function CommitTimeline({
 }
 
 function Header({
-  sort,
-  setSort,
   metric,
   setMetric,
 }: {
-  sort: 'name' | 'commits';
-  setSort: (s: 'name' | 'commits') => void;
   metric: TrendMetric;
   /** Absent when the API sends no per-day LOC: there is nothing to toggle to. */
   setMetric?: (m: TrendMetric) => void;
@@ -781,31 +720,20 @@ function Header({
             : 'Commits over time'}
         </h3>
         <p className="text-xs text-fg-subtle">
-          One bar per IST day — select one to see that day’s contributors
+          One point per IST day — select a day to see its contributors
         </p>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        {setMetric && (
-          <SegmentedControl
-            label="Metric"
-            value={metric}
-            onChange={setMetric}
-            options={[
-              { value: 'loc', label: 'Lines of code' },
-              { value: 'commits', label: 'Commits' },
-            ]}
-          />
-        )}
+      {setMetric && (
         <SegmentedControl
-          label="Sort"
-          value={sort}
-          onChange={setSort}
+          label="Metric"
+          value={metric}
+          onChange={setMetric}
           options={[
-            { value: 'name', label: 'A–Z' },
-            { value: 'commits', label: 'Most commits' },
+            { value: 'loc', label: 'Lines of code' },
+            { value: 'commits', label: 'Commits' },
           ]}
         />
-      </div>
+      )}
     </div>
   );
 }

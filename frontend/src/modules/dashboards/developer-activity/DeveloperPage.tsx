@@ -297,6 +297,7 @@ export function DeveloperPage() {
               Repositories committed to
             </h4>
             <BarList
+              columns={{ label: 'Repository', value: 'Commits · LOC' }}
               rows={d.byRepo.map((r) => ({
                 label: r.repo,
                 value: r.commits,
