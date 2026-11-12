@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react';
-import { Badge, Card } from '../../../components/ui';
+import { Badge } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintReleaseCandidates, type ReleaseCandidateView } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
 import { PlannedDateField } from './PlannedDateField';
-import { SectionTitle } from './parts';
+import { SectionTitle, Panel } from './parts';
 import { PRIORITY_FILL, PRIORITY_TEXT, priorityBand } from './presentation';
 import { releaseCandidatePill } from './release-pill';
 
@@ -45,11 +45,11 @@ export function ReleaseCandidateList({
       {query.isError && <ErrorCard error={query.error} />}
 
       {query.data && rows.length === 0 && (
-        <Card>
+        <Panel>
           <p className="text-sm text-fg-faint">
             No release candidates in scope for this sprint.
           </p>
-        </Card>
+        </Panel>
       )}
 
       {rows.length > 0 && (
@@ -109,7 +109,7 @@ function ReleaseCandidateCard({
   const pill = releaseCandidatePill(rc);
 
   return (
-    <Card className={cn('space-y-5', latest && 'border-success')}>
+    <Panel className={cn('space-y-5', latest && 'border-success')}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-bold text-fg">
@@ -224,6 +224,6 @@ function ReleaseCandidateCard({
           )}
         </div>
       </div>
-    </Card>
+    </Panel>
   );
 }

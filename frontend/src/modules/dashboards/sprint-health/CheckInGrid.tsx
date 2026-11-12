@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Card, TableBodyRow, TableHeadRow } from '../../../components/ui';
+import { Button, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintCheckIns, type CheckInRow } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
 import { checkInPages } from './pager';
-import { DevName, SectionTitle } from './parts';
-import { checkInBucket, formatDateRange, type CheckInBucket } from './presentation';
+import { DevName, SectionTitle, Panel } from './parts';
+import { checkInBucket, formatDateRange, MOCKUP_HEAD, type CheckInBucket } from './presentation';
 
 /**
  * IST date key ("2026-08-14") -> "Thu 14". No month: a page never spans more
@@ -172,7 +172,7 @@ export function CheckInGrid({
       {query.isError && <ErrorCard error={query.error} />}
 
       {d && (
-        <Card>
+        <Panel>
           {d.rows.length === 0 ? (
             <p className="py-4 text-center text-sm text-fg-faint">
               No ticket movement recorded in this range.
@@ -192,7 +192,7 @@ export function CheckInGrid({
             every Jira status change, attributed to whoever made it — which is
             not always the assignee.
           </p>
-        </Card>
+        </Panel>
       )}
     </section>
   );
@@ -203,7 +203,7 @@ function CheckInTable({ days, rows }: { days: string[]; rows: CheckInRow[] }) {
   return (
     <table className="w-full min-w-[720px] text-sm">
       <thead>
-        <TableHeadRow>
+        <TableHeadRow className={MOCKUP_HEAD}>
           <th className="py-2 pr-4">Developer</th>
           {days.map((day) => (
             <th key={day} className="px-1 py-2 text-center">

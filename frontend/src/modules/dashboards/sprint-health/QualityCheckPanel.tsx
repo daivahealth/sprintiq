@@ -1,7 +1,6 @@
-import { Card } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import type { QualityCheckView } from '../useInsights';
-import { SectionTitle } from './parts';
+import { SectionTitle, Panel } from './parts';
 import { PRIORITY_FILL, PRIORITY_TEXT, priorityBand } from './presentation';
 
 /**
@@ -42,7 +41,7 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
       />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_1.3fr]">
-        <Card>
+        <Panel>
           <div className="text-3xl font-bold tabular-nums text-fg">
             {data.storiesReleased}
           </div>
@@ -70,9 +69,9 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
           <p className="mt-3 text-xs text-fg-faint">
             Released means reached done inside this sprint&apos;s window.
           </p>
-        </Card>
+        </Panel>
 
-        <Card>
+        <Panel>
           <h4 className="mb-3 text-xs font-semibold text-fg-muted">
             Bugs logged, by priority
           </h4>
@@ -117,7 +116,7 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
             {severeBugs > 0 &&
               ` ${severeBugs} highest-priority ${severeBugs === 1 ? 'bug needs' : 'bugs need'} triage before the next release.`}
           </p>
-        </Card>
+        </Panel>
       </div>
     </section>
   );

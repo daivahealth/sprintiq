@@ -1,7 +1,8 @@
-import { Badge, Card, TableBodyRow, TableHeadRow } from '../../../components/ui';
+import { Badge, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import type { ProductivityGrade, ProductivityView } from '../useInsights';
-import { DevName, SectionTitle } from './parts';
+import { DevName, SectionTitle, Panel } from './parts';
+import { MOCKUP_HEAD } from './presentation';
 
 const GRADE_TONE: Record<ProductivityGrade, 'good' | 'warn' | 'bad'> = {
   high: 'good',
@@ -46,11 +47,11 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
         </>
       )}
 
-      <Card>
+      <Panel>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm">
             <thead>
-              <TableHeadRow>
+              <TableHeadRow className={MOCKUP_HEAD}>
                 <th className="py-2 pr-4">Developer</th>
                 <th className="py-2 pr-4 text-right">Lines of code</th>
                 <th className="py-2 pr-4 text-right">Tickets worked</th>
@@ -100,7 +101,7 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
           sprint&apos;s tickets — a commit that names no sprint ticket is not
           on this table.
         </p>
-      </Card>
+      </Panel>
     </section>
   );
 }

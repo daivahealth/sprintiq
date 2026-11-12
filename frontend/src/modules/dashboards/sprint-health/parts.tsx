@@ -29,6 +29,64 @@ export function SectionTitle({
   );
 }
 
+/**
+ * The board's container, as in the "Team & Code Activity" mockup: a flat,
+ * bordered, rounded panel on the surface token — no gradient, no shadow.
+ * Every block of content on the board sits in one (filters, check-in grid,
+ * contributor table, quality cards, RC cards).
+ */
+export function Panel({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-xl border border-border bg-surface px-5 py-4',
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A flat metric tile (the mockup's `.metric-card`): figure, label, and an
+ * optional quieter sub-line. Replaced the metallic `MetalStat` on this board
+ * (2026-11-12).
+ */
+export function Tile({
+  label,
+  value,
+  hint,
+  valueClassName,
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+  /** Tone override for the figure, e.g. `text-warning-fg` when it needs attention. */
+  valueClassName?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-surface px-4 py-3.5">
+      <div
+        className={cn(
+          'text-2xl font-bold tracking-[-0.02em] tabular-nums text-fg',
+          valueClassName,
+        )}
+      >
+        {value}
+      </div>
+      <div className="mt-0.5 text-[12.5px] text-fg-muted">{label}</div>
+      {hint && <div className="mt-1.5 text-[11px] text-fg-faint">{hint}</div>}
+    </div>
+  );
+}
+
 /** Initials avatar + display name, as a table cell's content. */
 export function DevName({ name }: { name: string }) {
   return (

@@ -84,3 +84,11 @@ export function formatDateRange(fromKey: string, toKey: string): string {
     ? `${fromText} – ${toText}, ${toYear}`
     : `${fromText}, ${fromYear} – ${toText}, ${toYear}`;
 }
+
+/**
+ * Table header row as the mockup draws it: sentence-case 11.5px labels in the
+ * faint tone over a hairline, instead of the app's uppercase ruled header.
+ * Passed to `TableHeadRow` as its `className` on this board's tables.
+ */
+export const MOCKUP_HEAD =
+  'border-b border-border-subtle text-[11.5px] font-semibold normal-case tracking-normal text-fg-faint';

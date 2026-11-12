@@ -1,6 +1,5 @@
-import { MetalStat as Stat } from './metal';
 import type { CommitActivityView, SprintCommitLinkage } from '../useInsights';
-import { SectionTitle } from './parts';
+import { SectionTitle, Tile as Stat } from './parts';
 
 /**
  * Sprint Health §Commit activity — five tiles over the sprint's own window
