@@ -216,7 +216,8 @@ export function SprintHealthBoard() {
         subtitle="Commit activity, check-ins, and delivery quality for the selected project and sprint — over that project's own tickets and the GitHub work linked to them."
       />
 
-      <FilterBar>
+      {/* Filters sit in a bordered panel, as in the mockup. */}
+      <FilterBar className="rounded-xl border bg-surface px-5 py-4">
         <MultiSelect
           label="Projects"
           options={(projects.data?.items ?? []).map((p) => p.key)}
@@ -286,7 +287,7 @@ export function SprintHealthBoard() {
                   key={`${row.projects?.join(',') ?? ''}:${row.sprint.externalId}`}
                   type="button"
                   onClick={() => setSprint(row.sprint.externalId)}
-                  className={cnMetalCard(sprint === row.sprint.externalId)}
+                  className={cnCard(sprint === row.sprint.externalId)}
                 >
                   <div className="flex items-center justify-between">
                     <span className="truncate font-medium text-fg-secondary">
@@ -411,18 +412,6 @@ function cnCard(selected: boolean): string {
   );
 }
 
-/**
- * Sprint Health's ongoing-sprint card: brushed steel with a sheen on hover
- * (DESIGN-SYSTEM.md "Metallic accents" — this board only; Sprint Risk keeps
- * `cnCard`). Selection is a brand ring, never a lift.
- */
-function cnMetalCard(selected: boolean): string {
-  return cn(
-    'metal-surface metal-sheen space-y-2 rounded-xl p-4 text-left transition hover:border-brand/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40',
-    selected && 'border-brand ring-2 ring-brand/25',
-  );
-}
-
 /** "On-track: …" — what the pace badge means for this card, for the bar's tooltip. */
 function paceExplainer(row: SprintHealthView): string {
   if (row.completionPct === null || row.elapsedPct === null) {
@@ -446,7 +435,7 @@ function PaceBar({
 }: {
   completionPct: number | null;
   elapsedPct: number | null;
-  /** Hover/focus explanation; when given, the fill also gets the metallic finish. */
+  /** Hover/focus explanation of the pace verdict. */
   tip?: string;
 }) {
   // The "today" marker sits outside the clipped track and overhangs it, ringed
@@ -456,7 +445,7 @@ function PaceBar({
     <div className="relative w-full py-1">
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
-          className={cn('h-full rounded-full bg-brand', tip && 'metal-bar')}
+          className="h-full rounded-full bg-brand"
           style={{ width: `${Math.min(100, completionPct ?? 0)}%` }}
         />
       </div>

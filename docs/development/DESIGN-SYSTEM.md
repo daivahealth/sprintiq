@@ -171,12 +171,14 @@ Explicitly **not** built, and not to be added incidentally: springs, card lift o
 
 ## Metallic accents (Sprint Health only)
 
+> **Dropped from the visible board 2026-11-12.** Sprint Health now follows the flat "Team & Code Activity" mockup: bordered, rounded panels on `bg-surface` (`Panel` and `Tile` in `modules/dashboards/sprint-health/parts.tsx`) with no gradient, grain, sheen or bevel, and plain fills on its bars. The tokens, classes and `metal.tsx` below are still in the codebase only because the hidden Sprint work panel (and its `DataGapsList`) uses them; `Tip` is still used by the ongoing-sprint pace bar's tooltip, which has no metallic styling. Do not add new metallic surfaces.
+
 **Decided 2026-11-06, a deliberate exception** to the flat editorial direction above, scoped to the Sprint Health board. Asked for by the product owner ("more metallic and interactive"); the lighter of two options was chosen — accents, not a re-skin — so the board still reads as the same instrument.
 
 - **Tokens:** `--metal-hi`, `--metal-lo` (the brushed gradient's two ends), `--metal-edge` (bevel highlight), `--metal-shine` (grain and sheen), `--metal-shade` (bevel and bar shading). Defined in `:root`, `.light` and `.dark` like every token, as RGB channels.
 - **Classes** (`index.css`, `@layer components`): `metal-surface` (gradient + faint brushed grain + 1px border + inset bevel — no drop shadow), `metal-sheen` (one highlight sweep on hover/focus, 700ms, moved by `background-position` so the parent needs no `overflow: hidden` that would clip tooltips; hidden under `prefers-reduced-motion`), `metal-bar` (polished shading over a bar fill's own `bg-*` token).
 - **Components** (`modules/dashboards/sprint-health/metal.tsx`, not `components/ui` — they are not for other boards): `MetalStat` (a `Stat` on `metal-surface`; a toggle button with `aria-pressed` when given `onClick`; `valueClassName` tones the figure, e.g. `text-warning-fg` on "avg time to first review" while a PR has waited >24h) and `Tip` (CSS-only hover/focus tooltip on `bg-popover`, 150ms plain transition).
-- **Where:** ongoing-sprint cards and their pace bar, commit-activity tiles, and the Sprint work panel's tiles, bars and gap cards (that panel is hidden from the board since 2026-11-12, its component kept).
+- **Where:** since 2026-11-12, only the hidden Sprint work panel's tiles, bars and gap cards. The ongoing-sprint cards, their pace bar and the commit-activity tiles were made flat again then.
 - **Still not built, here either:** card lift on hover, drop shadows, springs, layout animation on filter change. Selection is a brand ring. The 700ms sheen is the one motion longer than the table above, and only decorates — no information depends on it.
 
 Using these on another board is a new decision, not a reuse.
