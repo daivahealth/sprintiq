@@ -5,8 +5,8 @@ describe('checkInPages', () => {
   it('splits a sprint into seven-day pages', () => {
     const pages = checkInPages('2026-08-25', '2026-09-05');
     expect(pages).toEqual([
-      { from: '2026-08-25', to: '2026-08-31', label: 'Week 1 of 2' },
-      { from: '2026-09-01', to: '2026-09-05', label: 'Week 2 of 2' },
+      { from: '2026-08-25', to: '2026-08-31', label: 'Week 1 of 2', firstDay: 1, lastDay: 7 },
+      { from: '2026-09-01', to: '2026-09-05', label: 'Week 2 of 2', firstDay: 8, lastDay: 12 },
     ]);
   });
 
@@ -16,7 +16,7 @@ describe('checkInPages', () => {
   it('leaves the final page short rather than padding past the sprint end', () => {
     const pages = checkInPages('2026-08-25', '2026-08-27');
     expect(pages).toEqual([
-      { from: '2026-08-25', to: '2026-08-27', label: 'Week 1 of 1' },
+      { from: '2026-08-25', to: '2026-08-27', label: 'Week 1 of 1', firstDay: 1, lastDay: 3 },
     ]);
   });
 
@@ -41,7 +41,7 @@ describe('checkInPages', () => {
   it('consumes the real IST-date-key shape CheckInsView reports for a running sprint', () => {
     const pages = checkInPages('2026-08-25', '2026-08-31');
     expect(pages).toEqual([
-      { from: '2026-08-25', to: '2026-08-31', label: 'Week 1 of 1' },
+      { from: '2026-08-25', to: '2026-08-31', label: 'Week 1 of 1', firstDay: 1, lastDay: 7 },
     ]);
   });
 });

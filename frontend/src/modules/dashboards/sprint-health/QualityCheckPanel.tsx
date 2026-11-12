@@ -1,6 +1,8 @@
 import { Card } from '../../../components/ui';
-import { BarList, Stat } from '../widgets';
+import { cn } from '../../../lib/utils';
 import type { QualityCheckView } from '../useInsights';
+import { SectionTitle } from './parts';
+import { PRIORITY_FILL, PRIORITY_TEXT, priorityBand } from './presentation';
 
 /**
  * Sprint Health §Quality check — releases, rollbacks and bug load
@@ -27,27 +29,26 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
       ? null
       : Math.min(100, Math.max(0, data.rolledBackPct));
 
+  const maxBugs = Math.max(1, ...data.bugsByPriority.map((b) => b.count));
+  const severeBugs = data.bugsByPriority
+    .filter((b) => priorityBand(b.priority) === 'p1')
+    .reduce((sum, b) => sum + b.count, 0);
+
   return (
-    <Card className="space-y-4">
-      <h3 className="font-semibold text-fg">Quality check</h3>
+    <section>
+      <SectionTitle
+        title="Quality check"
+        echo="stories released vs. defects logged this sprint"
+      />
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Stat
-          label="Stories released"
-          value={data.storiesReleased}
-          hint="reached done, in this sprint's window"
-        />
-
-        <div className="rounded-lg border border-border bg-subtle p-3">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-xs text-fg-subtle">Rolled back</span>
-            <span className="text-xs tabular-nums text-fg-muted">
-              {rolledBackPct === null
-                ? `${data.rolledBack} rolled back`
-                : `${data.rolledBack} rolled back (${rolledBackPct}%)`}
-            </span>
+      <div className="grid gap-4 lg:grid-cols-[1fr_1.3fr]">
+        <Card>
+          <div className="text-3xl font-bold tabular-nums text-fg">
+            {data.storiesReleased}
           </div>
-          <div className="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
+          <div className="text-sm text-fg-subtle">Stories released this sprint</div>
+
+          <div className="mt-4 flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
             {rolledBackPct !== null && (
               <>
                 <div
@@ -61,23 +62,63 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
               </>
             )}
           </div>
-        </div>
-      </div>
+          <p className="mt-1.5 text-xs text-fg-subtle">
+            {data.storiesReleased} released · {data.rolledBack} rolled back /
+            reopened
+            {rolledBackPct !== null && ` (${rolledBackPct}% of items that reached done)`}
+          </p>
+          <p className="mt-3 text-xs text-fg-faint">
+            Released means reached done inside this sprint&apos;s window.
+          </p>
+        </Card>
 
-      <div>
-        <h4 className="mb-2 text-sm font-medium text-fg-muted">Bugs by priority</h4>
-        <BarList
-          columns={{ label: 'Priority', value: 'Bugs' }}
-          rows={data.bugsByPriority.map((b) => ({ label: b.priority, value: b.count }))}
-          color="bg-danger"
-        />
-      </div>
+        <Card>
+          <h4 className="mb-3 text-xs font-semibold text-fg-muted">
+            Bugs logged, by priority
+          </h4>
+          {data.bugsByPriority.length === 0 ? (
+            <p className="py-2 text-sm text-fg-faint">No bugs logged in scope.</p>
+          ) : (
+            <div className="space-y-2.5">
+              {data.bugsByPriority.map((b) => {
+                const band = priorityBand(b.priority);
+                return (
+                  <div
+                    key={b.priority}
+                    className="grid grid-cols-[5.5rem_1fr_3rem] items-center gap-3 text-sm"
+                  >
+                    <span className={cn('truncate font-semibold', PRIORITY_TEXT[band])}>
+                      {b.priority}
+                    </span>
+                    <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={cn('h-full rounded-full', PRIORITY_FILL[band])}
+                        style={{ width: `${(b.count / maxBugs) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-right tabular-nums text-fg-subtle">
+                      {b.count}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
-      <p className="text-xs text-fg-faint">
-        {data.bugsPerStoryReleased === null
-          ? `No stories released yet — bug ratio not computable (${data.bugsLogged} bugs logged).`
-          : `${data.bugsPerStoryReleased} bugs per story released — ${data.bugsLogged} bugs logged in total.`}
-      </p>
-    </Card>
+          <p
+            className={cn(
+              'mt-3 text-xs',
+              severeBugs > 0 ? 'text-warning-fg' : 'text-fg-faint',
+            )}
+          >
+            {data.bugsPerStoryReleased === null
+              ? `No stories released yet — bug ratio not computable (${data.bugsLogged} bugs logged).`
+              : `${data.bugsPerStoryReleased} bugs logged per story released — ${data.bugsLogged} in total.`}
+            {severeBugs > 0 &&
+              ` ${severeBugs} highest-priority ${severeBugs === 1 ? 'bug needs' : 'bugs need'} triage before the next release.`}
+          </p>
+        </Card>
+      </div>
+    </section>
   );
 }

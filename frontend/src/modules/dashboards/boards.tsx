@@ -214,7 +214,7 @@ export function SprintHealthBoard() {
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Sprint Health"
-        subtitle="The ongoing sprint for each project you pick, over that project's own tickets and the GitHub work linked to them. Click one to drill in."
+        subtitle="Commit activity, check-ins, and delivery quality for the selected project and sprint — over that project's own tickets and the GitHub work linked to them."
       />
 
       <FilterBar>
@@ -259,7 +259,17 @@ export function SprintHealthBoard() {
       )}
       {hasProject && active.isLoading && <LoadingCard />}
       {hasProject && active.isError && <ErrorCard error={active.error} />}
-      {hasProject && active.data && (
+      {/* The ongoing-sprint cards are a switcher: with one ongoing sprint
+          the Sprint picker already says everything they would, so they only
+          appear when there is more than one to choose between (or none, to
+          say so). The stale-sprint note shows either way. */}
+      {hasProject && active.data && active.data.rows.length === 1 && (
+        <StaleSprintsNote
+          stale={active.data.stale}
+          graceDays={active.data.staleGraceDays}
+        />
+      )}
+      {hasProject && active.data && active.data.rows.length !== 1 && (
         <div>
           <h4 className="mb-2 text-sm font-medium text-fg-muted">
             Ongoing sprints ({active.data.rows.length})
@@ -325,20 +335,10 @@ export function SprintHealthBoard() {
       {hasProject && detail.isLoading && sprint && <LoadingCard />}
       {hasProject && detail.isError && <ErrorCard error={detail.error} />}
       {d && (
-        <>
-          <Card>
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-fg">{sprintLabel(d)}</h3>
-              <span className="space-x-2">
-                <Badge tone={d.sprint.state === 'active' ? 'good' : 'neutral'}>
-                  {d.sprint.state}
-                </Badge>
-                <PaceBadge pace={d.pace} />
-              </span>
-            </div>
-            <SprintFacts d={d} />
-          </Card>
-
+        <div className="space-y-8">
+          {/* No sprint header card: the Sprint picker already names the
+              selected project · sprint, and the sections below each say what
+              they count. */}
           {d.workBreakdown ? (
             <SprintWorkPanel data={d.workBreakdown} />
           ) : d.workBreakdown === null ? (
@@ -351,11 +351,6 @@ export function SprintHealthBoard() {
               route composes all three with Promise.all. A null here degrades
               to a quiet note rather than a crash that takes the rest of the
               board with it. */}
-          {/* Unlike the other four panels, CommitActivityTiles prints no
-              title of its own (it matches the bare-tile-row pattern used by
-              OverviewPage/PrStatusPage) — labelled here so it doesn't read as
-              an orphaned row of numbers under the sprint header. */}
-          <h4 className="text-sm font-medium text-fg-muted">Commit activity</h4>
           {d.commitActivity ? (
             <CommitActivityTiles data={d.commitActivity} />
           ) : (
@@ -394,38 +389,9 @@ export function SprintHealthBoard() {
           />
 
           <ProvenanceNote>Computed {timeAgo(d.computedAt)}.</ProvenanceNote>
-        </>
+        </div>
       )}
     </div>
-  );
-}
-
-/**
- * The sprint's Jira facts under its title: dates in IST (Jira stores the end
- * as 18:30 UTC, which is midnight IST — a UTC date reads a day early), time
- * left, and points done against committed.
- */
-function SprintFacts({ d }: { d: SprintHealthView }) {
-  const day = (iso: string | null) =>
-    iso
-      ? new Date(iso).toLocaleDateString(undefined, {
-          day: 'numeric',
-          month: 'short',
-          timeZone: 'Asia/Kolkata',
-        })
-      : '—';
-  const facts = [
-    `${day(d.sprint.startAt)} – ${day(d.sprint.endAt)}`,
-    d.daysRemaining !== null &&
-      d.sprint.state === 'active' &&
-      `${d.daysRemaining} day${d.daysRemaining === 1 ? '' : 's'} left`,
-    d.elapsedPct !== null && `${Math.round(d.elapsedPct)}% elapsed`,
-    `${d.completedPoints}/${d.committedPoints} pts done` +
-      (d.completionPct !== null ? ` (${Math.round(d.completionPct)}%)` : ''),
-    `${d.itemsDone}/${d.itemsTotal} work items done`,
-  ].filter(Boolean);
-  return (
-    <p className="mt-1 text-xs tabular-nums text-fg-subtle">{facts.join(' · ')}</p>
   );
 }
 

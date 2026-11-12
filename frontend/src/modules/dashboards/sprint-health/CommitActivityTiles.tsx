@@ -1,5 +1,6 @@
 import { MetalStat as Stat } from './metal';
 import type { CommitActivityView, SprintCommitLinkage } from '../useInsights';
+import { SectionTitle } from './parts';
 
 /**
  * Sprint Health §Commit activity — five tiles over the sprint's own window
@@ -14,8 +15,12 @@ import type { CommitActivityView, SprintCommitLinkage } from '../useInsights';
  */
 export function CommitActivityTiles({ data }: { data: CommitActivityView }) {
   return (
-    <div>
-      <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+    <section>
+      <SectionTitle
+        title="Code commit activity"
+        echo="work linked to this sprint's tickets"
+      />
+      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat
           label="Developers who committed"
           value={data.committers}
@@ -35,17 +40,20 @@ export function CommitActivityTiles({ data }: { data: CommitActivityView }) {
         <Stat label="PRs raised" value={data.prsRaised}
           hint={`${data.prsOpen} open, ${data.prsMerged} merged`} />
         <Stat label="PRs reviewed" value={data.prsReviewed}
-          hint={data.reviewedPct === null ? undefined : `${data.reviewedPct}% of raised`} />
+          hint={data.reviewedPct === null ? undefined : `${data.reviewedPct}% of raised PRs`} />
         <Stat
           label="Avg time to first review"
           value={data.avgHoursToFirstReview === null ? '—' : `${data.avgHoursToFirstReview}h`}
           hint={data.prsWaitingOver24h > 0 ? `${data.prsWaitingOver24h} PRs waiting >24h` : undefined}
+          // Amber only when something is actually waiting — the average
+          // alone doesn't say whether anyone is blocked right now.
+          valueClassName={data.prsWaitingOver24h > 0 ? 'text-warning-fg' : undefined}
         />
       </div>
 
       {/* The scope judgement behind every number above — invisible otherwise. */}
       {data.linkage && <LinkageNote linkage={data.linkage} />}
-    </div>
+    </section>
   );
 }
 
