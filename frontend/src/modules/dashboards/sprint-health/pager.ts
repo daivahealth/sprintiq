@@ -3,6 +3,10 @@ export interface CheckInPage {
   from: string;
   to: string;
   label: string;
+  /** 1-based sprint day of `from` — "sprint days 1–7". */
+  firstDay: number;
+  /** 1-based sprint day of `to`. */
+  lastDay: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -52,6 +56,8 @@ export function checkInPages(sprintFrom: string, sprintTo: string): CheckInPage[
       from: dateKey(pageFrom),
       to: dateKey(pageTo),
       label: `Week ${i + 1} of ${pageCount}`,
+      firstDay: i * PAGE_DAYS + 1,
+      lastDay: i * PAGE_DAYS + pageLenDays,
     });
   }
   return pages;

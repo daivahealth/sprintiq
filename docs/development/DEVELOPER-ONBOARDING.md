@@ -89,6 +89,13 @@ npm run lint
 $env:VITE_CACHE_DIR = "$env:LOCALAPPDATA\sprintiq-vite-cache"; npm run dev
 ```
 
+**Checking a screen in a real browser.** `@playwright/test` is a frontend devDependency for driving the running app headlessly — screenshots in light/dark and at phone width, clicking through a pager — when `tsc`/`lint`/`vitest` can't show what a board looks like. There is no Playwright suite or config yet; it is a tool, not a CI gate. One-time browser download, then a quick screenshot (every route redirects to sign-in, so a script logs in first — the local seed admin is in [LOCAL-RUN.md](../runbooks/LOCAL-RUN.md)):
+
+```bash
+npx playwright install chromium
+npx playwright screenshot --viewport-size "1280,800" http://localhost:5173/login shot.png
+```
+
 Styling is token-based (semantic Tailwind colors, light/dark via a `dark` class) — see [DESIGN-SYSTEM.md](DESIGN-SYSTEM.md) before adding a new screen, primitive, or color. Fonts (Inter Variable, JetBrains Mono Variable) are self-hosted under `frontend/src/assets/fonts/`, no external font CDN.
 
 ### Full stack (Docker)

@@ -20,6 +20,7 @@ export function MetalStat({
   active = false,
   onClick,
   title,
+  valueClassName,
 }: {
   label: string;
   value: string | number;
@@ -27,6 +28,8 @@ export function MetalStat({
   active?: boolean;
   onClick?: () => void;
   title?: string;
+  /** Tone override for the figure, e.g. `text-warning-fg` when it needs attention. */
+  valueClassName?: string;
 }) {
   const body = (
     <>
@@ -35,7 +38,10 @@ export function MetalStat({
         initial={{ opacity: 0, y: 1 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-        className="text-[28px] font-bold tracking-[-0.045em] tabular-nums text-fg"
+        className={cn(
+          'text-[28px] font-bold tracking-[-0.045em] tabular-nums text-fg',
+          valueClassName,
+        )}
       >
         {value}
       </motion.div>
