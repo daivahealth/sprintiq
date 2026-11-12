@@ -213,7 +213,7 @@ export function SprintHealthBoard() {
     <div className="mx-auto max-w-6xl space-y-6">
       <BoardHeader
         title="Sprint Health"
-        subtitle="Commit activity, check-ins, and delivery quality for the selected project and sprint — over that project's own tickets and the GitHub work linked to them."
+        subtitle="Commit activity, check-ins, and delivery quality for the selected project and sprint."
       />
 
       {/* Filters sit in a bordered panel, as in the mockup. */}

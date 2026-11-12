@@ -5,7 +5,13 @@ import { useSprintReleaseCandidates, type ReleaseCandidateView } from '../useIns
 import { ErrorCard, LoadingCard } from '../widgets';
 import { PlannedDateField } from './PlannedDateField';
 import { SectionTitle, Panel } from './parts';
-import { PRIORITY_FILL, PRIORITY_TEXT, priorityBand } from './presentation';
+import {
+  MOCKUP_PILL,
+  MOCKUP_PILL_PLAIN,
+  PRIORITY_FILL,
+  PRIORITY_TEXT,
+  priorityBand,
+} from './presentation';
 import { releaseCandidatePill } from './release-pill';
 
 /**
@@ -38,7 +44,7 @@ export function ReleaseCandidateList({
     <section>
       <SectionTitle
         title="RC-wise scope & quality"
-        echo="every RC in this sprint — what's in it, when it shipped, the bugs logged against it"
+        echo="every RC cut in this sprint — what's in it, when it shipped, how it tested"
       />
 
       {query.isLoading && <LoadingCard label="Loading release candidates…" />}
@@ -86,6 +92,42 @@ function BlockTitle({ children, aside }: { children: ReactNode; aside?: ReactNod
   );
 }
 
+/** The mockup's five test outcomes, in its order and colours. */
+const TEST_OUTCOMES = [
+  { label: 'Passed', dot: 'bg-success' },
+  { label: 'Failed', dot: 'bg-danger' },
+  { label: 'Blocked', dot: 'bg-chart-1' },
+  { label: 'WIP', dot: 'bg-warning' },
+  { label: 'Not Run', dot: 'bg-fg-faint' },
+] as const;
+
+/**
+ * The mockup's test-execution block, laid out as designed but with nothing in
+ * it: results live in the team's test-management app, which SprintIQ does not
+ * collect yet (`ReleaseCandidateView.testExecution` is always `null`). The bar
+ * stays empty and every count reads "—" — a placeholder, never an estimate.
+ */
+function TestExecutionPlaceholder() {
+  return (
+    <div>
+      <div className="mb-3 h-2.5 rounded-full bg-muted" />
+      <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-[13px] text-fg-subtle">
+        {TEST_OUTCOMES.map((o) => (
+          <span key={o.label} className="flex items-center">
+            <span aria-hidden className={cn('mr-2 h-2 w-2 rounded-full', o.dot)} />
+            {o.label}
+            <b className="ml-1 font-bold text-fg-faint">—</b>
+          </span>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-fg-faint">
+        Placeholder — test results live in the team&apos;s test-management app,
+        which SprintIQ does not collect yet.
+      </p>
+    </div>
+  );
+}
+
 function DateStat({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="rounded-md border border-border-subtle bg-subtle px-3 py-2">
@@ -109,22 +151,19 @@ function ReleaseCandidateCard({
   const pill = releaseCandidatePill(rc);
 
   return (
-    <Panel className={cn('space-y-5', latest && 'border-success')}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-base font-bold text-fg">
-            {rc.name}
-            {latest && (
-              <Badge tone="good" className="ml-2 align-middle">
-                latest
-              </Badge>
-            )}
-          </h3>
-          {rc.externalId && (
-            <p className="text-xs text-fg-faint">{rc.externalId}</p>
+    <Panel className={cn('space-y-4 pb-5', latest && 'border-success-border')}>
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <h3 className="text-base font-bold text-fg">
+          {rc.name}
+          {latest && (
+            <Badge tone="good" className={cn('ml-2 align-middle', MOCKUP_PILL)}>
+              latest
+            </Badge>
           )}
-        </div>
-        <Badge tone={pill.tone}>{pill.text}</Badge>
+        </h3>
+        <Badge tone={pill.tone} className={MOCKUP_PILL}>
+          {pill.text}
+        </Badge>
       </div>
 
       <div>
@@ -161,17 +200,21 @@ function ReleaseCandidateCard({
             <tbody>
               {rc.stories.map((story) => (
                 <tr key={story.key} className="border-t border-border-subtle">
-                  <td className="w-px whitespace-nowrap py-1.5 pr-3 font-semibold text-brand">
+                  <td className="w-px whitespace-nowrap py-1.5 pr-3 font-semibold text-chart-3">
                     {story.key}
                   </td>
                   <td className="py-1.5 pr-3 text-fg-subtle">{story.title}</td>
                   <td className="w-px whitespace-nowrap py-1.5 text-right">
                     {story.delivered ? (
-                      <Badge tone="good">Delivered</Badge>
+                      <Badge tone="good" className={MOCKUP_PILL_PLAIN}>
+                        Delivered
+                      </Badge>
                     ) : (
                       // After release an undelivered story missed the cut;
                       // before it, it's still pending.
-                      <Badge tone="warn">{rc.released ? 'Not delivered' : 'Pending'}</Badge>
+                      <Badge tone="warn" className={MOCKUP_PILL_PLAIN}>
+                        {rc.released ? 'Not delivered' : 'Pending'}
+                      </Badge>
                     )}
                   </td>
                 </tr>
@@ -182,14 +225,8 @@ function ReleaseCandidateCard({
       </div>
 
       <div className="border-t border-border-subtle pt-4">
-        <BlockTitle aside="not collected">Test execution summary</BlockTitle>
-        <div className="rounded-md border border-dashed border-border p-3">
-          <p className="text-xs text-fg-faint">
-            Pass / fail / blocked / not-run results live in the team&apos;s
-            test-management app, which SprintIQ does not collect yet. Not shown
-            rather than estimated.
-          </p>
-        </div>
+        <BlockTitle aside="not collected yet">Test execution summary</BlockTitle>
+        <TestExecutionPlaceholder />
 
         <div className="mt-4 border-t border-border-subtle pt-3">
           <p className="mb-2 text-xs text-fg-faint">Bugs logged against this RC</p>

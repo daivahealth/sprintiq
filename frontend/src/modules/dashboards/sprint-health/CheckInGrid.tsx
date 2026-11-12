@@ -1,3 +1,4 @@
+import { CalendarDays } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Button, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
@@ -131,11 +132,14 @@ export function CheckInGrid({
           </span>
           {/* Read-only: the range is chosen with the pager, one sprint week
               at a time, so it never leaves the sprint's elapsed days. */}
-          <div className="min-w-[13rem] rounded-md border border-border-strong bg-surface px-3 py-2 text-sm tabular-nums text-fg">
+          <div className="flex min-w-[13rem] items-center justify-between gap-2.5 rounded-md border border-border-strong bg-surface px-3.5 py-2 text-sm tabular-nums text-fg">
             {shownRange ?? '—'}
+            <CalendarDays aria-hidden className="h-3.5 w-3.5 text-fg-faint" />
           </div>
         </div>
-        {pages.length > 1 && (
+        {/* Always shown, as in the mockup — a one-week sprint reads
+            "Week 1 of 1" with both buttons disabled. */}
+        {active && (
           <div className="flex items-center gap-3">
             <Button
               variant="secondary"
@@ -147,13 +151,11 @@ export function CheckInGrid({
               ‹ Prev
             </Button>
             <span className="whitespace-nowrap text-sm text-fg-subtle">
-              {active?.label}
-              {active && (
-                <span className="text-xs text-fg-faint">
-                  {' '}
-                  · sprint days {active.firstDay}–{active.lastDay}
-                </span>
-              )}
+                {active.label}
+              <span className="text-xs text-fg-faint">
+                {' '}
+                · sprint days {active.firstDay}–{active.lastDay}
+              </span>
             </span>
             <Button
               variant="secondary"
@@ -185,12 +187,13 @@ export function CheckInGrid({
             </div>
           )}
 
-          <p className="mt-3 text-xs text-fg-faint">
+          <p
+            className="mt-3 text-xs text-fg-faint"
+            title="Counts every Jira status change, attributed to whoever made it — which is not always the assignee."
+          >
             {bounds &&
-              `Range limited to this sprint's elapsed days (${formatDateRange(bounds.from, bounds.to)}). `}
-            Totals reflect only the selected range, not the full sprint. Counts
-            every Jira status change, attributed to whoever made it — which is
-            not always the assignee.
+              `Range limited to this sprint's active days (${formatDateRange(bounds.from, bounds.to)}). `}
+            Totals reflect only the selected range, not the full sprint.
           </p>
         </Panel>
       )}
