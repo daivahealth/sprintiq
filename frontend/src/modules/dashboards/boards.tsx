@@ -12,7 +12,6 @@ import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
 import { ProductivityPanel } from './sprint-health/ProductivityPanel';
 import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
-import { SprintWorkPanel } from './sprint-health/SprintWorkPanel';
 import { Tip } from './sprint-health/metal';
 import { useProjects } from './useCatalog';
 import {
@@ -339,11 +338,10 @@ export function SprintHealthBoard() {
           {/* No sprint header card: the Sprint picker already names the
               selected project · sprint, and the sections below each say what
               they count. */}
-          {d.workBreakdown ? (
-            <SprintWorkPanel data={d.workBreakdown} />
-          ) : d.workBreakdown === null ? (
-            <PanelUnavailable label="Sprint work" />
-          ) : null}
+          {/* Sprint work (SprintWorkPanel, d.workBreakdown) is hidden from
+              this board for now (2026-11-12): it pushed the revamped panels
+              ~4,000px down. The component and the API field are kept so it
+              can be brought back — DASHBOARDS.md §4.1.4. */}
 
           {/* commitActivity/productivity/qualityCheck can each independently
               come back null — the backend returns null from those service
