@@ -61,18 +61,21 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
               </>
             )}
           </div>
-          <p className="mt-1.5 text-xs text-fg-subtle">
+          {/* The percentage is read against items that reached done in the
+              window (the only population a rollback can come from) — said in
+              the hover title rather than on the line, as in the mockup. */}
+          <p
+            className="mt-1.5 text-xs text-fg-subtle"
+            title="Released = reached done inside this sprint's window. The percentage is of the items that reached done."
+          >
             {data.storiesReleased} released · {data.rolledBack} rolled back /
             reopened
-            {rolledBackPct !== null && ` (${rolledBackPct}% of items that reached done)`}
-          </p>
-          <p className="mt-3 text-xs text-fg-faint">
-            Released means reached done inside this sprint&apos;s window.
+            {rolledBackPct !== null && ` (${rolledBackPct}%)`}
           </p>
         </Panel>
 
         <Panel>
-          <h4 className="mb-3 text-xs font-semibold text-fg-muted">
+          <h4 className="mb-3 text-[12.5px] font-semibold text-fg-muted">
             Bugs logged, by priority
           </h4>
           {data.bugsByPriority.length === 0 ? (
@@ -111,10 +114,11 @@ export function QualityCheckPanel({ data }: { data: QualityCheckView }) {
             )}
           >
             {data.bugsPerStoryReleased === null
-              ? `No stories released yet — bug ratio not computable (${data.bugsLogged} bugs logged).`
-              : `${data.bugsPerStoryReleased} bugs logged per story released — ${data.bugsLogged} in total.`}
-            {severeBugs > 0 &&
-              ` ${severeBugs} highest-priority ${severeBugs === 1 ? 'bug needs' : 'bugs need'} triage before the next release.`}
+              ? `No stories released yet — bug ratio not computable (${data.bugsLogged} bugs logged)`
+              : `${data.bugsPerStoryReleased} bugs logged per story released`}
+            {severeBugs > 0
+              ? ` — ${severeBugs} Highest-priority ${severeBugs === 1 ? 'bug needs' : 'bugs need'} triage before next release.`
+              : '.'}
           </p>
         </Panel>
       </div>

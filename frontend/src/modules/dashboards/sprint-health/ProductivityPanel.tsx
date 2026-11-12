@@ -2,7 +2,7 @@ import { Badge, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import type { ProductivityGrade, ProductivityView } from '../useInsights';
 import { DevName, SectionTitle, Panel } from './parts';
-import { MOCKUP_HEAD } from './presentation';
+import { MOCKUP_HEAD, MOCKUP_PILL_PLAIN } from './presentation';
 
 const GRADE_TONE: Record<ProductivityGrade, 'good' | 'warn' | 'bad'> = {
   high: 'good',
@@ -36,13 +36,13 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
           signal, not an attributed leaderboard. */}
       {data.highest !== null && data.lowest !== null && (
         <>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3.5 sm:grid-cols-2">
             <LocCard tone="high" additions={data.highest.additions} />
             <LocCard tone="low" additions={data.lowest.additions} />
           </div>
-          <p className="mb-3 mt-2 text-xs text-fg-faint">
-            Names withheld above — LOC is volume, not a score. The table below
-            is the full, attributed breakdown; its grade never uses LOC.
+          <p className="mb-3.5 mt-2.5 text-xs text-fg-faint">
+            Names withheld above — see the table below for the full, attributed
+            breakdown.
           </p>
         </>
       )}
@@ -80,7 +80,9 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
                   <Num>{row.prsRaised}</Num>
                   <Num>{row.prsReviewed}</Num>
                   <td className="py-2.5">
-                    <Badge tone={GRADE_TONE[row.grade]}>{row.grade}</Badge>
+                    <Badge tone={GRADE_TONE[row.grade]} className={MOCKUP_PILL_PLAIN}>
+                      {row.grade}
+                    </Badge>
                   </td>
                 </TableBodyRow>
               ))}
@@ -95,12 +97,10 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
           </table>
         </div>
 
+        {/* Not in the mockup, and not optional: the 2026-09-07 decision that
+            allows this graded table requires the rule it is computed from to
+            be displayed with it (CLAUDE.md "Metrics are ethics-first"). */}
         <p className="mt-3 text-xs text-fg-faint">{data.gradeRule}</p>
-        <p className="mt-1 text-xs text-fg-faint">
-          Commits, LOC, PRs and reviews count only work linked to this
-          sprint&apos;s tickets — a commit that names no sprint ticket is not
-          on this table.
-        </p>
       </Panel>
     </section>
   );
@@ -118,7 +118,7 @@ function LocCard({ tone, additions }: { tone: 'high' | 'low'; additions: number 
   return (
     <div
       className={cn(
-        'flex items-center gap-3 rounded-lg border p-4',
+        'flex items-center gap-3 rounded-xl border px-4 py-3.5',
         high ? 'border-success-border bg-success-bg' : 'border-danger-border bg-danger-bg',
       )}
     >
@@ -138,13 +138,13 @@ function LocCard({ tone, additions }: { tone: 'high' | 'low'; additions: number 
             high ? 'text-success-fg' : 'text-danger-fg',
           )}
         >
-          {high ? 'Highest' : 'Lowest'} LOC contributor
+          {high ? 'Highest' : 'Lowest'} contributor
         </div>
-        <div className="text-lg font-bold tabular-nums text-fg">
+        <div className="mt-0.5 text-[17px] font-bold tabular-nums text-fg">
           {additions.toLocaleString()} LOC added
         </div>
-        <div className="text-xs text-fg-subtle">
-          lines added this sprint, in work linked to its tickets
+        <div className="mt-0.5 text-[12.5px] text-fg-subtle">
+          by lines of code contributed this sprint
         </div>
       </div>
     </div>

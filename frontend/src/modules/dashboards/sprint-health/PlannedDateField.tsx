@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { Pencil } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Input } from '../../../components/ui';
 import { api } from '../../../lib/api/client';
@@ -8,8 +9,11 @@ function toDateInputValue(iso: string | null): string {
   return iso ? iso.slice(0, 10) : '';
 }
 
+/** "Aug 20", as the mockup prints it beside "Actual release". */
 function formatDate(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleDateString() : '—';
+  return iso
+    ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : '—';
 }
 
 /**
@@ -47,6 +51,8 @@ export function PlannedDateField({
   // just refetched (e.g. after another admin's edit lands).
   const [trackedPlanned, setTrackedPlanned] = useState(plannedReleaseAt);
   const [draft, setDraft] = useState(toDateInputValue(plannedReleaseAt));
+  const [editing, setEditing] = useState(false);
+  const cancelled = useRef(false);
   if (plannedReleaseAt !== trackedPlanned) {
     setTrackedPlanned(plannedReleaseAt);
     setDraft(toDateInputValue(plannedReleaseAt));
@@ -102,26 +108,61 @@ export function PlannedDateField({
     }
   };
 
-  if (!isAdmin) {
-    return <span className="tabular-nums text-fg">{formatDate(plannedReleaseAt)}</span>;
-  }
-
   const error = setPlan.error ?? clearPlan.error;
   const pending = setPlan.isPending || clearPlan.isPending;
+
+  // Read mode is the mockup's plain "Aug 20" for everyone. Admins get a small
+  // edit control beside it that opens the date input; nothing about how the
+  // date is saved changed.
+  if (!isAdmin || (!editing && !pending)) {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="tabular-nums text-fg">{formatDate(plannedReleaseAt)}</span>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            aria-label={`Edit planned release date for ${name}`}
+            title="Edit planned release date"
+            className="rounded p-0.5 text-fg-faint transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40"
+          >
+            <Pencil aria-hidden className="h-3 w-3" />
+          </button>
+        )}
+        {error && (
+          <span className="text-xs font-normal text-danger-fg">
+            {error instanceof Error ? error.message : 'Could not save the planned date.'}
+          </span>
+        )}
+      </span>
+    );
+  }
 
   return (
     <div className="space-y-1">
       <Input
         type="date"
         className="w-40"
+        autoFocus
         value={draft}
         disabled={pending}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => commitDraft(draft)}
+        onBlur={() => {
+          // Chrome can fire blur as the input unmounts after Escape; the
+          // ref keeps that from committing the abandoned draft.
+          if (!cancelled.current) commitDraft(draft);
+          cancelled.current = false;
+          setEditing(false);
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             e.preventDefault();
             commitDraft(draft);
+            setEditing(false);
+          } else if (e.key === 'Escape') {
+            cancelled.current = true;
+            revertDraft();
+            setEditing(false);
           }
         }}
       />

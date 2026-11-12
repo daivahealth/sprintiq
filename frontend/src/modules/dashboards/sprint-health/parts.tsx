@@ -93,7 +93,7 @@ export function DevName({ name }: { name: string }) {
     <span className="flex items-center gap-2.5 font-semibold text-fg-secondary">
       <span
         aria-hidden
-        className="flex h-6 w-6 flex-none items-center justify-center rounded-full bg-brand/15 text-[10px] font-bold text-brand"
+        className="flex h-6 w-6 flex-none items-center justify-center rounded-full bg-gradient-to-br from-chart-3 to-chart-6 text-[10.5px] font-bold text-surface"
       >
         {initials(name)}
       </span>

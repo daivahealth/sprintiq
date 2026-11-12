@@ -92,3 +92,13 @@ export function formatDateRange(fromKey: string, toKey: string): string {
  */
 export const MOCKUP_HEAD =
   'border-b border-border-subtle text-[11.5px] font-semibold normal-case tracking-normal text-fg-faint';
+
+/**
+ * Badge shape as the mockup draws its pills: fully rounded and a little
+ * larger than the app's square 9px tag. Passed to `Badge` as `className`.
+ * `MOCKUP_PILL` keeps the uppercase (release pill, "latest");
+ * `MOCKUP_PILL_PLAIN` is the mockup's lowercase/sentence-case pill
+ * (productivity grade, story status).
+ */
+export const MOCKUP_PILL = 'rounded-full px-2.5 text-[10.5px] tracking-[0.02em]';
+export const MOCKUP_PILL_PLAIN = 'rounded-full px-2 text-[10.5px] normal-case tracking-normal';

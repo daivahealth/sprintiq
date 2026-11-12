@@ -1,4 +1,5 @@
 import type { CommitActivityView, SprintCommitLinkage } from '../useInsights';
+import { Tip } from './metal';
 import { SectionTitle, Tile as Stat } from './parts';
 
 /**
@@ -15,11 +16,8 @@ import { SectionTitle, Tile as Stat } from './parts';
 export function CommitActivityTiles({ data }: { data: CommitActivityView }) {
   return (
     <section>
-      <SectionTitle
-        title="Code commit activity"
-        echo="work linked to this sprint's tickets"
-      />
-      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <SectionTitle title="Code commit activity" echo="project level" />
+      <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-5">
         <Stat
           label="Developers who committed"
           value={data.committers}
@@ -62,22 +60,35 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
  * Git has no sprint field, so the tiles count only commits that name one of
  * the sprint's tickets — and say how much of the window that leaves out, so a
  * low count reads as "unlinked work" rather than "no work".
+ *
+ * Kept to one quiet line (the mockup has none; CLAUDE.md requires linkage
+ * coverage to be surfaced): the coverage figure stays visible, the breakdown
+ * of what was left out sits in the tooltip, and the truncation warning — the
+ * one fact that changes how to read the tiles — is never hidden.
  */
 function LinkageNote({ linkage }: { linkage: SprintCommitLinkage }) {
+  const detail = [
+    linkage.linkedViaBranchOnly > 0
+      ? `${linkage.linkedViaBranchOnly} linked through the branch name only.`
+      : null,
+    'PRs and reviews are the ones linked to these tickets.',
+    `In the same dates, ${plural(linkage.otherTicketCommits, 'commit')} name other tickets in this project, and ${linkage.noTicketCommits} across every repository name no ticket Jira knows, so they can't be placed in any project.`,
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
     <p className="mt-2 text-xs text-fg-faint">
-      Counts commits whose message or branch names one of this sprint&apos;s{' '}
-      {plural(linkage.sprintTickets, 'ticket')}: {linkage.linkedCommits} linked
-      {linkage.linkedViaBranchOnly > 0 &&
-        ` (${linkage.linkedViaBranchOnly} through the branch name only)`}
-      {linkage.reposTouched.length > 0 &&
-        ` across ${plural(linkage.reposTouched.length, 'repo')}`}
-      . PRs and reviews are the ones linked to these tickets. In the same dates,{' '}
-      {plural(linkage.otherTicketCommits, 'commit')} name other tickets in this
-      project, and {linkage.noTicketCommits} across every repository name no
-      ticket Jira knows, so they can&apos;t be placed in any project.
+      <Tip content={detail}>
+        <span tabIndex={0} className="cursor-help underline decoration-dotted underline-offset-2">
+          Linked to this sprint&apos;s {plural(linkage.sprintTickets, 'ticket')}:{' '}
+          {plural(linkage.linkedCommits, 'commit')}
+          {linkage.reposTouched.length > 0 &&
+            ` across ${plural(linkage.reposTouched.length, 'repo')}`}
+        </span>
+      </Tip>
       {linkage.truncated &&
-        ' The commit read hit its row limit, so these counts are a floor.'}
+        ' — the commit read hit its row limit, so these counts are a floor'}
+      .
     </p>
   );
 }
