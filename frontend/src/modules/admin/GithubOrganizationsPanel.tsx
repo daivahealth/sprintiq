@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api/client';
 import type { GithubOrganization } from '../../lib/api/types';
 import { Badge, Button, Field, Input } from '../../components/ui';
@@ -12,18 +12,7 @@ import {
   validateOrgLogin,
   type OrgDraft,
 } from './github-organizations-logic';
-
-const ORGS_KEY = ['admin', 'configurations', 'github-organizations'];
-
-export function useGithubOrganizations() {
-  return useQuery({
-    queryKey: ORGS_KEY,
-    queryFn: () =>
-      api.get<{ organizations: GithubOrganization[] }>(
-        '/api/admin/configurations/github/organizations',
-      ),
-  });
-}
+import { ORGS_KEY, useGithubOrganizations } from './use-github-organizations';
 
 const DIGEST_LABEL: Record<GithubOrganization['digest'], string> = {
   included: 'In the daily digest',
@@ -100,9 +89,10 @@ function OrgEditor({
 
   const save = useMutation({
     mutationFn: () => api.put('/api/admin/configurations', orgPayload(draft)),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ORGS_KEY });
+    onSuccess: async () => {
+      setError(null);
       void queryClient.invalidateQueries({ queryKey: ['admin', 'configurations'] });
+      await queryClient.invalidateQueries({ queryKey: ORGS_KEY });
       onDone?.();
     },
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Save failed.'),

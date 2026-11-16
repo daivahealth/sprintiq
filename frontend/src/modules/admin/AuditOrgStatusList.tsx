@@ -1,5 +1,5 @@
 import { Badge } from '../../components/ui';
-import { useGithubOrganizations } from './GithubOrganizationsPanel';
+import { useGithubOrganizations } from './use-github-organizations';
 
 /**
  * One compact audit-route row per additional GitHub organisation (ADR-0013).
