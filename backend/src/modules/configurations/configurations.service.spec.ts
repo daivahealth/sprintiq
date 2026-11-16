@@ -9,7 +9,7 @@ describe('ConfigurationsService', () => {
   function build(existing: unknown = null) {
     const prisma = {
       tenantConfiguration: {
-        findMany: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
         findUnique: jest.fn().mockResolvedValue(existing),
         upsert: jest.fn(),
       },
@@ -695,6 +695,23 @@ describe('ConfigurationsService', () => {
           values: { organization: 'NHWebsite', defaultRepo: 'site' },
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects saving the default row with an organisation an additional row already holds', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([
+        { key: 'nhwebsite', values: { organization: 'NHWebsite' } },
+      ]);
+      await expect(
+        svc.upsertTenantConfiguration('t1', {
+          namespace: 'github',
+          key: 'default',
+          values: { organization: 'nhwebsite', defaultRepo: 'site' },
+          secretRefs: { tokenRef: 'GITHUB_TOKEN' },
+          status: 'active',
+        }),
+      ).rejects.toThrow('is already configured');
+      expect(prisma.tenantConfiguration.upsert).not.toHaveBeenCalled();
     });
 
     it('rejects an organisation already configured under another key', async () => {

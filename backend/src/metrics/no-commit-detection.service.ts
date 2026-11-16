@@ -513,6 +513,7 @@ export class NoCommitDetectionService {
           rosterCount: roster.length,
           evaluation: empty,
           withhold: { outcome: 'withheld_stale_data', detail: auditGap },
+          githubOrganizations,
           lastSyncAt: freshness.lastSyncAt,
           // No commit read has run yet — nothing to count.
           unattributedCommits: 0,
@@ -540,6 +541,7 @@ export class NoCommitDetectionService {
           outcome: 'withheld_truncated_read',
           detail: `The commit read for ${reportedDay} hit its row ceiling, so the active set is incomplete. Names withheld.`,
         },
+        githubOrganizations,
         lastSyncAt: freshness.lastSyncAt,
         // The read that would answer this hit its ceiling — a count off a
         // truncated read would itself be an unreliable figure to disclose.

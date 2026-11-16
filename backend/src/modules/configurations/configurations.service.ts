@@ -358,21 +358,25 @@ export class ConfigurationsService {
         'Organisation cannot be changed — add a new organisation instead.',
       );
     }
-    if (key === DEFAULT_GITHUB_CONFIG_KEY) return;
-    if (!GITHUB_LOGIN_PATTERN.test(organization)) {
-      throw new BadRequestException(
-        '"Organization" must be a GitHub login (letters, digits, hyphens).',
-      );
-    }
-    if (key !== organization.toLowerCase()) {
-      throw new BadRequestException(
-        `An additional organisation is saved under its lowercased login ("${organization.toLowerCase()}").`,
-      );
-    }
-    if (values.defaultRepo !== undefined && values.defaultRepo !== '') {
-      throw new BadRequestException(
-        'Default repository applies only to the first organisation — use Sync org for this one.',
-      );
+    const isDefault = key === DEFAULT_GITHUB_CONFIG_KEY;
+    if (!isDefault) {
+      if (!GITHUB_LOGIN_PATTERN.test(organization)) {
+        throw new BadRequestException(
+          '"Organization" must be a GitHub login (letters, digits, hyphens).',
+        );
+      }
+      if (key !== organization.toLowerCase()) {
+        throw new BadRequestException(
+          `An additional organisation is saved under its lowercased login ("${organization.toLowerCase()}").`,
+        );
+      }
+      if (values.defaultRepo !== undefined && values.defaultRepo !== '') {
+        throw new BadRequestException(
+          'Default repository applies only to the first organisation — use Sync org for this one.',
+        );
+      }
+    } else if (!organization) {
+      return;
     }
     const rows = await this.prisma.tenantConfiguration.findMany({
       where: { tenantId, namespace: 'github' },

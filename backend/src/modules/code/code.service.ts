@@ -901,9 +901,10 @@ export class CodeService implements OnModuleInit {
   }
 
   /**
-   * Whether any Copilot report was ever collected for the tenant, the newest
-   * report day held, and how many report days fall inside the window — the
-   * freshness a board must show beside the column.
+   * Whether any Copilot report was ever collected for the tenant, the
+   * freshness (the oldest of each organisation's newest report day, so the
+   * organisation furthest behind sets it), and how many distinct report days
+   * fall inside the window — the freshness a board must show beside the column.
    */
   async copilotCoverage(
     tenantId: string,
