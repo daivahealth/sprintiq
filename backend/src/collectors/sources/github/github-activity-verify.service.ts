@@ -4,6 +4,7 @@ import { forEachBounded } from '../../../common/concurrency';
 import { SecretsService } from '../../../common/secrets/secrets.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { GithubGraphqlClient, GraphqlResult } from './github-graphql.client';
+import { loadGithubOrgs } from './github-orgs';
 import { GithubRateLimit } from './github.client';
 import { evaluateBudget, rateReserve } from './github-rate-budget';
 
@@ -368,10 +369,24 @@ export class GithubActivityVerifyService {
     );
     // Oldest across organisations (ADR-0013): a PR is only "should have been
     // seen" once every organisation's audit log has been read past it.
-    const checkpoints = await this.prisma.githubAuditCheckpoint.findMany({
-      where: { tenantId: input.tenantId },
-      select: { checkpointAt: true },
-    });
+    // Only active, seeded organisations count: a just-added organisation's
+    // empty row, or a disabled one's frozen row, must not drag the value.
+    const [checkpointRows, activeOrgs] = await Promise.all([
+      this.prisma.githubAuditCheckpoint.findMany({
+        where: { tenantId: input.tenantId },
+        select: { organization: true, checkpointAt: true, seededAt: true },
+      }),
+      loadGithubOrgs(this.prisma, {
+        tenantId: input.tenantId,
+        activeOnly: true,
+      }),
+    ]);
+    const activeLogins = new Set(
+      activeOrgs.map((o) => o.organization.toLowerCase()),
+    );
+    const checkpoints = checkpointRows.filter(
+      (c) => c.seededAt && activeLogins.has(c.organization.toLowerCase()),
+    );
     const auditCheckpoint =
       checkpoints.length === 0
         ? null

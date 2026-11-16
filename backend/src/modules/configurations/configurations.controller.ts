@@ -102,6 +102,24 @@ class UpsertConfigurationDto {
   expectedUpdatedAt?: string;
 }
 
+/**
+ * Org-scoped routes take an optional `organization` (ADR-0013): omitted means
+ * the default row's organisation; one that is not a configured, active
+ * organisation is a 400 rather than a silent empty result.
+ */
+export function assertKnownActiveOrgIn(
+  orgs: GithubOrg[],
+  organization?: string,
+): void {
+  if (!organization) return;
+  const org = pickGithubOrg(orgs, organization);
+  if (!org || !org.active) {
+    throw new BadRequestException(
+      `GitHub organisation "${organization}" is not configured and active.`,
+    );
+  }
+}
+
 class RunAuditSyncDto {
   @IsOptional()
   @IsString()
@@ -552,6 +570,12 @@ export class ConfigurationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: RunAuditSyncDto,
   ) {
+    if (dto?.organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        dto.organization,
+      );
+    }
     const summary = await this.auditSync.runTenant(
       user.tenantId,
       undefined,
@@ -585,6 +609,12 @@ export class ConfigurationsController {
     @CurrentUser() user: AuthUser,
     @Query('organization') organization?: string,
   ) {
+    if (organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        organization,
+      );
+    }
     return this.auditSync.status(user.tenantId, undefined, undefined, organization);
   }
 
@@ -805,6 +835,12 @@ export class ConfigurationsController {
     if (!readGithubCopilotConfig().syncEnabled) {
       throw new BadRequestException(
         'Copilot usage sync is off for this deployment — set GITHUB_COPILOT_USAGE_SYNC=on first.',
+      );
+    }
+    if (dto?.organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        dto.organization,
       );
     }
     await this.audit?.record({
