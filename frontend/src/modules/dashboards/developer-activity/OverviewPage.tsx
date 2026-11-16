@@ -127,17 +127,24 @@ export function OverviewPage() {
         range={range}
       />
 
-      <CommitTimeline
-        days={d.days}
-        range={range}
-        emptyState={
-          <EmptyWindowNote
-            range={range}
-            measuredDays={d.windowDays}
-            onChange={setRange}
-          />
-        }
-      />
+      {/* On the 12-months window, 365 daily points read as noise: the windowed
+          chart draws by month instead, the same chart as the trend below
+          (product request 2026-11-12). */}
+      {range.kind === 'preset' && range.window === 'year' ? (
+        <MonthlyTrend windowed />
+      ) : (
+        <CommitTimeline
+          days={d.days}
+          range={range}
+          emptyState={
+            <EmptyWindowNote
+              range={range}
+              measuredDays={d.windowDays}
+              onChange={setRange}
+            />
+          }
+        />
+      )}
 
       <MonthlyTrend />
 
@@ -472,8 +479,12 @@ function CopilotCell({ dev }: { dev: ActiveDeveloper }) {
  * Team totals only, with no per-developer breakdown: a monthly LOC line per
  * person is the vanity ranking CLAUDE.md rules out, and LOC is never a
  * productivity score.
+ *
+ * `windowed` is the same chart standing in for the daily timeline when the
+ * "12 months" window is selected (2026-11-12): only the subtitle changes, since
+ * "not the window selected above" would be false there.
  */
-function MonthlyTrend() {
+function MonthlyTrend({ windowed = false }: { windowed?: boolean }) {
   // Changed LOC leads (team totals only — see above); commits stay one click away.
   const [metric, setMetric] = useState<TrendMetric>('loc');
   const query = useMonthlyTrend();
@@ -490,8 +501,9 @@ function MonthlyTrend() {
         <div>
           <h3 className="font-semibold text-fg">Last 12 months</h3>
           <p className="text-xs text-fg-subtle">
-            One point per calendar month (IST) — a fixed year, not the window
-            selected above
+            {windowed
+              ? 'One point per calendar month (IST) — the 12-months window, drawn by month'
+              : 'One point per calendar month (IST) — a fixed year, not the window selected above'}
           </p>
         </div>
         <SegmentedControl
