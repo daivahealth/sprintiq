@@ -157,6 +157,38 @@ describe('NotificationsService.runNoCommitDigest', () => {
     expect(card).toContain('4 commits');
   });
 
+  it('names every included organisation in the posted card', async () => {
+    const { service, teams } = build({
+      detect: {
+        ...detection,
+        githubOrganizations: ['athmahealth', 'NHWebsite'],
+      },
+    });
+    await service.runNoCommitDigest('tenant_a');
+    const card = JSON.stringify(teams.postAdaptiveCard.mock.calls[0][2]);
+    expect(card).toContain(
+      'GitHub **athmahealth** and **NHWebsite** organisations',
+    );
+  });
+
+  it('falls back to every active organisation row when the detection names none', async () => {
+    const { service, teams, prisma } = build();
+    prisma.tenantConfiguration.findMany.mockResolvedValue([
+      {
+        id: 'c1',
+        tenantId: 'tenant_a',
+        key: 'default',
+        status: 'active',
+        values: { organization: 'athmahealth' },
+        secretRefs: {},
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      },
+    ]);
+    await service.runNoCommitDigest('tenant_a');
+    const card = JSON.stringify(teams.postAdaptiveCard.mock.calls[0][2]);
+    expect(card).toContain('GitHub **athmahealth** organisation');
+  });
+
   it('posts an all-clear when nobody is flagged', async () => {
     // Silence cannot be distinguished from a dead cron.
     const { service, teams } = build({

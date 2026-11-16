@@ -4,6 +4,8 @@ export interface PreviousDayView {
   outcome: 'named' | 'all_clear' | 'withheld';
   withheld: { outcome: string; detail: string } | null;
   ruleText: string;
+  /** Organisations the list covers (ADR-0013); absent on an older API. */
+  githubOrganizations?: string[];
   rosterCount: number;
   flagged: { developer: string; displayName: string }[];
   unresolved: { developer: string; addedAs: string }[];
@@ -70,4 +72,12 @@ export function developerDayHref(developer: string, day: string): string {
     to: day,
   });
   return `../developer?${params.toString()}`;
+}
+
+/** The scope sentence shown beside the rule when the list spans more than one organisation. */
+export function githubScopeLine(
+  orgs: readonly string[] | undefined,
+): string | null {
+  if (!orgs || orgs.length < 2) return null;
+  return `Across GitHub organisations: ${orgs.join(', ')}.`;
 }

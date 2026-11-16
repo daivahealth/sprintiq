@@ -7,6 +7,7 @@ import { timeAgo } from '../../../lib/utils';
 import {
   developerDayHref,
   formatReportedDay,
+  githubScopeLine,
   previousDayHeadline,
   withheldExplanation,
   type PreviousDayView,
@@ -116,7 +117,11 @@ export function PreviousDayCard() {
           )}
 
           <ProvenanceNote>
-            {v.ruleText} No tracked signal is not the same as no work: pairing,
+            {v.ruleText}
+            {githubScopeLine(v.githubOrganizations)
+              ? ` ${githubScopeLine(v.githubOrganizations)}`
+              : ''}{' '}
+            No tracked signal is not the same as no work: pairing,
             design, support and review outside GitHub leave nothing here. A
             prompt to check in, never a verdict.
             {v.lastDigestRun && (

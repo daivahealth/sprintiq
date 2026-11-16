@@ -122,7 +122,7 @@ describe('buildDigestCard', () => {
   it('names the GitHub organization, in bold, in the line above the names', () => {
     const card = buildDigestCard({
       ...input,
-      githubOrganization: 'athmahealth',
+      githubOrganizations: ['athmahealth'],
     });
     // Card markdown bolds with **…**; the HTML `text` field with <b>…</b>.
     expect(textOf(card)).toContain(
@@ -137,13 +137,42 @@ describe('buildDigestCard', () => {
     const card = buildDigestCard({
       ...input,
       flagged: [],
-      githubOrganization: 'athmahealth',
+      githubOrganizations: ['athmahealth'],
     });
     expect(textOf(card)).toContain(
       'All 66 tracked developers had recorded activity in GitHub **athmahealth** organisation on 2026-09-17.',
     );
     expect(card.text).toContain(
       'All 66 tracked developers had recorded activity in GitHub <b>athmahealth</b> organisation on 2026-09-17.',
+    );
+  });
+
+  it('names every organisation when more than one is covered', () => {
+    const card = buildDigestCard({
+      reportedDay: '2026-11-16',
+      flagged: [{ developer: 'a', displayName: 'Ann' }],
+      evaluatedCount: 70,
+      unattributedCommits: 0,
+      githubOrganizations: ['athmahealth', 'NHWebsite'],
+    });
+    expect(JSON.stringify(card)).toContain(
+      'Below developers had no recorded activity in GitHub **athmahealth** and **NHWebsite** organisations:',
+    );
+    expect(card.text).toContain(
+      'GitHub <b>athmahealth</b> and <b>NHWebsite</b> organisations',
+    );
+  });
+
+  it('lists three organisations with commas and "and"', () => {
+    const card = buildDigestCard({
+      reportedDay: '2026-11-16',
+      flagged: [],
+      evaluatedCount: 70,
+      unattributedCommits: 0,
+      githubOrganizations: ['a1', 'b2', 'c3'],
+    });
+    expect(card.text).toContain(
+      'All 70 tracked developers had recorded activity in GitHub <b>a1</b>, <b>b2</b> and <b>c3</b> organisations on 2026-11-16.',
     );
   });
 

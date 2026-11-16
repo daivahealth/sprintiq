@@ -31,14 +31,13 @@ export interface DigestCardInput {
    */
   unattributedCommits: number;
   /**
-   * The tenant's GitHub organization login (e.g. `athmahealth`), named in the
-   * lead-in and all-clear lines so readers know which source "recorded
-   * activity" refers to.
-   * Callers pass it only when it is a valid GitHub login (letters, digits,
-   * hyphens), so it needs no markdown escaping; omitted, the line says
-   * "in GitHub" alone.
+   * The GitHub organisation logins the digest covers (e.g. `['athmahealth']`,
+   * ADR-0013), named in the lead-in and all-clear lines so readers know which
+   * source "recorded activity" refers to. Callers pass only valid GitHub
+   * logins (letters, digits, hyphens), so they need no markdown escaping;
+   * empty or omitted, the line says "in GitHub" alone.
    */
-  githubOrganization?: string;
+  githubOrganizations?: string[];
 }
 
 /**
@@ -91,7 +90,7 @@ function block(text: string, extra: Record<string, unknown> = {}) {
  * `buildDigestCard`'s Adaptive Card body and `buildDigestText`'s HTML string.
  *
  * None of these three interpolate untrusted data (only `reportedDay`, an IST
- * date key, integers, and `githubOrganization`, which callers restrict to a
+ * date key, integers, and `githubOrganizations`, which callers restrict to a
  * valid GitHub login) — factored out purely so the card and the text
  * variant cannot drift apart by one of them being edited and not the other.
  * Their fixed wording contains no markdown or HTML-special characters, so
@@ -115,9 +114,10 @@ const cardBold: Emphasise = (value) => `**${escapeCardText(value)}**`;
 const htmlBold: Emphasise = (value) => `<b>${escapeHtml(value)}</b>`;
 
 function sourceText(input: DigestCardInput, bold: Emphasise): string {
-  return input.githubOrganization
-    ? `GitHub ${bold(input.githubOrganization)} organisation`
-    : 'GitHub';
+  const orgs = (input.githubOrganizations ?? []).map(bold);
+  if (orgs.length === 0) return 'GitHub';
+  if (orgs.length === 1) return `GitHub ${orgs[0]} organisation`;
+  return `GitHub ${orgs.slice(0, -1).join(', ')} and ${orgs[orgs.length - 1]} organisations`;
 }
 
 function allClearText(input: DigestCardInput, bold: Emphasise): string {
