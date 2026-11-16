@@ -35,6 +35,16 @@ single combined digest across all included organisations (§6).
 - Changing the Organization field today silently re-points the audit route,
   org sync, Copilot, the digest wording and the default-repo connection. There
   is no frontend for adding a repo connection.
+- **Existing hazard:** `ConfigurationsService.upsertTenantConfiguration` runs
+  the default-repo bridge for *every* `github` key. Saving a second GitHub row
+  without a default repo would disable the bridged athmahealth connection; with
+  one it would re-point it.
+- Copilot storage (`CopilotUsageDay`, `CopilotSeat`, `CopilotReportDay`) is
+  already keyed by `org`, seat snapshots are replaced per org, and
+  `copilotLookup` already takes the union of days / sum of lines / any seat
+  across rows. Only `copilotCoverage` (freshness) reads tenant-wide newest.
+- `GithubActivityVerifyService` and `GithubAuditReportService` read the audit
+  checkpoint by `tenantId` alone.
 
 ## 3. Schema and migration
 
@@ -81,9 +91,12 @@ modified.
 - Scheduler iterates active GitHub rows and calls
   `syncOrgRepos(tenantId, org, effectiveTokenRef, token, backfillDays)` per row.
 - Only repos GitHub lists for that org are created/updated, with that row's
-  token ref.
-- Guard: an existing connection whose `orgOfRepo` differs from the org being
-  synced is skipped and logged, never re-pointed.
+  token ref (`syncOrgRepos` already looks connections up by the listed
+  `full_name`, so it cannot touch another org's connections).
+
+**Default-repo bridge.** Runs only for the `github/default` row (and Jira, as
+today). Non-default GitHub rows never create, update or disable the bridged
+connection, and their view carries `connection: null`.
 
 **Audit-log route and full sweep (`GithubAuditSyncService`).**
 - `loadSettings(tenantId)` → `loadSettings(tenantId, row)`.
@@ -93,17 +106,21 @@ modified.
   core budget, pending/failed range execution and auto-registration are all
   scoped to `(tenantId, org)`. Auto-registration uses the row's effective
   collector token ref.
-- Per-org passes never run concurrently within a tenant, so a shared token's
-  rate reading is never interleaved between orgs.
-- Status/coverage/report readers (`status`, `coverageForDay`,
-  `GithubAuditReportService`) take an org and filter runs, checkpoint and
-  ranges by it.
+- The run claim moves to the per-org checkpoint row. The scheduler runs a
+  tenant's orgs one after another; a manual run can overlap another org's
+  pass, which is safe because each pass keeps its own `RunContext` budget,
+  refreshed only from its own token's responses.
+- `status` and `coverageForDay` filter runs, checkpoint and ranges by org.
+  `GithubAuditReportService` (day report), `listRanges`, `retryRange`,
+  `dismissRange` and `backfillBranchLinks` stay tenant-wide — every range row
+  already names its repo. The report and `GithubActivityVerifyService` read the
+  **oldest** checkpoint across the tenant's orgs (conservative).
+- `rereadBranchHistory` keeps its tenant-wide repo list; a repo whose org has
+  not been seeded is returned in `unknown`.
 
 **Copilot usage sync.** Iterates rows with an effective
 `copilotMetricsTokenRef`; storage is already per org. A row without one is
 skipped and recorded for that row only.
-
-**Default-repo bridge.** `default` row only, as today.
 
 **Env tunables stay global** (`GITHUB_ORG_SYNC_HOURS`, `GITHUB_AUDIT_SYNC_MODE`,
 full-sweep cadence, `GITHUB_BACKFILL_RATE_RESERVE`, `GITHUB_COPILOT_USAGE_SYNC`).
@@ -120,25 +137,33 @@ audit-logged.
 - `PUT /` (existing upsert) accepts `github/<org>` keys with the §3 validation:
   key = lowercased valid login, login unique, `organization` immutable
   (400: "Organisation cannot be changed — add a new organisation instead").
-- Org-scoped routes accept an optional `organization`; when omitted they act on
-  the `default` row's org, so existing callers are unchanged:
-  `POST github/sync-org`, `POST github/audit-sync/run`,
-  `GET github/audit-sync/status`, `GET github/audit-sync/ranges`,
-  `POST github/copilot-sync`, `GET github/copilot-sync/status`.
-- Tenant-wide routes stay unscoped: reconcile endpoints, `backfill-pr-commits`,
+- Org-scoped routes accept an optional `organization` (body for POST, query
+  for GET); when omitted they act on the `default` row's org, so existing
+  callers are unchanged: `POST github/sync-org`, `POST github/audit-sync/run`,
+  `GET github/audit-sync/status`, `POST github/copilot-sync`. An unknown or
+  disabled organization is a 400.
+- Tenant-wide routes stay unscoped: `GET github/audit-sync/ranges`, range
+  retry/dismiss, `github/audit-commit-report`, `GET github/copilot-sync/status`
+  (already lists every org), reconcile endpoints, `backfill-pr-commits`,
   `commit-collection-coverage`, `:source/rebackfill`.
-- New `GET github/organizations`: each row's org, status, effective token-ref
-  **names** (never values), and last org-sync / audit / Copilot result.
+- New `GET github/organizations`: each row's key, org, status, whether it is
+  the default, effective token-ref **names** (never values) with which are
+  inherited, its audit status, and its digest inclusion
+  (`included` | `collecting` | `disabled`).
 
 **UI (Admin → Configurations → GitHub).**
-- One card per org, `default` first. The existing form becomes the first card,
-  same fields and behaviour; Organization shown read-only.
-- "Add organisation" opens an empty card: login entered once then locked, no
-  Default repository field, ref placeholders show inherited values
-  ("blank = GITHUB_TOKEN from athmahealth"). Each card has its own Save,
-  Sync org, audit-sync and Copilot status.
-- Sync Status: audit-sync panel shows one row per org (last run, status, lag).
-  Per-connection table unchanged.
+- The existing form stays the `default` (athmahealth) form, same fields and
+  behaviour, except Organization becomes read-only once saved.
+- Below it, an "Additional organisations" panel lists every non-default row,
+  each with its own fields (Organization locked, token refs with inherited
+  placeholders such as "blank = GITHUB_TOKEN from athmahealth",
+  backfillDays, syncIntervalMinutes, Enabled), Save, Sync org, and its digest
+  inclusion. "Add organisation" adds an empty entry; the login is typed once.
+  No Default repository field.
+- Sync Status: the existing audit-route panel stays (default org status, all
+  ranges). Each additional org gets a compact status row below it (mode,
+  enabled, lag, last status/error, digest inclusion). With one org nothing new
+  is shown. Per-connection table unchanged.
 - Built from existing primitives and design tokens (DESIGN-SYSTEM.md); no raw
   palette classes.
 
@@ -154,25 +179,37 @@ audit-logged.
   all-clear line follows the same pattern.
   `resolveGithubOrganization` → `resolveGithubOrganizations` (list; each login
   validated against the existing pattern).
-- **Gate:** `coverageForDay(tenantId, org)` per included org (that org's
-  checkpoint, ranges by `orgOfRepo`, latest successful ingest-mode sweep
-  started after day end). The digest is sent only if every included org is
-  covered; otherwise withheld with a detail naming the uncovered org.
-- **Inclusion:** an org is *included* once its first seeding has completed and,
-  when the full sweep is enabled (`fullSweepMinutes > 0`, mirroring today's
-  gate), it has had one successful ingest-mode full sweep. Until then it is left out
-  of the gate and the card, and the run detail notes
-  "<org>: collecting, not yet included". A disabled row is not included.
+- **Gate:** `coverageForDay(tenantId, day)` keeps its signature and checks each
+  included org (that org's checkpoint, ranges whose repo is in the org, latest
+  successful ingest-mode sweep started after day end). The digest is sent only
+  if every included org is covered; otherwise withheld. Reasons are prefixed
+  with the org (`NHWebsite: …`) only when the tenant has more than one active
+  GitHub row, so single-org withheld text is byte-identical to today.
+- **Inclusion:** the `default` row is always included (as today — a fresh
+  tenant still withholds until it is seeded). A non-default active row is
+  *included* once its first seeding has completed and, when the full sweep is
+  enabled (`fullSweepMinutes > 0`, mirroring today's gate), it has had one
+  successful ingest-mode full sweep; a non-default row for which the audit
+  route does not apply (mode not `ingest`, or no effective audit-log ref) is
+  included immediately. Until included, an org is left out of the gate and the
+  card, and shows as `collecting` on the organisations list. A disabled row is
+  never included. Partial data from a collecting org can only add activity,
+  never name someone.
+- `coverageForDay` returns the included org logins; detection passes them to
+  the digest, which renders the lead-in from them.
+- Gate 1 (connection liveness, `getDataFreshness`) stays tenant-wide by design:
+  stale connections in any org withhold the digest.
 
-**Watchlist (admin only).** Uses the digest's detection, so it widens with it;
-the displayed rule text names the included orgs.
+**Watchlist (admin only).** Uses the digest's detection, so it widens with it.
+`DIGEST_RULE_TEXT` is unchanged; when more than one org is included, a scope
+line ("Across GitHub organisations: athmahealth, NHWebsite.") is shown with it.
 
-**Copilot column (ADR-0012).** Per developer, across orgs: active days = union
-of days, lines added = sum, seat = assigned if assigned in any org. Column
-visible once any org has a collected report. Rule text adds which orgs are
-covered; freshness shown is the oldest included org's last complete day. Still
-never ordered/filtered by, never feeds grade, digest, Watchlist or
-notifications.
+**Copilot column (ADR-0012).** Aggregation across orgs already exists (union of
+days, sum of lines, seat in any org). Changes: `copilotCoverage.coveredThrough`
+becomes the oldest of each org's newest report day, `reportDaysInWindow`
+counts distinct days, and coverage lists the orgs, shown beside the rule when
+more than one. Still never ordered/filtered by, never feeds grade, digest,
+Watchlist or notifications.
 
 ## 7. Documentation and decisions
 
@@ -201,6 +238,8 @@ notifications.
 - Second org's token refused / rate-limited / throwing: athmahealth's pass
   succeeds and its checkpoint advances; the other org's run is failed.
 - A non-athmahealth connection is never in athmahealth's sweep or refusal count.
+- Saving a non-default GitHub row never creates, updates or disables the
+  bridged default-repo connection.
 
 **New behaviour:** config validation (unique login, immutable organization,
 ref fallback, disable pauses only that row); org-scoped endpoints default to
