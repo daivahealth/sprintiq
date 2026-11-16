@@ -197,6 +197,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -233,6 +234,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -291,6 +293,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -318,6 +321,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -351,6 +355,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -387,6 +392,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -427,6 +433,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -461,6 +468,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -496,6 +504,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, secrets, audit } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -541,6 +550,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, secrets, audit } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -570,6 +580,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, secrets } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         updatedAt: new Date(),
       });
@@ -589,6 +600,7 @@ describe('ConfigurationsService', () => {
       const { svc, prisma, secrets } = build(null);
       (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue({
         id: 'cfg_gh',
+        key: 'default',
         namespace: 'github',
         secretRefs: { tokenRef: 'GITHUB_TOKEN' },
         updatedAt: new Date(),
@@ -608,6 +620,125 @@ describe('ConfigurationsService', () => {
         tokenRef: true,
         webhookSecretRef: false,
       });
+    });
+  });
+
+  describe('additional GitHub organisations (ADR-0013)', () => {
+    const saved = (o: Record<string, unknown>) => ({
+      id: 'cfg_nh',
+      tenantId: 't1',
+      namespace: 'github',
+      key: 'nhwebsite',
+      values: { organization: 'NHWebsite' },
+      secretRefs: {},
+      status: 'active',
+      updatedAt: new Date('2026-11-16T00:00:00Z'),
+      ...o,
+    });
+
+    it('saves a non-default org row with blank token refs (they are inherited)', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(saved({}));
+
+      await svc.upsertTenantConfiguration('t1', {
+        namespace: 'github',
+        key: 'nhwebsite',
+        values: { organization: 'NHWebsite' },
+        secretRefs: {},
+      });
+
+      expect(prisma.tenantConfiguration.upsert).toHaveBeenCalled();
+    });
+
+    it('never touches the bridged default-repo connection when saving a non-default row', async () => {
+      const { svc, prisma, connections } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(saved({}));
+      (connections.findByTenantSourceAndName as jest.Mock).mockResolvedValue({
+        id: 'bridge',
+        status: 'active',
+        config: { repoFullName: 'athmahealth/ehr' },
+      });
+
+      const view = await svc.upsertTenantConfiguration('t1', {
+        namespace: 'github',
+        key: 'nhwebsite',
+        values: { organization: 'NHWebsite' },
+      });
+
+      expect(connections.setStatus).not.toHaveBeenCalled();
+      expect(connections.updateConfig).not.toHaveBeenCalled();
+      expect(connections.create).not.toHaveBeenCalled();
+      expect(view.connection).toBeNull();
+    });
+
+    it('rejects a key that is not the lowercased login', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      await expect(
+        svc.upsertTenantConfiguration('t1', {
+          namespace: 'github',
+          key: 'website',
+          values: { organization: 'NHWebsite' },
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects a default repository on a non-default row', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      await expect(
+        svc.upsertTenantConfiguration('t1', {
+          namespace: 'github',
+          key: 'nhwebsite',
+          values: { organization: 'NHWebsite', defaultRepo: 'site' },
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects an organisation already configured under another key', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([
+        { key: 'default', values: { organization: 'nhwebsite' } },
+      ]);
+      await expect(
+        svc.upsertTenantConfiguration('t1', {
+          namespace: 'github',
+          key: 'nhwebsite',
+          values: { organization: 'NHWebsite' },
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('refuses to change the organisation of an existing row, including default', async () => {
+      const { svc, prisma } = build({
+        id: 'cfg_default',
+        key: 'default',
+        values: { organization: 'athmahealth' },
+        secretRefs: { tokenRef: 'GITHUB_TOKEN' },
+        updatedAt: new Date(),
+      });
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      await expect(
+        svc.upsertTenantConfiguration('t1', {
+          namespace: 'github',
+          values: { organization: 'NHWebsite' },
+          secretRefs: { tokenRef: 'GITHUB_TOKEN' },
+        }),
+      ).rejects.toThrow('Organisation cannot be changed');
+    });
+
+    it('still requires the token ref on the default row', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      await expect(
+        svc.upsertTenantConfiguration('t1', {
+          namespace: 'github',
+          values: { organization: 'athmahealth' },
+          secretRefs: {},
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 });

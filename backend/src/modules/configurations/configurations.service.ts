@@ -10,6 +10,10 @@ import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { newId } from '../../common/id';
 import { SecretsService } from '../../common/secrets/secrets.service';
 import { PrismaService } from '../../database/prisma.service';
+import {
+  DEFAULT_GITHUB_CONFIG_KEY,
+  GITHUB_LOGIN_PATTERN,
+} from '../../collectors/sources/github/github-orgs';
 import { ConnectionsService } from '../connections/connections.service';
 import {
   ConfigurationNamespace,
@@ -69,6 +73,11 @@ function isBridgedNamespace(
   namespace: ConfigurationNamespace,
 ): namespace is BridgedNamespace {
   return namespace === 'github' || namespace === 'jira';
+}
+
+/** A GitHub organisation row other than `default` (ADR-0013): never bridged. */
+function isAdditionalGithubOrg(namespace: string, key: string): boolean {
+  return namespace === 'github' && key !== DEFAULT_GITHUB_CONFIG_KEY;
 }
 
 /** Deterministic, collision-safe name for the connection this screen owns (BC-0 has no unique constraint on sourceSystem alone — other connections for the same source may already exist, e.g. from seed data or direct /admin/connections use). */
@@ -212,11 +221,13 @@ export class ConfigurationsService {
     const clearSecrets = input.clearSecrets ?? [];
     const status = input.status ?? 'active';
 
+    const additionalOrg = isAdditionalGithubOrg(namespace, key);
     const errors = validateConfigurationValues(
       namespace,
       values,
       secretRefs,
       status,
+      { inheritSecretRefs: additionalOrg },
     );
     errors.push(
       ...this.validateSecretValueInputs(
@@ -237,6 +248,10 @@ export class ConfigurationsService {
     const existing = await this.prisma.tenantConfiguration.findUnique({
       where: { tenantId_namespace_key: { tenantId, namespace, key } },
     });
+
+    if (namespace === 'github') {
+      await this.assertGithubOrgRow(tenantId, key, values, existing);
+    }
 
     // Optimistic concurrency: only enforced when the client sends a baseline
     // (i.e. it believes a row already exists) — first-time creates skip it.
@@ -302,7 +317,7 @@ export class ConfigurationsService {
       },
     });
 
-    if (isBridgedNamespace(namespace)) {
+    if (isBridgedNamespace(namespace) && !additionalOrg) {
       await this.syncConnection(
         tenantId,
         namespace,
@@ -320,6 +335,63 @@ export class ConfigurationsService {
       throw new BadRequestException('Unsupported configuration namespace.');
     }
     return namespace;
+  }
+
+  /**
+   * The org-row rules of ADR-0013: a non-default row is keyed by its
+   * lowercased login and has no default repo; no login appears twice in a
+   * tenant; and `organization` never changes once saved — on any row —
+   * because changing it would silently re-point every org-wide job.
+   */
+  private async assertGithubOrgRow(
+    tenantId: string,
+    key: string,
+    values: Record<string, unknown>,
+    existing: TenantConfiguration | null,
+  ): Promise<void> {
+    const organization =
+      typeof values.organization === 'string' ? values.organization.trim() : '';
+    const previous = (existing?.values as Record<string, unknown> | null)
+      ?.organization;
+    if (typeof previous === 'string' && previous && previous !== organization) {
+      throw new BadRequestException(
+        'Organisation cannot be changed — add a new organisation instead.',
+      );
+    }
+    if (key === DEFAULT_GITHUB_CONFIG_KEY) return;
+    if (!GITHUB_LOGIN_PATTERN.test(organization)) {
+      throw new BadRequestException(
+        '"Organization" must be a GitHub login (letters, digits, hyphens).',
+      );
+    }
+    if (key !== organization.toLowerCase()) {
+      throw new BadRequestException(
+        `An additional organisation is saved under its lowercased login ("${organization.toLowerCase()}").`,
+      );
+    }
+    if (values.defaultRepo !== undefined && values.defaultRepo !== '') {
+      throw new BadRequestException(
+        'Default repository applies only to the first organisation — use Sync org for this one.',
+      );
+    }
+    const rows = await this.prisma.tenantConfiguration.findMany({
+      where: { tenantId, namespace: 'github' },
+      select: { key: true, values: true },
+    });
+    const clash = rows.find(
+      (r) =>
+        r.key !== key &&
+        typeof (r.values as Record<string, unknown> | null)?.organization ===
+          'string' &&
+        ((r.values as Record<string, unknown>).organization as string)
+          .trim()
+          .toLowerCase() === organization.toLowerCase(),
+    );
+    if (clash) {
+      throw new BadRequestException(
+        `GitHub organisation "${organization}" is already configured.`,
+      );
+    }
   }
 
   /**
@@ -490,7 +562,10 @@ export class ConfigurationsService {
   ): Promise<TenantConfigurationView> {
     const secretsConfigured = await this.secretsConfiguredFor(tenantId, config);
 
-    if (!isBridgedNamespace(config.namespace as ConfigurationNamespace)) {
+    if (
+      !isBridgedNamespace(config.namespace as ConfigurationNamespace) ||
+      isAdditionalGithubOrg(config.namespace, config.key)
+    ) {
       return { ...config, connection: null, secretsConfigured };
     }
     const connection = await this.connections.findByTenantSourceAndName(
