@@ -28,6 +28,10 @@ import { GithubPrCommitBackfillService } from '../../collectors/sources/github/g
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubCopilotUsageSyncService } from '../../collectors/sources/github/github-copilot-usage-sync.service';
 import { readGithubCopilotConfig } from '../../collectors/sources/github/github-copilot.config';
+import {
+  loadGithubOrgs,
+  pickGithubOrg,
+} from '../../collectors/sources/github/github-orgs';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../../collectors/sources/github/github-review-reconciler.service';
@@ -39,6 +43,7 @@ import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
 import { SecretsService } from '../../common/secrets/secrets.service';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
+import { PrismaService } from '../../database/prisma.service';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
 import {
@@ -98,6 +103,11 @@ class SyncGithubOrgDto {
   @IsOptional()
   @IsNumber()
   backfillDays?: number;
+
+  /** Which configured organisation to sync; omitted = the first (default) one. */
+  @IsOptional()
+  @IsString()
+  organization?: string;
 }
 
 /**
@@ -110,6 +120,7 @@ const MAX_REBACKFILL_MONTHS = 60;
 @Controller('admin/configurations')
 export class ConfigurationsController {
   constructor(
+    private readonly prisma: PrismaService,
     private readonly configurations: ConfigurationsService,
     private readonly secrets: SecretsService,
     private readonly githubOrgSync: GithubOrgSyncService,
@@ -299,22 +310,16 @@ export class ConfigurationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: SyncGithubOrgDto,
   ) {
-    const configs = await this.configurations.listTenantConfigurations(
-      user.tenantId,
+    const org = pickGithubOrg(
+      await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+      dto.organization,
     );
-    const github = configs.find(
-      (c) => c.namespace === 'github' && c.key === 'default',
-    );
-    const values = (github?.values ?? {}) as Record<string, unknown>;
-    const secretRefs = (github?.secretRefs ?? {}) as Record<string, unknown>;
-    const organization =
-      typeof values.organization === 'string' ? values.organization : undefined;
-    const tokenRef =
-      typeof secretRefs.tokenRef === 'string' ? secretRefs.tokenRef : undefined;
-
-    if (!github || github.status !== 'active' || !organization || !tokenRef) {
+    const tokenRef = org?.secretRefs.tokenRef;
+    if (!org || !org.active || !tokenRef) {
       throw new BadRequestException(
-        'Configure GitHub (organization + token secret ref, saved as active) before syncing the whole org.',
+        dto.organization
+          ? `GitHub organisation "${dto.organization}" is not configured with a token secret ref and saved as active.`
+          : 'Configure GitHub (organization + token secret ref, saved as active) before syncing the whole org.',
       );
     }
 
@@ -327,11 +332,11 @@ export class ConfigurationsController {
 
     const backfillDays =
       dto.backfillDays ??
-      (typeof values.backfillDays === 'number' ? values.backfillDays : 90);
+      (typeof org.values.backfillDays === 'number' ? org.values.backfillDays : 90);
 
     return this.githubOrgSync.syncOrgRepos(
       user.tenantId,
-      organization,
+      org.organization,
       tokenRef,
       token,
       backfillDays,

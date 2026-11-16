@@ -9,6 +9,7 @@ import {
   orgSyncCronExpression,
   readGithubAuditConfig,
 } from '../sources/github/github-audit.config';
+import { GithubOrg, loadGithubOrgs } from '../sources/github/github-orgs';
 import {
   GithubOrgSyncService,
   OrgSyncResult,
@@ -54,58 +55,46 @@ export class GithubOrgSyncSchedulerService {
     if (readGithubAuditConfig().orgSyncHours === 0 || !this.shouldSweep()) {
       return;
     }
-    const rows = await this.prisma.tenantConfiguration.findMany({
-      where: { namespace: 'github', key: 'default', status: 'active' },
-      select: { tenantId: true, values: true, secretRefs: true },
-    });
-    for (const row of rows) {
+    // One pass per organisation row (ADR-0013), in row order, so a new
+    // organisation is picked up without touching the others' connections.
+    const orgs = await loadGithubOrgs(this.prisma, { activeOnly: true });
+    for (const org of orgs) {
+      const label = `[tenant ${org.tenantId}] [org ${org.organization}]`;
       try {
-        const result = await this.tenantContext.runWithTenant(
-          row.tenantId,
-          () => this.syncTenant(row.tenantId, row.values, row.secretRefs),
+        const result = await this.tenantContext.runWithTenant(org.tenantId, () =>
+          this.syncOrg(org),
         );
         if (result) {
           this.logger.log(
-            `[tenant ${row.tenantId}] scheduled org sync: ${result.reposFound} repos, ${result.created} new, ${result.skipped} skipped${result.rateLimited ? ' (rate-limited, resumes next run)' : ''}`,
+            `${label} scheduled org sync: ${result.reposFound} repos, ${result.created} new, ${result.skipped} skipped${result.rateLimited ? ' (rate-limited, resumes next run)' : ''}`,
           );
         }
       } catch (err) {
-        this.logger.error(
-          `[tenant ${row.tenantId}] scheduled org sync failed: ${(err as Error).message}`,
-        );
+        this.logger.error(`${label} scheduled org sync failed: ${(err as Error).message}`);
       }
     }
   }
 
-  /** One tenant; null when its configuration cannot sync (no org, no token). */
-  async syncTenant(
-    tenantId: string,
-    values: unknown,
-    secretRefs: unknown,
-  ): Promise<OrgSyncResult | null> {
-    const v = (values ?? {}) as Record<string, unknown>;
-    const refs = (secretRefs ?? {}) as Record<string, unknown>;
-    const organization =
-      typeof v.organization === 'string' ? v.organization : undefined;
-    const tokenRef =
-      typeof refs.tokenRef === 'string' ? refs.tokenRef : undefined;
-    if (!organization || !tokenRef) {
+  /** One organisation; null when it cannot sync (no token ref, or no value stored for it). */
+  async syncOrg(org: GithubOrg): Promise<OrgSyncResult | null> {
+    const tokenRef = org.secretRefs.tokenRef;
+    if (!tokenRef) {
       return null;
     }
-    const token = await this.secrets.resolve(tenantId, tokenRef);
+    const token = await this.secrets.resolve(org.tenantId, tokenRef);
     if (!token) {
       this.logger.warn(
-        `[tenant ${tenantId}] scheduled org sync skipped: no value stored for secret ref "${tokenRef}"`,
+        `[tenant ${org.tenantId}] [org ${org.organization}] scheduled org sync skipped: no value stored for secret ref "${tokenRef}"`,
       );
       return null;
     }
     const backfillDays =
-      typeof v.backfillDays === 'number'
-        ? v.backfillDays
+      typeof org.values.backfillDays === 'number'
+        ? org.values.backfillDays
         : DEFAULT_BACKFILL_DAYS;
     return this.orgSync.syncOrgRepos(
-      tenantId,
-      organization,
+      org.tenantId,
+      org.organization,
       tokenRef,
       token,
       backfillDays,

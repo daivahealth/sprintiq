@@ -1,4 +1,13 @@
+import { toGithubOrgs } from '../sources/github/github-orgs';
 import { GithubOrgSyncSchedulerService } from './github-org-sync-scheduler.service';
+
+const cfgRow = (o: Record<string, unknown>): Record<string, unknown> & Parameters<typeof toGithubOrgs>[0][number] => ({
+  id: `cfg-${String(o.tenantId)}-${String(o.key ?? 'default')}`,
+  key: 'default',
+  status: 'active',
+  createdAt: new Date('2026-01-01T00:00:00Z'),
+  ...o,
+} as never);
 
 function setup(
   rows: Record<string, unknown>[],
@@ -44,7 +53,7 @@ const tenant = (
   tenantId: string,
   values: Record<string, unknown>,
   secretRefs: Record<string, unknown>,
-) => ({ tenantId, values, secretRefs });
+) => cfgRow({ tenantId, values, secretRefs });
 
 describe('GithubOrgSyncSchedulerService', () => {
   it('syncs every configured tenant with the same arguments as the admin button', async () => {
@@ -86,10 +95,59 @@ describe('GithubOrgSyncSchedulerService', () => {
       tenant('t3', { organization: 'acme' }, { tokenRef: 'MISSING' }),
     ]);
     try {
+      expect(toGithubOrgs([tenant('t1', {}, { tokenRef: 'GH' })])).toHaveLength(0);
       await t.svc.tick();
       expect(t.orgSync.syncOrgRepos).not.toHaveBeenCalled();
+      const [o2] = toGithubOrgs([tenant('t2', { organization: 'acme' }, {})]);
+      expect(await t.svc.syncOrg(o2)).toBeNull();
     } finally {
       t.restore();
+    }
+  });
+
+  it('syncs every active organisation row, each with its own effective token ref', async () => {
+    const { svc, orgSync, restore } = setup([
+      cfgRow({
+        tenantId: 't1',
+        values: { organization: 'athmahealth', backfillDays: 30 },
+        secretRefs: { tokenRef: 'GITHUB_TOKEN' },
+      }),
+      cfgRow({
+        tenantId: 't1',
+        key: 'nhwebsite',
+        values: { organization: 'NHWebsite' },
+        secretRefs: { tokenRef: 'GITHUB_TOKEN_NHWEBSITE' },
+        createdAt: new Date('2026-11-16T00:00:00Z'),
+      }),
+      cfgRow({
+        tenantId: 't1',
+        key: 'paused',
+        status: 'disabled',
+        values: { organization: 'Paused' },
+      }),
+    ]);
+    try {
+      await svc.tick();
+      expect(orgSync.syncOrgRepos.mock.calls).toEqual([
+        ['t1', 'athmahealth', 'GITHUB_TOKEN', 'tok:GITHUB_TOKEN', 30],
+        ['t1', 'NHWebsite', 'GITHUB_TOKEN_NHWEBSITE', 'tok:GITHUB_TOKEN_NHWEBSITE', 90],
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('a failing organisation does not stop the next one', async () => {
+    const { svc, orgSync, restore } = setup([
+      cfgRow({ tenantId: 't1', values: { organization: 'athmahealth' }, secretRefs: { tokenRef: 'GITHUB_TOKEN' } }),
+      cfgRow({ tenantId: 't1', key: 'nhwebsite', values: { organization: 'NHWebsite' }, createdAt: new Date('2026-11-16') }),
+    ]);
+    orgSync.syncOrgRepos.mockRejectedValueOnce(new Error('boom'));
+    try {
+      await svc.tick();
+      expect(orgSync.syncOrgRepos).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
     }
   });
 
@@ -121,15 +179,22 @@ describe('GithubOrgSyncSchedulerService', () => {
     }
   });
 
-  it('reads only active github configurations', async () => {
-    const t = setup([]);
+  it('reads the github namespace and syncs only active rows', async () => {
+    const t = setup([
+      tenant('t1', { organization: 'acme' }, { tokenRef: 'GH' }),
+      cfgRow({
+        tenantId: 't2',
+        status: 'disabled',
+        values: { organization: 'beta' },
+        secretRefs: { tokenRef: 'GH' },
+      }),
+    ]);
     try {
       await t.svc.tick();
       expect(t.prisma.tenantConfiguration.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { namespace: 'github', key: 'default', status: 'active' },
-        }),
+        expect.objectContaining({ where: { namespace: 'github' } }),
       );
+      expect(t.orgSync.syncOrgRepos).toHaveBeenCalledTimes(1);
     } finally {
       t.restore();
     }
