@@ -73,8 +73,12 @@ before `/`. All org filtering of connections, ranges and tips goes through it.
 
 **Migration:** one additive migration (column, backfill, constraint swap).
 Applied by hand on the host with `prisma migrate deploy` before the new build
-starts. The previous build only writes `athmahealth` rows and still runs
-against the new schema, so rollback is a redeploy.
+starts. The migration drops the unique index
+`collectors_github_audit_checkpoint_tenantId_key`, and the previous build's
+`githubAuditCheckpoint.upsert({ where: { tenantId } })` relies on it (Prisma's
+native upsert compiles to `ON CONFLICT ("tenantId")`), so the previous build does
+**not** run against the new schema as it stands: rolling back the build is not a
+plain redeploy (see §9 Rollback).
 
 ## 4. Collectors and scheduling
 
@@ -120,7 +124,7 @@ connection, and their view carries `connection: null`.
 
 **Copilot usage sync.** Iterates rows with an effective
 `copilotMetricsTokenRef`; storage is already per org. A row without one is
-skipped and recorded for that row only.
+skipped (the scheduler does not run it, and nothing is recorded for that row).
 
 **Env tunables stay global** (`GITHUB_ORG_SYNC_HOURS`, `GITHUB_AUDIT_SYNC_MODE`,
 full-sweep cadence, `GITHUB_BACKFILL_RATE_RESERVE`, `GITHUB_COPILOT_USAGE_SYNC`).
@@ -269,8 +273,15 @@ athmahealth Sync Status / audit status / digest dry run unchanged, add
    Vinoth-Rajendran_athma once their GitHub identities exist, merging Jira or
    email identities if they did not auto-link.
 
-**Rollback:** disable the NHWebsite row (stops its org-wide jobs; digest
-returns to single-org wording). The migration is additive.
+**Rollback:** the preferred rollback is to disable the NHWebsite row (stops its
+org-wide jobs; digest returns to single-org wording) — no code rollback. Rolling
+back the *build* also requires restoring the index:
+`CREATE UNIQUE INDEX "collectors_github_audit_checkpoint_tenantId_key" ON "collectors_github_audit_checkpoint"("tenantId");`
+It only succeeds while each tenant has exactly one checkpoint row; otherwise
+first delete the additional organisations' checkpoint rows:
+`DELETE FROM "collectors_github_audit_checkpoint" WHERE "organization" <> '<default org login>';`
+Runs written by the old build after a rollback carry a NULL `organization` and
+do not appear in per-organisation status after re-deploying.
 
 ## 10. Out of scope
 
