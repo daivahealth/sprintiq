@@ -98,6 +98,12 @@ class UpsertConfigurationDto {
   expectedUpdatedAt?: string;
 }
 
+class RunAuditSyncDto {
+  @IsOptional()
+  @IsString()
+  organization?: string;
+}
+
 class SyncGithubOrgDto {
   /** Overrides the github namespace's own backfillDays for this sync only. */
   @IsOptional()
@@ -482,8 +488,16 @@ export class ConfigurationsController {
    */
   @Roles(Role.ADMIN)
   @Post('github/audit-sync/run')
-  async runAuditSync(@CurrentUser() user: AuthUser) {
-    const summary = await this.auditSync.runTenant(user.tenantId);
+  async runAuditSync(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RunAuditSyncDto,
+  ) {
+    const summary = await this.auditSync.runTenant(
+      user.tenantId,
+      undefined,
+      undefined,
+      dto?.organization,
+    );
     await this.audit?.record({
       tenantId: user.tenantId,
       actorType: 'user',
@@ -491,7 +505,11 @@ export class ConfigurationsController {
       action: 'collectors.github_audit_sync.run',
       targetType: 'github_audit_run',
       targetId: summary.runId,
-      metadata: { status: summary.status, counters: summary.counters },
+      metadata: {
+        status: summary.status,
+        counters: summary.counters,
+        organization: dto?.organization ?? null,
+      },
     });
     return summary;
   }
@@ -503,8 +521,11 @@ export class ConfigurationsController {
    */
   @Roles(Role.ADMIN)
   @Get('github/audit-sync/status')
-  async auditSyncStatus(@CurrentUser() user: AuthUser) {
-    return this.auditSync.status(user.tenantId);
+  async auditSyncStatus(
+    @CurrentUser() user: AuthUser,
+    @Query('organization') organization?: string,
+  ) {
+    return this.auditSync.status(user.tenantId, undefined, undefined, organization);
   }
 
   /**

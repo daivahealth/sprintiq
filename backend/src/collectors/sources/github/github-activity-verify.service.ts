@@ -366,10 +366,22 @@ export class GithubActivityVerifyService {
       tokenFor,
       state,
     );
-    const auditCheckpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+    // Oldest across organisations (ADR-0013): a PR is only "should have been
+    // seen" once every organisation's audit log has been read past it.
+    const checkpoints = await this.prisma.githubAuditCheckpoint.findMany({
       where: { tenantId: input.tenantId },
       select: { checkpointAt: true },
     });
+    const auditCheckpoint =
+      checkpoints.length === 0
+        ? null
+        : {
+            checkpointAt: checkpoints.some((c) => !c.checkpointAt)
+              ? null
+              : new Date(
+                  Math.min(...checkpoints.map((c) => c.checkpointAt!.getTime())),
+                ),
+          };
 
     // ---- PRs authored, and reviews given: org-wide searches ----------------
     const pullRequests = new Map<string, VerifiedPullRequest>();

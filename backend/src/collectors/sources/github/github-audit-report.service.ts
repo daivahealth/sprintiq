@@ -61,6 +61,21 @@ export interface AuditDayReport {
 export class GithubAuditReportService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * The checkpoint furthest behind across the tenant's organisations
+   * (ADR-0013) — the conservative answer to "how far has the audit log been
+   * read". Null when no organisation has a checkpoint.
+   */
+  private async oldestCheckpoint(tenantId: string) {
+    const rows = await this.prisma.githubAuditCheckpoint.findMany({
+      where: { tenantId },
+    });
+    if (rows.length === 0) return null;
+    return rows.reduce((a, b) =>
+      (a.checkpointAt?.getTime() ?? 0) <= (b.checkpointAt?.getTime() ?? 0) ? a : b,
+    );
+  }
+
   async dayReport(tenantId: string, day: string): Promise<AuditDayReport> {
     const from = istDayStart(day);
     const to = istDayEnd(day);
@@ -83,7 +98,7 @@ export class GithubAuditReportService {
         },
         select: { envelope: true },
       }),
-      this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+      this.oldestCheckpoint(tenantId),
     ]);
 
     const totals = emptyCounters();

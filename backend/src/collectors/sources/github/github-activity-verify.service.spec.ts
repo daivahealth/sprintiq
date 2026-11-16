@@ -67,9 +67,9 @@ function build(handlers: Record<string, Handler>, repos = ['acme/api']) {
     },
   };
   (prisma as Record<string, unknown>).githubAuditCheckpoint = {
-    findUnique: jest.fn(async () => ({
-      checkpointAt: new Date('2026-10-27T09:35:00Z'),
-    })),
+    findMany: jest.fn(async () => [
+      { checkpointAt: new Date('2026-10-27T09:35:00Z') },
+    ]),
   };
   const secrets = { resolve: jest.fn(async () => 'tok') };
   const service = new GithubActivityVerifyService(

@@ -56,12 +56,14 @@ describe('GithubAuditReportService.dayReport', () => {
         ]),
       },
       githubAuditCheckpoint: {
-        findUnique: rec({
-          checkpointAt: new Date('2026-10-06T04:00:00Z'),
-          seededAt: null,
-          lastStatus: 'success',
-          lastError: null,
-        }),
+        findMany: rec([
+          {
+            checkpointAt: new Date('2026-10-06T04:00:00Z'),
+            seededAt: null,
+            lastStatus: 'success',
+            lastError: null,
+          },
+        ]),
       },
     };
     const svc = new GithubAuditReportService(prisma as never);
@@ -144,7 +146,7 @@ describe('GithubAuditReportService.dayReport rangeDetails', () => {
         ]),
       },
       rawEvent: { findMany: jest.fn().mockResolvedValue([]) },
-      githubAuditCheckpoint: { findUnique: jest.fn().mockResolvedValue(null) },
+      githubAuditCheckpoint: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const svc = new GithubAuditReportService(prisma as never);
     const r = await svc.dayReport('t1', '2026-10-05');

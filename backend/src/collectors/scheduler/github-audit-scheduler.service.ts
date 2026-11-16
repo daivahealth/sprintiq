@@ -65,11 +65,11 @@ export class GithubAuditSchedulerService {
     if (cfg.mode === 'off' || !this.shouldSweep()) {
       return;
     }
-    await this.runForEnabledTenants(
+    await this.runForEnabledOrgs(
       AUDIT_SWEEP_KEY,
       cfg.intervalMinutes,
       'GitHub audit sync',
-      (tenantId) => this.sync.runTenant(tenantId, cfg),
+      (tenantId, organization) => this.sync.runTenant(tenantId, cfg, undefined, organization),
     );
   }
 
@@ -87,25 +87,27 @@ export class GithubAuditSchedulerService {
     ) {
       return;
     }
-    await this.runForEnabledTenants(
+    await this.runForEnabledOrgs(
       FULL_SWEEP_KEY,
       cfg.fullSweepMinutes,
       'GitHub full branch sweep',
-      (tenantId) => this.sync.runFullSweep(tenantId, cfg),
+      (tenantId, organization) => this.sync.runFullSweep(tenantId, cfg, undefined, organization),
     );
   }
 
   /**
-   * One pass over every enabled tenant, guarded by a SchedulerTick row: a
-   * pass still open and younger than twice its interval (at least 10 min) is
-   * left alone. Each tenant runs in its own tenant context; one tenant's
-   * failure never stops the others, and the row is always closed.
+   * One pass over every enabled organisation (ADR-0013), guarded by a
+   * SchedulerTick row: a pass still open and younger than twice its interval
+   * (at least 10 min) is left alone. Organisations run one after another —
+   * a tenant's orgs never overlap on this cron — each in its tenant's
+   * context; one org's failure never stops the others, and the row is always
+   * closed.
    */
-  private async runForEnabledTenants(
+  private async runForEnabledOrgs(
     key: string,
     intervalMinutes: number,
     label: string,
-    run: (tenantId: string) => Promise<AuditRunSummary>,
+    run: (tenantId: string, organization: string) => Promise<AuditRunSummary>,
   ): Promise<void> {
     const staleAfterMs = Math.max(10, intervalMinutes * 2) * 60_000;
     const open = await this.prisma.schedulerTick.findUnique({
@@ -120,38 +122,37 @@ export class GithubAuditSchedulerService {
       return;
     }
 
-    const tenants = await this.sync.listEnabledTenants();
+    const orgs = await this.sync.listEnabledOrgs();
     await this.prisma.schedulerTick.upsert({
       where: { sourceSystem: key },
       create: {
         sourceSystem: key,
         startedAt: new Date(),
         finishedAt: null,
-        totalConnections: tenants.length,
+        totalConnections: orgs.length,
         connectionsProcessed: 0,
       },
       update: {
         startedAt: new Date(),
         finishedAt: null,
-        totalConnections: tenants.length,
+        totalConnections: orgs.length,
         connectionsProcessed: 0,
       },
     });
     try {
-      for (const tenantId of tenants) {
+      for (const { tenantId, organization } of orgs) {
+        const who = `tenant ${tenantId} org ${organization}`;
         try {
           const summary = await this.tenantContext.runWithTenant(tenantId, () =>
-            run(tenantId),
+            run(tenantId, organization),
           );
           if (summary?.status === 'skipped') {
             this.logger.log(
-              `${label} skipped for tenant ${tenantId}: ${summary.reason ?? 'no reason given'}`,
+              `${label} skipped for ${who}: ${summary.reason ?? 'no reason given'}`,
             );
           }
         } catch (err) {
-          this.logger.error(
-            `${label} failed for tenant ${tenantId}: ${(err as Error).message}`,
-          );
+          this.logger.error(`${label} failed for ${who}: ${(err as Error).message}`);
         }
       }
     } finally {
