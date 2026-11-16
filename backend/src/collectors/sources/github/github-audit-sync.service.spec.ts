@@ -1309,6 +1309,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     prisma.githubAuditRun.rows.push({
       id: `sweep-${tenantId}`,
       tenantId,
+      organization: 'acme',
       mode: 'ingest',
       trigger: 'full_sweep',
       status: 'success',
@@ -1332,7 +1333,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it('does not apply in shadow mode', async () => {
     const { svc, prisma } = setup();
     covered(prisma, 't1');
-    expect(await svc.coverageForDay('t1', DAY, SHADOW)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, SHADOW)).toMatchObject({
       applies: false,
       ok: true,
       reasons: [],
@@ -1342,7 +1343,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it('does not apply when no audit-log token ref is configured', async () => {
     const { svc, prisma, secrets } = setup();
     seedTenant(prisma, 't1', ['acme/ehr'], {});
-    expect(await svc.coverageForDay('t1', DAY, INGEST)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, INGEST)).toMatchObject({
       applies: false,
       ok: true,
       reasons: [],
@@ -1360,7 +1361,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it('is ok when checkpoint, ranges and the sweep all cover the day — and never resolves a secret or calls GitHub', async () => {
     const { svc, prisma, secrets, audit, client } = setup();
     covered(prisma, 't1');
-    expect(await svc.coverageForDay('t1', DAY, INGEST)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, INGEST)).toMatchObject({
       applies: true,
       ok: true,
       reasons: [],
@@ -1596,7 +1597,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     const { svc, prisma } = setup();
     covered(prisma, 't1');
     prisma.githubAuditRun.rows.length = 0;
-    expect(await svc.coverageForDay('t1', DAY, NO_SWEEP)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, NO_SWEEP)).toMatchObject({
       applies: true,
       ok: true,
       reasons: [],
@@ -1626,7 +1627,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     prisma.githubAuditRun.rows.splice(0, 1);
     // t2's unfinished range in the window must not count against t1.
     prisma.githubPushRange.rows.push(
-      range('t2-r', 't2', 'pending', DAY_END, 'other/ehr', 'main'),
+      range('t2-r', 't2', 'pending', DAY_END, 'acme/other', 'main'),
     );
     // t1 not seeded; t2's seeded checkpoint must not stand in for it.
     prisma.githubAuditCheckpoint.rows[0].seededAt = null;
@@ -1651,7 +1652,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     }
     // And t2 sees its own range, not t1's state.
     const c2 = await svc.coverageForDay('t2', DAY, INGEST);
-    expect(c2.reasons).toEqual(['1 unfinished range(s): other/ehr@main']);
+    expect(c2.reasons).toEqual(['1 unfinished range(s): acme/other@main']);
   });
 });
 

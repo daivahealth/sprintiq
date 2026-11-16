@@ -40,6 +40,7 @@ import {
   pickGithubOrg,
   repoInOrg,
   repoInOrgWhere,
+  type GithubOrg,
 } from './github-orgs';
 import { evaluateBudget, rateReserve } from './github-rate-budget';
 import {
@@ -152,6 +153,10 @@ export interface AuditDayCoverage {
   applies: boolean;
   ok: boolean;
   reasons: string[];
+  /** Organisations the digest covers and names (ADR-0013), in row order. */
+  included: string[];
+  /** Active non-default organisations still on their first collection — left out until included. */
+  collecting: string[];
 }
 
 /** Ranges named in a coverage reason; the rest are counted. */
@@ -724,6 +729,10 @@ export class GithubAuditSyncService {
    *     finished) successfully after the day ended, covering pushes the
    *     audit log never records.
    * Every failing condition is reported, so the withheld card names them all.
+   *
+   * Across organisations (ADR-0013): every *included* organisation must be
+   * covered; reasons are prefixed with the organisation when the tenant has
+   * more than one active GitHub row.
    */
   async coverageForDay(
     tenantId: string,
@@ -731,27 +740,108 @@ export class GithubAuditSyncService {
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
   ): Promise<AuditDayCoverage> {
-    const notApplicable: AuditDayCoverage = {
-      applies: false,
-      ok: true,
-      reasons: [],
+    const orgs = await loadGithubOrgs(this.prisma, { tenantId });
+    const inclusion = await this.inclusionOf(tenantId, orgs, cfg);
+    const active = orgs.filter((o) => o.active);
+    const included = active.filter(
+      (o) => inclusion.get(o.organization) === 'included',
+    );
+    const prefix = active.length > 1;
+    let applies = false;
+    const reasons: string[] = [];
+    for (const org of included) {
+      const c = await this.coverageForOrg(tenantId, org, day, cfg, now);
+      if (!c.applies) continue;
+      applies = true;
+      reasons.push(
+        ...c.reasons.map((r) => (prefix ? `${org.organization}: ${r}` : r)),
+      );
+    }
+    return {
+      applies,
+      ok: reasons.length === 0,
+      reasons,
+      included: included.map((o) => o.organization),
+      collecting: active
+        .filter((o) => inclusion.get(o.organization) === 'collecting')
+        .map((o) => o.organization),
     };
-    if (cfg.mode !== 'ingest') return notApplicable;
-    const config = await this.prisma.tenantConfiguration.findUnique({
-      where: {
-        tenantId_namespace_key: {
-          tenantId,
-          namespace: 'github',
-          key: 'default',
+  }
+
+  /** Whether each of the tenant's organisations is in the digest yet (ADR-0013). */
+  async digestInclusion(
+    tenantId: string,
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+  ): Promise<Map<string, 'included' | 'collecting' | 'disabled'>> {
+    return this.inclusionOf(
+      tenantId,
+      await loadGithubOrgs(this.prisma, { tenantId }),
+      cfg,
+    );
+  }
+
+  /**
+   * The default organisation is always included — exactly as before, so a
+   * fresh tenant still withholds until it is seeded. Any other active
+   * organisation joins once its first seeding is done and, when the full
+   * sweep is on, it has had one successful ingest-mode sweep; where the audit
+   * route does not apply to it, it joins at once. Until then its partial data
+   * can only add activity, never name someone.
+   */
+  private async inclusionOf(
+    tenantId: string,
+    orgs: GithubOrg[],
+    cfg: GithubAuditConfig,
+  ): Promise<Map<string, 'included' | 'collecting' | 'disabled'>> {
+    const out = new Map<string, 'included' | 'collecting' | 'disabled'>();
+    for (const org of orgs) {
+      if (!org.active) {
+        out.set(org.organization, 'disabled');
+        continue;
+      }
+      if (
+        org.isDefault ||
+        cfg.mode !== 'ingest' ||
+        typeof org.secretRefs.auditLogTokenRef !== 'string'
+      ) {
+        out.set(org.organization, 'included');
+        continue;
+      }
+      const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+        where: {
+          tenantId_organization: { tenantId, organization: org.organization },
         },
-      },
-    });
-    const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
-    if (
-      !config ||
-      config.status !== 'active' ||
-      typeof refs.auditLogTokenRef !== 'string'
-    ) {
+      });
+      const sweptOnce =
+        cfg.fullSweepMinutes === 0 ||
+        !!(await this.prisma.githubAuditRun.findFirst({
+          where: {
+            tenantId,
+            organization: org.organization,
+            trigger: 'full_sweep',
+            status: 'success',
+            mode: 'ingest',
+          },
+          select: { id: true },
+        }));
+      out.set(
+        org.organization,
+        checkpoint?.seededAt && sweptOnce ? 'included' : 'collecting',
+      );
+    }
+    return out;
+  }
+
+  private async coverageForOrg(
+    tenantId: string,
+    org: GithubOrg,
+    day: string,
+    cfg: GithubAuditConfig,
+    now: Date,
+  ): Promise<{ applies: boolean; ok: boolean; reasons: string[] }> {
+    const notApplicable = { applies: false, ok: true, reasons: [] };
+    if (cfg.mode !== 'ingest') return notApplicable;
+    if (!org.active || typeof org.secretRefs.auditLogTokenRef !== 'string') {
       return notApplicable;
     }
 
@@ -768,6 +858,7 @@ export class GithubAuditSyncService {
     );
     const unfinishedWhere = {
       tenantId,
+      repoFullName: repoInOrgWhere(org.organization),
       // No upper bound (controller ruling, fix round 1): an audit catch-up
       // after a stall, or a late sweep that plans a missed push and stops on
       // budget, can create the day's ranges well after any fixed window —
@@ -787,13 +878,18 @@ export class GithubAuditSyncService {
     // the admin's way to accept the gap.
     const truncatedWhere = {
       tenantId,
+      repoFullName: repoInOrgWhere(org.organization),
       status: 'done',
       truncated: true,
       createdAt: { gte: dayStart },
     };
     const [checkpoint, unfinished, shown, sweep, truncated] = await Promise.all(
       [
-        this.prisma.githubAuditCheckpoint.findFirst({ where: { tenantId } }),
+        this.prisma.githubAuditCheckpoint.findUnique({
+          where: {
+            tenantId_organization: { tenantId, organization: org.organization },
+          },
+        }),
         this.prisma.githubPushRange.count({ where: unfinishedWhere }),
         this.prisma.githubPushRange.findMany({
           where: unfinishedWhere,
@@ -805,6 +901,7 @@ export class GithubAuditSyncService {
           ? this.prisma.githubAuditRun.findFirst({
               where: {
                 tenantId,
+                organization: org.organization,
                 trigger: 'full_sweep',
                 status: 'success',
                 // A shadow-mode sweep ingests nothing — its ranges are only

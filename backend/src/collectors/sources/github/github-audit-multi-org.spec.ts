@@ -240,3 +240,93 @@ describe('GithubAuditSyncService — per organisation (ADR-0013)', () => {
     });
   });
 });
+
+const DAY = '2026-10-05';
+const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
+
+describe('coverageForDay across organisations (ADR-0013)', () => {
+  function seededCheckpoint(prisma: ReturnType<typeof setup>['prisma'], organization: string) {
+    prisma.githubAuditCheckpoint.rows.push({
+      id: `cp-${organization}`, tenantId: 't1', organization,
+      seededAt: new Date(NOW.getTime() - 86_400_000 * 3),
+      checkpointAt: NOW,
+    });
+  }
+  function sweptAfterDay(prisma: ReturnType<typeof setup>['prisma'], organization: string) {
+    prisma.githubAuditRun.rows.push({
+      id: `sw-${organization}`, tenantId: 't1', organization, trigger: 'full_sweep',
+      status: 'success', mode: 'ingest', startedAt: NOW,
+    });
+  }
+
+  it('single org: reasons are unprefixed and the org is included', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
+    expect(c.included).toEqual(['athmahealth']);
+    expect(c.reasons).toContain('audit sync has not completed its seeding pass');
+  });
+
+  it('a second org that has not finished its first seeding + sweep is collecting, not included', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(prisma, 't1', 'NHWebsite', ['NHWebsite/site']);
+    seededCheckpoint(prisma, 'athmahealth');
+    sweptAfterDay(prisma, 'athmahealth');
+    const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
+    expect(c).toMatchObject({ ok: true, included: ['athmahealth'], collecting: ['NHWebsite'] });
+  });
+
+  it('once included, an uncovered second org withholds, named in the reason', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(prisma, 't1', 'NHWebsite', ['NHWebsite/site']);
+    seededCheckpoint(prisma, 'athmahealth');
+    sweptAfterDay(prisma, 'athmahealth');
+    seededCheckpoint(prisma, 'NHWebsite');
+    // NHWebsite swept successfully once, but long before the day ended.
+    prisma.githubAuditRun.rows.push({
+      id: 'old', tenantId: 't1', organization: 'NHWebsite', trigger: 'full_sweep',
+      status: 'success', mode: 'ingest', startedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+    const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
+    expect(c.included).toEqual(['athmahealth', 'NHWebsite']);
+    expect(c.ok).toBe(false);
+    expect(c.reasons.every((r) => r.startsWith('NHWebsite: '))).toBe(true);
+  });
+
+  it("a pending range in one org never counts against another org's coverage", async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(prisma, 't1', 'NHWebsite', ['NHWebsite/site'], { status: 'disabled' });
+    seededCheckpoint(prisma, 'athmahealth');
+    sweptAfterDay(prisma, 'athmahealth');
+    prisma.githubPushRange.rows.push({
+      id: 'r', tenantId: 't1', repoFullName: 'NHWebsite/site', ref: 'main',
+      status: 'pending', createdAt: NOW,
+    });
+    const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
+    expect(c).toMatchObject({ ok: true, included: ['athmahealth'] });
+  });
+
+  it('digestInclusion reports included / collecting / disabled per org', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(prisma, 't1', 'NHWebsite', []);
+    seedOrg(prisma, 't1', 'Paused', [], { status: 'disabled' });
+    const m = await svc.digestInclusion('t1', INGEST);
+    expect([...m.entries()]).toEqual([
+      ['athmahealth', 'included'],
+      ['NHWebsite', 'collecting'],
+      ['Paused', 'disabled'],
+    ]);
+  });
+
+  it('outside ingest mode every active org is included immediately', async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(prisma, 't1', 'NHWebsite', []);
+    const c = await svc.coverageForDay('t1', DAY, SHADOW, NOW);
+    expect(c).toMatchObject({ applies: false, ok: true, included: ['athmahealth', 'NHWebsite'] });
+  });
+});
