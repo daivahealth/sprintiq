@@ -400,9 +400,16 @@ describe('GithubCollector.poll', () => {
     // complete over the recent end long before the whole window is in. Without
     // the lower bound the dashboards can only say "incomplete" for days, even
     // for a board showing the last 7 days over data that is fully collected.
-    const at = (day: number) => new Date(Date.UTC(2026, 7, day)).toISOString();
+    // Relative to now, not fixed dates: the default backfill floor trails the
+    // clock, and fixed dates eventually fall below it and get filtered out.
+    const midnight = new Date();
+    midnight.setUTCHours(0, 0, 0, 0);
+    const daysAgo = (n: number) =>
+      new Date(midnight.getTime() - n * 86_400_000).toISOString();
     client.listPullRequestsPage.mockResolvedValue({
-      items: [17, 16, 15].map((d) => pull({ number: d, updated_at: at(d) })),
+      items: [1, 2, 3].map((n) =>
+        pull({ number: 4 - n, updated_at: daysAgo(n) }),
+      ),
       hasNextPage: true,
     });
     client.listCommitsPage.mockResolvedValue(emptyCommitsPage());
@@ -411,7 +418,7 @@ describe('GithubCollector.poll', () => {
 
     // Walked back to the oldest PR it actually enriched — not to the floor it
     // is aiming at, which it has not reached.
-    expect(result.collectedBackTo).toEqual(new Date(at(15)));
+    expect(result.collectedBackTo).toEqual(new Date(daysAgo(3)));
   });
 
   it('reports the backfill floor as the lower bound once the walk is finished', async () => {
