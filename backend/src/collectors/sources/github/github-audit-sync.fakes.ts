@@ -17,7 +17,9 @@ function matches(row: Row, where: Row = {}): boolean {
     if (v && typeof v === 'object' && !(v instanceof Date)) {
       // Every operator present must hold, as in Prisma — a `{ gte, lte }`
       // window is a window, not just its lower bound.
-      const ops = ['in', 'gte', 'gt', 'lte', 'lt'].filter((op) => op in v);
+      const ops = ['in', 'gte', 'gt', 'lte', 'lt', 'startsWith'].filter(
+        (op) => op in v,
+      );
       if (ops.length > 0) {
         const x = row[k];
         if ('in' in v && !(v.in as unknown[]).includes(x)) return false;
@@ -25,6 +27,15 @@ function matches(row: Row, where: Row = {}): boolean {
         if ('gt' in v && !(x != null && x > v.gt)) return false;
         if ('lte' in v && !(x != null && x <= v.lte)) return false;
         if ('lt' in v && !(x != null && x < v.lt)) return false;
+        if ('startsWith' in v) {
+          const s = String(x ?? '');
+          const p = String(v.startsWith);
+          const hit =
+            v.mode === 'insensitive'
+              ? s.toLowerCase().startsWith(p.toLowerCase())
+              : s.startsWith(p);
+          if (!hit) return false;
+        }
         return true;
       }
     }
@@ -123,7 +134,11 @@ export function fakePrisma() {
     rawKeys,
     tenantConfiguration: table(calls, [], (w) => w.tenantId_namespace_key ?? w),
     connection: table(calls, [], (w) => w),
-    githubAuditCheckpoint: table(calls, [], (w) => w),
+    githubAuditCheckpoint: table(
+      calls,
+      [],
+      (w) => w.tenantId_organization ?? w,
+    ),
     githubAuditRun: table(calls, [], (w) => w),
     githubPushRange: table(calls, [], (w) => w),
     githubRefTip: table(calls, [], (w) => w.tenantId_repoFullName_ref ?? w),
@@ -163,14 +178,21 @@ export function seedTenant(
   prisma: ReturnType<typeof fakePrisma>,
   tenantId: string,
   repos: string[],
-  opts: { auditRef?: string } = { auditRef: 'GITHUB_AUDIT_TOKEN' },
+  opts: { auditRef?: string; organization?: string } = {
+    auditRef: 'GITHUB_AUDIT_TOKEN',
+  },
 ) {
+  // The org is the repos' owner unless named, so per-org repo filtering keeps
+  // every repo a test registers (ADR-0013).
+  const organization = opts.organization ?? repos[0]?.split('/')[0] ?? 'acme';
   prisma.tenantConfiguration.rows.push({
+    id: `${tenantId}-cfg-default`,
     tenantId,
     namespace: 'github',
     key: 'default',
     status: 'active',
-    values: { organization: 'acme' },
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    values: { organization },
     secretRefs: {
       tokenRef: 'GITHUB_TOKEN',
       ...(opts.auditRef ? { auditLogTokenRef: opts.auditRef } : {}),
@@ -184,6 +206,40 @@ export function seedTenant(
       status: 'active',
       name: repo,
       secretRef: 'GITHUB_TOKEN',
+      config: { repoFullName: repo },
+    }),
+  );
+}
+
+/** A second (non-default) organisation row and its repo connections. */
+export function seedOrg(
+  prisma: ReturnType<typeof fakePrisma>,
+  tenantId: string,
+  organization: string,
+  repos: string[],
+  opts: { tokenRef?: string; auditRef?: string; status?: string } = {},
+) {
+  prisma.tenantConfiguration.rows.push({
+    id: `${tenantId}-cfg-${organization.toLowerCase()}`,
+    tenantId,
+    namespace: 'github',
+    key: organization.toLowerCase(),
+    status: opts.status ?? 'active',
+    createdAt: new Date('2026-11-16T00:00:00Z'),
+    values: { organization },
+    secretRefs: {
+      ...(opts.tokenRef ? { tokenRef: opts.tokenRef } : {}),
+      ...(opts.auditRef ? { auditLogTokenRef: opts.auditRef } : {}),
+    },
+  });
+  repos.forEach((repo, i) =>
+    prisma.connection.rows.push({
+      id: `${tenantId}-${organization.toLowerCase()}-conn-${i}`,
+      tenantId,
+      sourceSystem: 'github',
+      status: 'active',
+      name: repo,
+      secretRef: opts.tokenRef ?? 'GITHUB_TOKEN',
       config: { repoFullName: repo },
     }),
   );
