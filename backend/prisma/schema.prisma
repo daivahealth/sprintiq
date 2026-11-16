@@ -240,19 +240,21 @@ model RawEvent {
 /// stored every repo's branch tips; audit discovery covers pushes after it.
 model GithubAuditCheckpoint {
   id           String    @id
-  tenantId     String    @unique
+  tenantId     String
   organization String
   seededAt     DateTime?
   checkpointAt DateTime?
   lastRunAt    DateTime?
   lastStatus   String?
   lastError    String?
-  /// Per-tenant run claim: set while a sync run holds this tenant, cleared in
-  /// a `finally`; a claim older than 60 minutes is treated as stale.
+  /// Per-(tenant, organisation) run claim: set while a sync run holds this org, cleared in a `finally`; a claim older than RUN_CLAIM_STALE_MS is taken over.
   runningSince DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  /// One checkpoint per organisation (ADR-0013). The pre-existing row already
+  /// carries its organisation, so it continues unchanged.
+  @@unique([tenantId, organization])
   @@map("collectors_github_audit_checkpoint")
 }
 
@@ -260,6 +262,9 @@ model GithubAuditCheckpoint {
 model GithubAuditRun {
   id         String    @id
   tenantId   String
+  /// The organisation this run covered (ADR-0013). Null only on rows written
+  /// before 2026-11-16 that the migration could not attribute.
+  organization String?
   mode       String // off | shadow | ingest
   /// What started the run: 'audit' (the audit-log sync, which owns the
   /// checkpoint) or 'full_sweep' (the full branch sweep, which lists every
@@ -273,7 +278,7 @@ model GithubAuditRun {
   counters   Json
   error      String?
 
-  @@index([tenantId, startedAt])
+  @@index([tenantId, organization, startedAt])
   @@map("collectors_github_audit_run")
 }
 
