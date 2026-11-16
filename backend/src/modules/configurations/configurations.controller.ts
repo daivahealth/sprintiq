@@ -22,13 +22,17 @@ import {
 import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { ConnectionsService } from '../connections/connections.service';
 import { GithubAuditReportService } from '../../collectors/sources/github/github-audit-report.service';
-import { GithubAuditSyncService } from '../../collectors/sources/github/github-audit-sync.service';
+import {
+  AuditStatus,
+  GithubAuditSyncService,
+} from '../../collectors/sources/github/github-audit-sync.service';
 import { GithubCommitMessageReconcilerService } from '../../collectors/sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from '../../collectors/sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubCopilotUsageSyncService } from '../../collectors/sources/github/github-copilot-usage-sync.service';
 import { readGithubCopilotConfig } from '../../collectors/sources/github/github-copilot.config';
 import {
+  GithubOrg,
   loadGithubOrgs,
   pickGithubOrg,
 } from '../../collectors/sources/github/github-orgs';
@@ -122,6 +126,37 @@ class SyncGithubOrgDto {
  * 200-repo org is measured in days of rate-limited catch-up.
  */
 const MAX_REBACKFILL_MONTHS = 60;
+
+export interface GithubOrganizationView {
+  key: string;
+  organization: string;
+  status: 'active' | 'disabled';
+  isDefault: boolean;
+  values: Record<string, unknown>;
+  /** Effective ref NAMES — never secret values. */
+  secretRefs: Record<string, string>;
+  inheritedRefs: string[];
+  audit: AuditStatus;
+  digest: 'included' | 'collecting' | 'disabled';
+}
+
+export function toOrganizationView(
+  org: GithubOrg,
+  audit: AuditStatus,
+  digest: 'included' | 'collecting' | 'disabled',
+): GithubOrganizationView {
+  return {
+    key: org.key,
+    organization: org.organization,
+    status: org.active ? 'active' : 'disabled',
+    isDefault: org.isDefault,
+    values: org.values,
+    secretRefs: org.secretRefs,
+    inheritedRefs: org.inheritedRefs,
+    audit,
+    digest,
+  };
+}
 
 @Controller('admin/configurations')
 export class ConfigurationsController {
@@ -255,6 +290,31 @@ export class ConfigurationsController {
       targetId: `${sourceSystem}:${sourceKey}`,
     });
     return { removed: true };
+  }
+
+  /**
+   * Every configured GitHub organisation (ADR-0013) with its effective token
+   * ref names, audit-route status and whether the digest includes it yet.
+   * Read-only; never resolves or returns a secret value.
+   */
+  @Roles(Role.ADMIN)
+  @Get('github/organizations')
+  async githubOrganizations(@CurrentUser() user: AuthUser) {
+    const orgs = await loadGithubOrgs(this.prisma, { tenantId: user.tenantId });
+    const inclusion = await this.auditSync.digestInclusion(user.tenantId);
+    const organizations: GithubOrganizationView[] = [];
+    for (const org of orgs) {
+      const audit = await this.auditSync.status(
+        user.tenantId,
+        undefined,
+        undefined,
+        org.organization,
+      );
+      organizations.push(
+        toOrganizationView(org, audit, inclusion.get(org.organization) ?? 'disabled'),
+      );
+    }
+    return { organizations };
   }
 
   @Roles(Role.ADMIN)

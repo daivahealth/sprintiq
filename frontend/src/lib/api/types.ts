@@ -337,3 +337,28 @@ export interface SyncStatusResponse {
   };
   sources: SourceSyncStatus[];
 }
+
+/** `GET /api/admin/configurations/github/organizations` (ADR-0013). */
+export interface GithubOrganization {
+  key: string;
+  organization: string;
+  status: 'active' | 'disabled';
+  isDefault: boolean;
+  values: Record<string, unknown>;
+  /** Effective ref names — never values. */
+  secretRefs: Record<string, string>;
+  inheritedRefs: string[];
+  audit: {
+    organization: string | null;
+    mode: string;
+    enabled: boolean;
+    lagMinutes: number | null;
+    behind: boolean;
+    lastRunAt: string | null;
+    lastStatus: string | null;
+    lastError: string | null;
+    pendingRanges: number;
+    failedRanges: number;
+  };
+  digest: 'included' | 'collecting' | 'disabled';
+}
