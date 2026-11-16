@@ -64,4 +64,20 @@ describe('copilotCaption', () => {
     expect(caption).toContain('never a ranking');
     expect(caption).toContain("no data doesn't mean not using AI");
   });
+
+  it('names the organisations when more than one reports', () => {
+    const caption = copilotCaption({
+      collected: true,
+      coveredThrough: '2026-11-14',
+      reportDaysInWindow: 10,
+      orgs: ['athmahealth', 'NHWebsite'],
+    });
+    expect(caption).toContain('Across GitHub organisations athmahealth and NHWebsite.');
+  });
+
+  it('is unchanged for one organisation', () => {
+    const one = copilotCaption({ collected: true, coveredThrough: '2026-11-14', reportDaysInWindow: 10, orgs: ['athmahealth'] });
+    const legacy = copilotCaption({ collected: true, coveredThrough: '2026-11-14', reportDaysInWindow: 10 });
+    expect(one).toBe(legacy);
+  });
 });

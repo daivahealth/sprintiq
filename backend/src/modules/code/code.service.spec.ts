@@ -289,8 +289,8 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
     const reportDay = {
       findUnique: jest.fn().mockResolvedValue(existing),
       upsert: jest.fn().mockReturnValue('upsert'),
-      findFirst: jest.fn().mockResolvedValue(null),
-      count: jest.fn().mockResolvedValue(0),
+      groupBy: jest.fn().mockResolvedValue([]),
+      findMany: jest.fn().mockResolvedValue([]),
     };
     const seat = {
       findFirst: jest
@@ -437,8 +437,8 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
     for (const call of [
       ...usage.findMany.mock.calls,
       ...seat.findMany.mock.calls,
-      ...reportDay.findFirst.mock.calls,
-      ...reportDay.count.mock.calls,
+      ...reportDay.groupBy.mock.calls,
+      ...reportDay.findMany.mock.calls,
     ]) {
       expect((call[0] as { where: { tenantId: string } }).where.tenantId).toBe(
         'tenant-a',
@@ -465,18 +465,33 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
       collected: false,
       coveredThrough: null,
       reportDaysInWindow: 0,
+      orgs: [],
     });
-    reportDay.findFirst.mockResolvedValue({
-      day: new Date('2026-10-13T00:00:00.000Z'),
-    });
-    reportDay.count.mockResolvedValue(13);
+    reportDay.groupBy.mockResolvedValue([
+      { org: 'athmahealth', _max: { day: new Date('2026-10-13T00:00:00.000Z') } },
+    ]);
+    reportDay.findMany.mockResolvedValue(
+      Array.from({ length: 13 }, () => ({ day: new Date() })),
+    );
     await expect(
       service.copilotCoverage('tenant-a', '2026-10-01', '2026-10-14'),
     ).resolves.toEqual({
       collected: true,
       coveredThrough: '2026-10-13',
       reportDaysInWindow: 13,
+      orgs: ['athmahealth'],
     });
+  });
+
+  it('is only as fresh as the organisation furthest behind', async () => {
+    const { service, reportDay } = setup();
+    reportDay.groupBy.mockResolvedValue([
+      { org: 'NHWebsite', _max: { day: new Date('2026-10-09T00:00:00.000Z') } },
+      { org: 'athmahealth', _max: { day: new Date('2026-10-13T00:00:00.000Z') } },
+    ]);
+    const c = await service.copilotCoverage('tenant-a', '2026-10-01', '2026-10-14');
+    expect(c.coveredThrough).toBe('2026-10-09');
+    expect(c.orgs).toEqual(['NHWebsite', 'athmahealth']);
   });
 });
 

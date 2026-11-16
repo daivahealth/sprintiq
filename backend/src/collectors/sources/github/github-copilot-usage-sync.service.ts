@@ -18,6 +18,7 @@ import {
   GithubCopilotSeat,
 } from './github-copilot-metrics.client';
 import { readGithubCopilotConfig } from './github-copilot.config';
+import { loadGithubOrgs, pickGithubOrg } from './github-orgs';
 
 /** The tenant-configuration field that names the Copilot metrics token's secret ref. */
 export const COPILOT_TOKEN_REF_FIELD = 'copilotMetricsTokenRef';
@@ -93,20 +94,12 @@ export class GithubCopilotUsageSyncService {
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
-  /** Tenants with an active GitHub configuration that names a Copilot token ref. */
-  async listEnabledTenants(): Promise<string[]> {
-    const rows = await this.prisma.tenantConfiguration.findMany({
-      where: { namespace: 'github', key: 'default', status: 'active' },
-      select: { tenantId: true, secretRefs: true },
-    });
-    return rows
-      .filter(
-        (r) =>
-          typeof (r.secretRefs as Record<string, unknown> | null)?.[
-            COPILOT_TOKEN_REF_FIELD
-          ] === 'string',
-      )
-      .map((r) => r.tenantId);
+  /** Active GitHub organisations whose effective refs name a Copilot token (ADR-0013). */
+  async listEnabledOrgs(): Promise<{ tenantId: string; organization: string }[]> {
+    const orgs = await loadGithubOrgs(this.prisma, { activeOnly: true });
+    return orgs
+      .filter((o) => typeof o.secretRefs[COPILOT_TOKEN_REF_FIELD] === 'string')
+      .map((o) => ({ tenantId: o.tenantId, organization: o.organization }));
   }
 
   /** Read-only, tenant-scoped: the cursor and last outcome per org. */
@@ -141,6 +134,7 @@ export class GithubCopilotUsageSyncService {
   async syncTenant(
     tenantId: string,
     now: Date = new Date(),
+    organization?: string,
   ): Promise<CopilotSyncResult> {
     const result: CopilotSyncResult = {
       status: 'ok',
@@ -154,7 +148,7 @@ export class GithubCopilotUsageSyncService {
       seats: 'skipped',
     };
 
-    const settings = await this.loadSettings(tenantId);
+    const settings = await this.loadSettings(tenantId, organization);
     if (!settings) {
       return { ...result, status: 'not_configured' };
     }
@@ -334,31 +328,20 @@ export class GithubCopilotUsageSyncService {
 
   private async loadSettings(
     tenantId: string,
+    organization?: string,
   ): Promise<CopilotSettings | null> {
-    const row = await this.prisma.tenantConfiguration.findUnique({
-      where: {
-        tenantId_namespace_key: {
-          tenantId,
-          namespace: 'github',
-          key: 'default',
-        },
-      },
-      select: { id: true, status: true, values: true, secretRefs: true },
-    });
-    if (!row || row.status !== 'active') {
-      return null;
-    }
-    const values = (row.values ?? {}) as Record<string, unknown>;
-    const refs = (row.secretRefs ?? {}) as Record<string, unknown>;
-    const org = values.organization;
-    const tokenRef = refs[COPILOT_TOKEN_REF_FIELD];
-    if (typeof org !== 'string' || !org || typeof tokenRef !== 'string') {
+    const org = pickGithubOrg(
+      await loadGithubOrgs(this.prisma, { tenantId }),
+      organization,
+    );
+    const tokenRef = org?.secretRefs[COPILOT_TOKEN_REF_FIELD];
+    if (!org || !org.active || typeof tokenRef !== 'string') {
       return null;
     }
     // The configuration row stands in for a connection: Copilot metrics are
     // org-level, so no repo connection owns them, and this id is what ties
-    // each raw event back to the configuration that collected it.
-    return { connectionId: row.id, org, tokenRef };
+    // each raw event back to the configuration (organisation) that collected it.
+    return { connectionId: org.configId, org: org.organization, tokenRef };
   }
 
   private async finish(

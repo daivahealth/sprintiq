@@ -158,16 +158,18 @@ describe('GithubCopilotUsageSyncService.syncTenant', () => {
     const upsert = jest.fn().mockResolvedValue({});
     const prisma = {
       tenantConfiguration: {
-        findUnique: jest.fn().mockResolvedValue(
-          opts.config === undefined
-            ? {
-                id: 'cfg_1',
-                status: 'active',
-                values: { organization: 'acme' },
-                secretRefs: { [COPILOT_TOKEN_REF_FIELD]: 'COPILOT_TOKEN' },
-              }
-            : opts.config,
-        ),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'cfg_1',
+            tenantId: 'tenant-a',
+            key: 'default',
+            status: 'active',
+            createdAt: new Date('2026-01-01'),
+            values: { organization: 'acme' },
+            secretRefs: { [COPILOT_TOKEN_REF_FIELD]: 'COPILOT_TOKEN' },
+            ...(opts.config as object | undefined),
+          },
+        ]),
       },
       githubCopilotSync: {
         findUnique: jest
@@ -209,7 +211,15 @@ describe('GithubCopilotUsageSyncService.syncTenant', () => {
       client,
       ingestion,
     );
-    return { service, upsert, getUsersDayReport, ingested, ingestion };
+    return {
+      service,
+      prisma,
+      secrets,
+      upsert,
+      getUsersDayReport,
+      ingested,
+      ingestion,
+    };
   }
 
   const okDay = (day: string) => ({
@@ -366,5 +376,45 @@ describe('GithubCopilotUsageSyncService.syncTenant', () => {
     expect(
       ingested.some((e) => e.eventType === 'code.copilot.seats.observed'),
     ).toBe(false);
+  });
+
+  it('syncs the named organisation with its own effective Copilot ref', async () => {
+    const h = setup({});
+    (h.prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([
+      {
+        id: 'cfg-d', tenantId: 't1', key: 'default', status: 'active',
+        createdAt: new Date('2026-01-01'),
+        values: { organization: 'athmahealth' },
+        secretRefs: { copilotMetricsTokenRef: 'GITHUB_COPILOT_TOKEN' },
+      },
+      {
+        id: 'cfg-nh', tenantId: 't1', key: 'nhwebsite', status: 'active',
+        createdAt: new Date('2026-11-16'),
+        values: { organization: 'NHWebsite' }, secretRefs: {},
+      },
+    ]);
+    const r = await h.service.syncTenant('t1', NOW, 'NHWebsite');
+    expect(r.org).toBe('NHWebsite');
+    expect(h.secrets.resolve).toHaveBeenCalledWith('t1', 'GITHUB_COPILOT_TOKEN');
+  });
+
+  it('lists one entry per active org with an effective Copilot ref', async () => {
+    const h = setup({});
+    (h.prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([
+      {
+        id: 'a', tenantId: 't1', key: 'default', status: 'active',
+        createdAt: new Date('2026-01-01'),
+        values: { organization: 'athmahealth' }, secretRefs: {},
+      },
+      {
+        id: 'b', tenantId: 't1', key: 'nhwebsite', status: 'active',
+        createdAt: new Date('2026-11-16'),
+        values: { organization: 'NHWebsite' },
+        secretRefs: { copilotMetricsTokenRef: 'NH_COPILOT' },
+      },
+    ]);
+    await expect(h.service.listEnabledOrgs()).resolves.toEqual([
+      { tenantId: 't1', organization: 'NHWebsite' },
+    ]);
   });
 });

@@ -1052,6 +1052,8 @@ export interface CopilotCoverage {
   /** Newest UTC report day held — GitHub publishes ~2 days after a day closes. */
   coveredThrough: string | null;
   reportDaysInWindow: number;
+  /** Organisations with a collected report; absent on an older API. */
+  orgs?: string[];
 }
 
 export interface DeveloperOverviewView {

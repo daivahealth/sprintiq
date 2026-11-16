@@ -738,7 +738,10 @@ export class ConfigurationsController {
    */
   @Roles(Role.ADMIN)
   @Post('github/copilot-sync')
-  async runCopilotSync(@CurrentUser() user: AuthUser) {
+  async runCopilotSync(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RunAuditSyncDto,
+  ) {
     if (!readGithubCopilotConfig().syncEnabled) {
       throw new BadRequestException(
         'Copilot usage sync is off for this deployment — set GITHUB_COPILOT_USAGE_SYNC=on first.',
@@ -751,8 +754,13 @@ export class ConfigurationsController {
       action: 'collector.copilot_usage_sync.requested',
       targetType: 'tenant_configuration',
       targetId: 'github',
+      metadata: { organization: dto?.organization ?? null },
     });
-    return this.copilotSync.syncTenant(user.tenantId);
+    return this.copilotSync.syncTenant(
+      user.tenantId,
+      undefined,
+      dto?.organization,
+    );
   }
 
   /** Where the Copilot sync has got to, and how its last run ended. */
