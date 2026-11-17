@@ -289,7 +289,13 @@ describe('NoCommitDetectionService audit-sync coverage gate', () => {
   });
 
   it('falls through when the route applies and has covered the day', async () => {
-    const audit = coverage({ applies: true, ok: true, reasons: [], included: ['acme'], collecting: [] });
+    const audit = coverage({
+      applies: true,
+      ok: true,
+      reasons: [],
+      included: ['acme'],
+      collecting: [],
+    });
     const result = await harness({ audit }).service.detect('tenant_a', DAY);
     expect(result.withhold).toBeNull();
     expect(result.evaluation.flagged.map((f) => f.developer)).toEqual(['erin']);

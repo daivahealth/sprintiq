@@ -211,7 +211,9 @@ describe('GithubAuditReportService.dayReport checkpoint across organisations', (
       githubAuditRun: { findMany: jest.fn().mockResolvedValue([]) },
       githubPushRange: { findMany: jest.fn().mockResolvedValue([]) },
       rawEvent: { findMany: jest.fn().mockResolvedValue([]) },
-      githubAuditCheckpoint: { findMany: jest.fn().mockResolvedValue(checkpoints) },
+      githubAuditCheckpoint: {
+        findMany: jest.fn().mockResolvedValue(checkpoints),
+      },
       tenantConfiguration: { findMany: jest.fn().mockResolvedValue(orgs) },
     };
     const svc = new GithubAuditReportService(prisma as never);

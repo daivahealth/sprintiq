@@ -54,7 +54,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 /** The lowercased owner of `owner/name`. */
 export function orgOfRepo(repoFullName: string): string {
   const slash = repoFullName.indexOf('/');
-  return (slash < 0 ? repoFullName : repoFullName.slice(0, slash)).toLowerCase();
+  return (
+    slash < 0 ? repoFullName : repoFullName.slice(0, slash)
+  ).toLowerCase();
 }
 
 export function repoInOrg(repoFullName: string, organization: string): boolean {
@@ -91,7 +93,9 @@ export function toGithubOrgs(rows: GithubOrgConfigRow[]): GithubOrg[] {
     for (const row of ordered) {
       const values = asRecord(row.values);
       const organization =
-        typeof values.organization === 'string' ? values.organization.trim() : '';
+        typeof values.organization === 'string'
+          ? values.organization.trim()
+          : '';
       if (!GITHUB_LOGIN_PATTERN.test(organization)) continue;
       const isDefault = row.key === DEFAULT_GITHUB_CONFIG_KEY;
       const secretRefs: Record<string, string> = {};
@@ -153,6 +157,8 @@ export function pickGithubOrg(
   organization?: string,
 ): GithubOrg | undefined {
   return organization
-    ? orgs.find((o) => o.organization.toLowerCase() === organization.toLowerCase())
+    ? orgs.find(
+        (o) => o.organization.toLowerCase() === organization.toLowerCase(),
+      )
     : orgs.find((o) => o.isDefault);
 }

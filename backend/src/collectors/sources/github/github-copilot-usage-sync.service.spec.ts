@@ -382,32 +382,49 @@ describe('GithubCopilotUsageSyncService.syncTenant', () => {
     const h = setup({});
     (h.prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([
       {
-        id: 'cfg-d', tenantId: 't1', key: 'default', status: 'active',
+        id: 'cfg-d',
+        tenantId: 't1',
+        key: 'default',
+        status: 'active',
         createdAt: new Date('2026-01-01'),
         values: { organization: 'athmahealth' },
         secretRefs: { copilotMetricsTokenRef: 'GITHUB_COPILOT_TOKEN' },
       },
       {
-        id: 'cfg-nh', tenantId: 't1', key: 'nhwebsite', status: 'active',
+        id: 'cfg-nh',
+        tenantId: 't1',
+        key: 'nhwebsite',
+        status: 'active',
         createdAt: new Date('2026-11-16'),
-        values: { organization: 'NHWebsite' }, secretRefs: {},
+        values: { organization: 'NHWebsite' },
+        secretRefs: {},
       },
     ]);
     const r = await h.service.syncTenant('t1', NOW, 'NHWebsite');
     expect(r.org).toBe('NHWebsite');
-    expect(h.secrets.resolve).toHaveBeenCalledWith('t1', 'GITHUB_COPILOT_TOKEN');
+    expect(h.secrets.resolve).toHaveBeenCalledWith(
+      't1',
+      'GITHUB_COPILOT_TOKEN',
+    );
   });
 
   it('lists one entry per active org with an effective Copilot ref', async () => {
     const h = setup({});
     (h.prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([
       {
-        id: 'a', tenantId: 't1', key: 'default', status: 'active',
+        id: 'a',
+        tenantId: 't1',
+        key: 'default',
+        status: 'active',
         createdAt: new Date('2026-01-01'),
-        values: { organization: 'athmahealth' }, secretRefs: {},
+        values: { organization: 'athmahealth' },
+        secretRefs: {},
       },
       {
-        id: 'b', tenantId: 't1', key: 'nhwebsite', status: 'active',
+        id: 'b',
+        tenantId: 't1',
+        key: 'nhwebsite',
+        status: 'active',
         createdAt: new Date('2026-11-16'),
         values: { organization: 'NHWebsite' },
         secretRefs: { copilotMetricsTokenRef: 'NH_COPILOT' },

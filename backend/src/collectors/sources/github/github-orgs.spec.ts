@@ -7,15 +7,16 @@ import {
   type GithubOrgConfigRow,
 } from './github-orgs';
 
-const row = (o: Record<string, unknown>): GithubOrgConfigRow => ({
-  id: `cfg-${String(o.key)}`,
-  tenantId: 't1',
-  status: 'active',
-  values: {},
-  secretRefs: {},
-  createdAt: new Date('2026-01-01T00:00:00Z'),
-  ...o,
-} as GithubOrgConfigRow);
+const row = (o: Record<string, unknown>): GithubOrgConfigRow =>
+  ({
+    id: `cfg-${String(o.key)}`,
+    tenantId: 't1',
+    status: 'active',
+    values: {},
+    secretRefs: {},
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    ...o,
+  }) as GithubOrgConfigRow;
 
 describe('github-orgs', () => {
   it('derives the lowercased org of a repo full name', () => {
@@ -31,11 +32,27 @@ describe('github-orgs', () => {
 
   it('puts the default row first, then others by creation time', () => {
     const orgs = toGithubOrgs([
-      row({ key: 'zeta', values: { organization: 'Zeta' }, createdAt: new Date('2026-03-01') }),
-      row({ key: 'nhwebsite', values: { organization: 'NHWebsite' }, createdAt: new Date('2026-02-01') }),
-      row({ key: 'default', values: { organization: 'athmahealth' }, createdAt: new Date('2026-05-01') }),
+      row({
+        key: 'zeta',
+        values: { organization: 'Zeta' },
+        createdAt: new Date('2026-03-01'),
+      }),
+      row({
+        key: 'nhwebsite',
+        values: { organization: 'NHWebsite' },
+        createdAt: new Date('2026-02-01'),
+      }),
+      row({
+        key: 'default',
+        values: { organization: 'athmahealth' },
+        createdAt: new Date('2026-05-01'),
+      }),
     ]);
-    expect(orgs.map((o) => o.organization)).toEqual(['athmahealth', 'NHWebsite', 'Zeta']);
+    expect(orgs.map((o) => o.organization)).toEqual([
+      'athmahealth',
+      'NHWebsite',
+      'Zeta',
+    ]);
     expect(orgs[0].isDefault).toBe(true);
   });
 
@@ -44,7 +61,10 @@ describe('github-orgs', () => {
       row({
         key: 'default',
         values: { organization: 'athmahealth' },
-        secretRefs: { tokenRef: 'GITHUB_TOKEN', auditLogTokenRef: 'GITHUB_AUDIT_TOKEN' },
+        secretRefs: {
+          tokenRef: 'GITHUB_TOKEN',
+          auditLogTokenRef: 'GITHUB_AUDIT_TOKEN',
+        },
       }),
       row({
         key: 'nhwebsite',
@@ -63,9 +83,17 @@ describe('github-orgs', () => {
 
   it('never inherits across tenants and drops rows without a valid login', () => {
     const orgs = toGithubOrgs([
-      row({ key: 'default', values: { organization: 'athmahealth' }, secretRefs: { tokenRef: 'A' } }),
+      row({
+        key: 'default',
+        values: { organization: 'athmahealth' },
+        secretRefs: { tokenRef: 'A' },
+      }),
       row({ tenantId: 't2', key: 'other', values: { organization: 'Other' } }),
-      row({ tenantId: 't2', key: 'bad', values: { organization: 'not a login' } }),
+      row({
+        tenantId: 't2',
+        key: 'bad',
+        values: { organization: 'not a login' },
+      }),
     ]);
     const other = orgs.find((o) => o.tenantId === 't2');
     expect(other?.secretRefs).toEqual({});
@@ -84,7 +112,11 @@ describe('github-orgs', () => {
 
   it('marks disabled rows inactive', () => {
     const [o] = toGithubOrgs([
-      row({ key: 'default', status: 'disabled', values: { organization: 'athmahealth' } }),
+      row({
+        key: 'default',
+        status: 'disabled',
+        values: { organization: 'athmahealth' },
+      }),
     ]);
     expect(o.active).toBe(false);
   });

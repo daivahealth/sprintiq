@@ -639,7 +639,9 @@ describe('ConfigurationsService', () => {
     it('saves a non-default org row with blank token refs (they are inherited)', async () => {
       const { svc, prisma } = build(null);
       (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
-      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(saved({}));
+      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(
+        saved({}),
+      );
 
       await svc.upsertTenantConfiguration('t1', {
         namespace: 'github',
@@ -654,7 +656,9 @@ describe('ConfigurationsService', () => {
     it('never touches the bridged default-repo connection when saving a non-default row', async () => {
       const { svc, prisma, connections } = build(null);
       (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
-      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(saved({}));
+      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(
+        saved({}),
+      );
       (connections.findByTenantSourceAndName as jest.Mock).mockResolvedValue({
         id: 'bridge',
         status: 'active',

@@ -1,13 +1,16 @@
 import { toGithubOrgs } from '../sources/github/github-orgs';
 import { GithubOrgSyncSchedulerService } from './github-org-sync-scheduler.service';
 
-const cfgRow = (o: Record<string, unknown>): Record<string, unknown> & Parameters<typeof toGithubOrgs>[0][number] => ({
-  id: `cfg-${String(o.tenantId)}-${String(o.key ?? 'default')}`,
-  key: 'default',
-  status: 'active',
-  createdAt: new Date('2026-01-01T00:00:00Z'),
-  ...o,
-} as never);
+const cfgRow = (
+  o: Record<string, unknown>,
+): Record<string, unknown> & Parameters<typeof toGithubOrgs>[0][number] =>
+  ({
+    id: `cfg-${String(o.tenantId)}-${String(o.key ?? 'default')}`,
+    key: 'default',
+    status: 'active',
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    ...o,
+  }) as never;
 
 function setup(
   rows: Record<string, unknown>[],
@@ -95,7 +98,9 @@ describe('GithubOrgSyncSchedulerService', () => {
       tenant('t3', { organization: 'acme' }, { tokenRef: 'MISSING' }),
     ]);
     try {
-      expect(toGithubOrgs([tenant('t1', {}, { tokenRef: 'GH' })])).toHaveLength(0);
+      expect(toGithubOrgs([tenant('t1', {}, { tokenRef: 'GH' })])).toHaveLength(
+        0,
+      );
       await t.svc.tick();
       expect(t.orgSync.syncOrgRepos).not.toHaveBeenCalled();
       const [o2] = toGithubOrgs([tenant('t2', { organization: 'acme' }, {})]);
@@ -130,7 +135,13 @@ describe('GithubOrgSyncSchedulerService', () => {
       await svc.tick();
       expect(orgSync.syncOrgRepos.mock.calls).toEqual([
         ['t1', 'athmahealth', 'GITHUB_TOKEN', 'tok:GITHUB_TOKEN', 30],
-        ['t1', 'NHWebsite', 'GITHUB_TOKEN_NHWEBSITE', 'tok:GITHUB_TOKEN_NHWEBSITE', 90],
+        [
+          't1',
+          'NHWebsite',
+          'GITHUB_TOKEN_NHWEBSITE',
+          'tok:GITHUB_TOKEN_NHWEBSITE',
+          90,
+        ],
       ]);
     } finally {
       restore();
@@ -139,8 +150,17 @@ describe('GithubOrgSyncSchedulerService', () => {
 
   it('a failing organisation does not stop the next one', async () => {
     const { svc, orgSync, restore } = setup([
-      cfgRow({ tenantId: 't1', values: { organization: 'athmahealth' }, secretRefs: { tokenRef: 'GITHUB_TOKEN' } }),
-      cfgRow({ tenantId: 't1', key: 'nhwebsite', values: { organization: 'NHWebsite' }, createdAt: new Date('2026-11-16') }),
+      cfgRow({
+        tenantId: 't1',
+        values: { organization: 'athmahealth' },
+        secretRefs: { tokenRef: 'GITHUB_TOKEN' },
+      }),
+      cfgRow({
+        tenantId: 't1',
+        key: 'nhwebsite',
+        values: { organization: 'NHWebsite' },
+        createdAt: new Date('2026-11-16'),
+      }),
     ]);
     orgSync.syncOrgRepos.mockRejectedValueOnce(new Error('boom'));
     try {

@@ -245,17 +245,30 @@ const DAY = '2026-10-05';
 const INGEST = readGithubAuditConfig({ GITHUB_AUDIT_SYNC_MODE: 'ingest' });
 
 describe('coverageForDay across organisations (ADR-0013)', () => {
-  function seededCheckpoint(prisma: ReturnType<typeof setup>['prisma'], organization: string) {
+  function seededCheckpoint(
+    prisma: ReturnType<typeof setup>['prisma'],
+    organization: string,
+  ) {
     prisma.githubAuditCheckpoint.rows.push({
-      id: `cp-${organization}`, tenantId: 't1', organization,
+      id: `cp-${organization}`,
+      tenantId: 't1',
+      organization,
       seededAt: new Date(NOW.getTime() - 86_400_000 * 3),
       checkpointAt: NOW,
     });
   }
-  function sweptAfterDay(prisma: ReturnType<typeof setup>['prisma'], organization: string) {
+  function sweptAfterDay(
+    prisma: ReturnType<typeof setup>['prisma'],
+    organization: string,
+  ) {
     prisma.githubAuditRun.rows.push({
-      id: `sw-${organization}`, tenantId: 't1', organization, trigger: 'full_sweep',
-      status: 'success', mode: 'ingest', startedAt: NOW,
+      id: `sw-${organization}`,
+      tenantId: 't1',
+      organization,
+      trigger: 'full_sweep',
+      status: 'success',
+      mode: 'ingest',
+      startedAt: NOW,
     });
   }
 
@@ -264,7 +277,9 @@ describe('coverageForDay across organisations (ADR-0013)', () => {
     seedTenant(prisma, 't1', ['athmahealth/ehr']);
     const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
     expect(c.included).toEqual(['athmahealth']);
-    expect(c.reasons).toContain('audit sync has not completed its seeding pass');
+    expect(c.reasons).toContain(
+      'audit sync has not completed its seeding pass',
+    );
   });
 
   it('a second org that has not finished its first seeding + sweep is collecting, not included', async () => {
@@ -274,7 +289,11 @@ describe('coverageForDay across organisations (ADR-0013)', () => {
     seededCheckpoint(prisma, 'athmahealth');
     sweptAfterDay(prisma, 'athmahealth');
     const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
-    expect(c).toMatchObject({ ok: true, included: ['athmahealth'], collecting: ['NHWebsite'] });
+    expect(c).toMatchObject({
+      ok: true,
+      included: ['athmahealth'],
+      collecting: ['NHWebsite'],
+    });
   });
 
   it('once included, an uncovered second org withholds, named in the reason', async () => {
@@ -286,8 +305,13 @@ describe('coverageForDay across organisations (ADR-0013)', () => {
     seededCheckpoint(prisma, 'NHWebsite');
     // NHWebsite swept successfully once, but long before the day ended.
     prisma.githubAuditRun.rows.push({
-      id: 'old', tenantId: 't1', organization: 'NHWebsite', trigger: 'full_sweep',
-      status: 'success', mode: 'ingest', startedAt: new Date('2026-01-01T00:00:00Z'),
+      id: 'old',
+      tenantId: 't1',
+      organization: 'NHWebsite',
+      trigger: 'full_sweep',
+      status: 'success',
+      mode: 'ingest',
+      startedAt: new Date('2026-01-01T00:00:00Z'),
     });
     const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
     expect(c.included).toEqual(['athmahealth', 'NHWebsite']);
@@ -298,12 +322,18 @@ describe('coverageForDay across organisations (ADR-0013)', () => {
   it("a pending range in one org never counts against another org's coverage", async () => {
     const { svc, prisma } = setup();
     seedTenant(prisma, 't1', ['athmahealth/ehr']);
-    seedOrg(prisma, 't1', 'NHWebsite', ['NHWebsite/site'], { status: 'disabled' });
+    seedOrg(prisma, 't1', 'NHWebsite', ['NHWebsite/site'], {
+      status: 'disabled',
+    });
     seededCheckpoint(prisma, 'athmahealth');
     sweptAfterDay(prisma, 'athmahealth');
     prisma.githubPushRange.rows.push({
-      id: 'r', tenantId: 't1', repoFullName: 'NHWebsite/site', ref: 'main',
-      status: 'pending', createdAt: NOW,
+      id: 'r',
+      tenantId: 't1',
+      repoFullName: 'NHWebsite/site',
+      ref: 'main',
+      status: 'pending',
+      createdAt: NOW,
     });
     const c = await svc.coverageForDay('t1', DAY, INGEST, NOW);
     expect(c).toMatchObject({ ok: true, included: ['athmahealth'] });
@@ -327,6 +357,10 @@ describe('coverageForDay across organisations (ADR-0013)', () => {
     seedTenant(prisma, 't1', ['athmahealth/ehr']);
     seedOrg(prisma, 't1', 'NHWebsite', []);
     const c = await svc.coverageForDay('t1', DAY, SHADOW, NOW);
-    expect(c).toMatchObject({ applies: false, ok: true, included: ['athmahealth', 'NHWebsite'] });
+    expect(c).toMatchObject({
+      applies: false,
+      ok: true,
+      included: ['athmahealth', 'NHWebsite'],
+    });
   });
 });

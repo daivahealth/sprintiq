@@ -468,7 +468,10 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
       orgs: [],
     });
     reportDay.groupBy.mockResolvedValue([
-      { org: 'athmahealth', _max: { day: new Date('2026-10-13T00:00:00.000Z') } },
+      {
+        org: 'athmahealth',
+        _max: { day: new Date('2026-10-13T00:00:00.000Z') },
+      },
     ]);
     reportDay.findMany.mockResolvedValue(
       Array.from({ length: 13 }, () => ({ day: new Date() })),
@@ -487,9 +490,16 @@ describe('CodeService — Copilot usage projection (ADR-0012)', () => {
     const { service, reportDay } = setup();
     reportDay.groupBy.mockResolvedValue([
       { org: 'NHWebsite', _max: { day: new Date('2026-10-09T00:00:00.000Z') } },
-      { org: 'athmahealth', _max: { day: new Date('2026-10-13T00:00:00.000Z') } },
+      {
+        org: 'athmahealth',
+        _max: { day: new Date('2026-10-13T00:00:00.000Z') },
+      },
     ]);
-    const c = await service.copilotCoverage('tenant-a', '2026-10-01', '2026-10-14');
+    const c = await service.copilotCoverage(
+      'tenant-a',
+      '2026-10-01',
+      '2026-10-14',
+    );
     expect(c.coveredThrough).toBe('2026-10-09');
     expect(c.orgs).toEqual(['NHWebsite', 'athmahealth']);
   });

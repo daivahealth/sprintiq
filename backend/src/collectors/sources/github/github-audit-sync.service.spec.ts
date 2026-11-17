@@ -1166,9 +1166,27 @@ describe('GithubAuditSyncService.status', () => {
     seedTenant(prisma, 't1', ['acme/ehr']);
     seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
     prisma.githubPushRange.rows.push(
-      { id: 'a', tenantId: 't1', repoFullName: 'acme/ehr', status: 'done', truncated: true },
-      { id: 'b', tenantId: 't1', repoFullName: 'acme/ehr', status: 'done', truncated: false },
-      { id: 'c', tenantId: 't1', repoFullName: 'acme/ehr', status: 'dismissed', truncated: true },
+      {
+        id: 'a',
+        tenantId: 't1',
+        repoFullName: 'acme/ehr',
+        status: 'done',
+        truncated: true,
+      },
+      {
+        id: 'b',
+        tenantId: 't1',
+        repoFullName: 'acme/ehr',
+        status: 'done',
+        truncated: false,
+      },
+      {
+        id: 'c',
+        tenantId: 't1',
+        repoFullName: 'acme/ehr',
+        status: 'dismissed',
+        truncated: true,
+      },
       { id: 'd', tenantId: 't2', status: 'done', truncated: true },
     );
     expect(await svc.status('t1', SHADOW, NOW)).toMatchObject({

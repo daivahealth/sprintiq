@@ -55,7 +55,10 @@ export class GithubCopilotSchedulerService {
     }
     this.running = true;
     try {
-      for (const { tenantId, organization } of await this.sync.listEnabledOrgs()) {
+      for (const {
+        tenantId,
+        organization,
+      } of await this.sync.listEnabledOrgs()) {
         // One organisation's revoked token must not cancel the sweep for the rest.
         try {
           await this.tenantContext.runWithTenant(tenantId, () =>

@@ -329,7 +329,11 @@ export class ConfigurationsController {
         org.organization,
       );
       organizations.push(
-        toOrganizationView(org, audit, inclusion.get(org.organization) ?? 'disabled'),
+        toOrganizationView(
+          org,
+          audit,
+          inclusion.get(org.organization) ?? 'disabled',
+        ),
       );
     }
     return { organizations };
@@ -416,7 +420,9 @@ export class ConfigurationsController {
 
     const backfillDays =
       dto.backfillDays ??
-      (typeof org.values.backfillDays === 'number' ? org.values.backfillDays : 90);
+      (typeof org.values.backfillDays === 'number'
+        ? org.values.backfillDays
+        : 90);
 
     return this.githubOrgSync.syncOrgRepos(
       user.tenantId,
@@ -615,7 +621,12 @@ export class ConfigurationsController {
         organization,
       );
     }
-    return this.auditSync.status(user.tenantId, undefined, undefined, organization);
+    return this.auditSync.status(
+      user.tenantId,
+      undefined,
+      undefined,
+      organization,
+    );
   }
 
   /**

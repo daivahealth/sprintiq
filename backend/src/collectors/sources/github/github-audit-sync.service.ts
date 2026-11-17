@@ -459,7 +459,9 @@ export class GithubAuditSyncService {
       }),
     ]);
     const enabled =
-      !!org && org.active && typeof org.secretRefs.auditLogTokenRef === 'string';
+      !!org &&
+      org.active &&
+      typeof org.secretRefs.auditLogTokenRef === 'string';
     const checkpointAt = checkpoint?.checkpointAt ?? null;
     const lagMinutes = checkpointAt
       ? Math.round((now.getTime() - checkpointAt.getTime()) / 60_000)
@@ -1004,7 +1006,10 @@ export class GithubAuditSyncService {
     // none of those checks, so it waits.
     const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
       where: {
-        tenantId_organization: { tenantId, organization: settings.organization },
+        tenantId_organization: {
+          tenantId,
+          organization: settings.organization,
+        },
       },
     });
     if (!checkpoint?.seededAt) {
@@ -1064,10 +1069,7 @@ export class GithubAuditSyncService {
       return { summary: skipped(settings.reason) };
     }
     try {
-      const repos = await this.registeredRepos(
-        tenantId,
-        settings.organization,
-      );
+      const repos = await this.registeredRepos(tenantId, settings.organization);
       return { settings, repos, counters, startedMs, skipped };
     } catch (err) {
       return {
@@ -1185,7 +1187,10 @@ export class GithubAuditSyncService {
   ): Promise<AuditRunSummary> {
     const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
       where: {
-        tenantId_organization: { tenantId, organization: settings.organization },
+        tenantId_organization: {
+          tenantId,
+          organization: settings.organization,
+        },
       },
     });
     const run = await this.prisma.githubAuditRun.create({

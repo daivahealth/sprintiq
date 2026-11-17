@@ -69,7 +69,8 @@ export class GithubAuditSchedulerService {
       AUDIT_SWEEP_KEY,
       cfg.intervalMinutes,
       'GitHub audit sync',
-      (tenantId, organization) => this.sync.runTenant(tenantId, cfg, undefined, organization),
+      (tenantId, organization) =>
+        this.sync.runTenant(tenantId, cfg, undefined, organization),
     );
   }
 
@@ -91,7 +92,8 @@ export class GithubAuditSchedulerService {
       FULL_SWEEP_KEY,
       cfg.fullSweepMinutes,
       'GitHub full branch sweep',
-      (tenantId, organization) => this.sync.runFullSweep(tenantId, cfg, undefined, organization),
+      (tenantId, organization) =>
+        this.sync.runFullSweep(tenantId, cfg, undefined, organization),
     );
   }
 
@@ -152,7 +154,9 @@ export class GithubAuditSchedulerService {
             );
           }
         } catch (err) {
-          this.logger.error(`${label} failed for ${who}: ${(err as Error).message}`);
+          this.logger.error(
+            `${label} failed for ${who}: ${(err as Error).message}`,
+          );
         }
       }
     } finally {

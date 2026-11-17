@@ -2,7 +2,11 @@ import { BadRequestException } from '@nestjs/common';
 import { GithubOrg } from '../../collectors/sources/github/github-orgs';
 import { assertKnownActiveOrgIn } from './configurations.controller';
 
-function org(organization: string, active: boolean, isDefault = false): GithubOrg {
+function org(
+  organization: string,
+  active: boolean,
+  isDefault = false,
+): GithubOrg {
   return {
     configId: `cfg-${organization}`,
     tenantId: 't1',
@@ -32,7 +36,9 @@ describe('assertKnownActiveOrgIn', () => {
   });
 
   it('rejects an unknown organisation with 400', () => {
-    expect(() => assertKnownActiveOrgIn(orgs, 'nope')).toThrow(BadRequestException);
+    expect(() => assertKnownActiveOrgIn(orgs, 'nope')).toThrow(
+      BadRequestException,
+    );
   });
 
   it('rejects a disabled organisation with 400', () => {

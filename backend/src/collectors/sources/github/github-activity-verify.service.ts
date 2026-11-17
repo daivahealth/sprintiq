@@ -394,7 +394,9 @@ export class GithubActivityVerifyService {
             checkpointAt: checkpoints.some((c) => !c.checkpointAt)
               ? null
               : new Date(
-                  Math.min(...checkpoints.map((c) => c.checkpointAt!.getTime())),
+                  Math.min(
+                    ...checkpoints.map((c) => c.checkpointAt!.getTime()),
+                  ),
                 ),
           };
 

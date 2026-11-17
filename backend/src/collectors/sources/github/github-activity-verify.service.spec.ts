@@ -538,8 +538,16 @@ describe('GithubActivityVerifyService branchCommitsCollectedThrough across organ
     expect(
       await run(
         [
-          { organization: 'acme', checkpointAt: new Date('2026-10-27T09:35:00Z'), seededAt: seeded },
-          { organization: 'beta', checkpointAt: new Date('2026-10-20T00:00:00Z'), seededAt: seeded },
+          {
+            organization: 'acme',
+            checkpointAt: new Date('2026-10-27T09:35:00Z'),
+            seededAt: seeded,
+          },
+          {
+            organization: 'beta',
+            checkpointAt: new Date('2026-10-20T00:00:00Z'),
+            seededAt: seeded,
+          },
         ],
         [acme, { key: 'beta', organization: 'beta' }],
       ),
@@ -550,7 +558,11 @@ describe('GithubActivityVerifyService branchCommitsCollectedThrough across organ
     expect(
       await run(
         [
-          { organization: 'acme', checkpointAt: new Date('2026-10-27T09:35:00Z'), seededAt: seeded },
+          {
+            organization: 'acme',
+            checkpointAt: new Date('2026-10-27T09:35:00Z'),
+            seededAt: seeded,
+          },
           { organization: 'beta', checkpointAt: null, seededAt: null },
         ],
         [acme, { key: 'beta', organization: 'beta' }],
@@ -562,8 +574,16 @@ describe('GithubActivityVerifyService branchCommitsCollectedThrough across organ
     expect(
       await run(
         [
-          { organization: 'acme', checkpointAt: new Date('2026-10-27T09:35:00Z'), seededAt: seeded },
-          { organization: 'Beta', checkpointAt: new Date('2026-09-01T00:00:00Z'), seededAt: seeded },
+          {
+            organization: 'acme',
+            checkpointAt: new Date('2026-10-27T09:35:00Z'),
+            seededAt: seeded,
+          },
+          {
+            organization: 'Beta',
+            checkpointAt: new Date('2026-09-01T00:00:00Z'),
+            seededAt: seeded,
+          },
         ],
         [acme, { key: 'beta', organization: 'beta', status: 'disabled' }],
       ),

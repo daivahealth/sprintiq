@@ -80,7 +80,9 @@ export class GithubAuditReportService {
     );
     if (rows.length === 0) return null;
     return rows.reduce((a, b) =>
-      (a.checkpointAt?.getTime() ?? 0) <= (b.checkpointAt?.getTime() ?? 0) ? a : b,
+      (a.checkpointAt?.getTime() ?? 0) <= (b.checkpointAt?.getTime() ?? 0)
+        ? a
+        : b,
     );
   }
 

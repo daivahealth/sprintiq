@@ -95,7 +95,9 @@ export class GithubCopilotUsageSyncService {
   ) {}
 
   /** Active GitHub organisations whose effective refs name a Copilot token (ADR-0013). */
-  async listEnabledOrgs(): Promise<{ tenantId: string; organization: string }[]> {
+  async listEnabledOrgs(): Promise<
+    { tenantId: string; organization: string }[]
+  > {
     const orgs = await loadGithubOrgs(this.prisma, { activeOnly: true });
     return orgs
       .filter((o) => typeof o.secretRefs[COPILOT_TOKEN_REF_FIELD] === 'string')

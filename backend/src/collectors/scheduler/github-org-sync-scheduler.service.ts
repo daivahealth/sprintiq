@@ -61,8 +61,9 @@ export class GithubOrgSyncSchedulerService {
     for (const org of orgs) {
       const label = `[tenant ${org.tenantId}] [org ${org.organization}]`;
       try {
-        const result = await this.tenantContext.runWithTenant(org.tenantId, () =>
-          this.syncOrg(org),
+        const result = await this.tenantContext.runWithTenant(
+          org.tenantId,
+          () => this.syncOrg(org),
         );
         if (result) {
           this.logger.log(
@@ -70,7 +71,9 @@ export class GithubOrgSyncSchedulerService {
           );
         }
       } catch (err) {
-        this.logger.error(`${label} scheduled org sync failed: ${(err as Error).message}`);
+        this.logger.error(
+          `${label} scheduled org sync failed: ${(err as Error).message}`,
+        );
       }
     }
   }

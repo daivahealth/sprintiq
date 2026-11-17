@@ -80,7 +80,12 @@ describe('GithubAuditSchedulerService', () => {
         order.push(`start:${org}`);
         await Promise.resolve();
         order.push(`end:${org}`);
-        return { tenantId: 't1', status: 'success', counters: {}, durationMs: 0 };
+        return {
+          tenantId: 't1',
+          status: 'success',
+          counters: {},
+          durationMs: 0,
+        };
       },
     );
 
@@ -92,7 +97,12 @@ describe('GithubAuditSchedulerService', () => {
       'start:NHWebsite',
       'end:NHWebsite',
     ]);
-    expect(sync.runTenant).toHaveBeenCalledWith('t1', expect.anything(), undefined, 'NHWebsite');
+    expect(sync.runTenant).toHaveBeenCalledWith(
+      't1',
+      expect.anything(),
+      undefined,
+      'NHWebsite',
+    );
   });
 
   it('a throwing organisation never stops the next', async () => {
@@ -103,7 +113,12 @@ describe('GithubAuditSchedulerService', () => {
       { tenantId: 't1', organization: 'NHWebsite' },
     ]);
     sync.runTenant.mockRejectedValueOnce(new Error('boom'));
-    sync.runTenant.mockResolvedValueOnce({ tenantId: 't1', status: 'success', counters: {}, durationMs: 0 });
+    sync.runTenant.mockResolvedValueOnce({
+      tenantId: 't1',
+      status: 'success',
+      counters: {},
+      durationMs: 0,
+    });
     await svc.tick();
     expect(sync.runTenant).toHaveBeenCalledTimes(2);
   });
