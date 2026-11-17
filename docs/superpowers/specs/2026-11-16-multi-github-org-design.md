@@ -48,6 +48,10 @@ single combined digest across all included organisations (§6).
 
 ## 3. Schema and migration
 
+Update 2026-11-17: a blank `backfillDays` / `syncIntervalMinutes` on an added
+row inherits the default row's (reported as `inheritedValues`); the two history
+settings are row values, never inherited. No schema change.
+
 **Configuration rows (no schema change).**
 - `athmahealth` stays `github/default`, untouched.
 - Each further org is a row keyed `github/<lowercased org login>` with the same
@@ -86,6 +90,11 @@ Org-wide jobs run **once per active GitHub row, sequentially**, ordered by row
 `createdAt` (so `default`/athmahealth first). Each pass has its own settings,
 state and run record. A pass's failure (refused token, rate limit, exception)
 marks only that org's run; the loop always continues.
+
+Update 2026-11-17: an added org's first seeding pass also plans branch-history
+ranges (per-row `branchHistoryLookbackDays` / `maxHistoryBranches`; first org
+keeps the env defaults), and `reread-branch-history` takes an optional
+`organization`. See ADR-0013's 2026-11-17 amendment.
 
 **Unchanged, already per repo:** the poller, backfill, commit/PR/review/message
 reconcilers, PR-commit backfill, "Sync now". athmahealth connections are not
