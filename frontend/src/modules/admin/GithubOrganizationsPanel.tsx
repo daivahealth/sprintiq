@@ -153,10 +153,10 @@ function OrgEditor({
           <Input value={draft.syncIntervalMinutes} inputMode="numeric" placeholder={inheritedValuePlaceholder('syncIntervalMinutes', defaultOrg, '240')} onChange={(e) => set('syncIntervalMinutes', e.target.value)} />
         </Field>
         <Field label="Branch history lookback (days)">
-          <Input value={draft.branchHistoryLookbackDays} inputMode="numeric" placeholder="blank = 30" onChange={(e) => set('branchHistoryLookbackDays', e.target.value)} />
+          <Input value={draft.branchHistoryLookbackDays} inputMode="numeric" placeholder="blank = default (30)" onChange={(e) => set('branchHistoryLookbackDays', e.target.value)} />
         </Field>
         <Field label="Max branches to read">
-          <Input value={draft.maxHistoryBranches} inputMode="numeric" placeholder="blank = 200" onChange={(e) => set('maxHistoryBranches', e.target.value)} />
+          <Input value={draft.maxHistoryBranches} inputMode="numeric" placeholder="blank = default (200)" onChange={(e) => set('maxHistoryBranches', e.target.value)} />
         </Field>
       </div>
       <label className="flex items-center gap-2 text-xs text-fg-secondary">

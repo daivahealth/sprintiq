@@ -532,3 +532,58 @@ describe('rereadBranchHistory for one organisation', () => {
     expect(prisma.githubRefTip.rows).toHaveLength(0);
   });
 });
+
+describe('rereadBranchHistory with an organisation — guards', () => {
+  function seeded(orgs: string[]) {
+    const s = setup();
+    seedTenant(s.prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(s.prisma, 't1', 'NHWebsite', ['NHWebsite/a']);
+    for (const o of orgs) {
+      s.prisma.githubAuditCheckpoint.rows.push({
+        id: `cp-${o}`,
+        tenantId: 't1',
+        organization: o,
+        seededAt,
+        checkpointAt,
+      });
+    }
+    for (const repo of ['athmahealth/ehr', 'NHWebsite/a']) {
+      s.prisma.githubRefTip.rows.push({
+        id: `tip-${repo}`,
+        tenantId: 't1',
+        repoFullName: repo,
+        ref: 'HEAD',
+        sha: 'm',
+        seenAt: NOW,
+      });
+    }
+    return s;
+  }
+
+  it('named repos of another organisation are reported unknown and their tips untouched', async () => {
+    const { svc, prisma } = seeded(['athmahealth', 'NHWebsite']);
+    const r = await svc.rereadBranchHistory(
+      't1',
+      ['NHWebsite/a', 'athmahealth/ehr'],
+      INGEST,
+      'NHWebsite',
+    );
+    expect(r.repos).toEqual(['NHWebsite/a']);
+    expect(r.unknown).toEqual(['athmahealth/ehr']);
+    expect(prisma.githubRefTip.rows.map((t) => t.repoFullName)).toEqual([
+      'athmahealth/ehr',
+    ]);
+  });
+
+  it('an organisation that is not seeded yet is not_seeded, even if another is', async () => {
+    const { svc, prisma } = seeded(['athmahealth']);
+    const r = await svc.rereadBranchHistory(
+      't1',
+      undefined,
+      INGEST,
+      'NHWebsite',
+    );
+    expect(r).toMatchObject({ status: 'not_seeded', repos: [] });
+    expect(prisma.githubRefTip.rows).toHaveLength(2);
+  });
+});

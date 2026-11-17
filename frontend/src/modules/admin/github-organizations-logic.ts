@@ -116,6 +116,7 @@ export function inheritedValuePlaceholder(
 export interface RereadResult {
   status: 'scheduled' | 'not_ingest' | 'not_seeded';
   repos: string[];
+  readOnNextPushOnly?: boolean;
 }
 
 /** What "Read branch history" tells the admin. */
@@ -123,7 +124,11 @@ export function rereadMessage(r: RereadResult): string {
   if (r.status === 'not_seeded') return 'Not seeded yet — wait for the first sweep.';
   if (r.status === 'not_ingest') return 'Audit route is not in ingest mode.';
   const n = r.repos.length;
-  return `Branch history will be read for ${n} ${n === 1 ? 'repo' : 'repos'} at the next full sweep (runs hourly at :02 UTC).`;
+  if (n === 0) return 'No repositories registered for this organisation yet — run Sync org first.';
+  const when = r.readOnNextPushOnly
+    ? 'when each repository is next pushed to (full sweep is off)'
+    : 'at the next full branch sweep (runs hourly)';
+  return `Branch history will be read for ${n} ${n === 1 ? 'repo' : 'repos'} ${when}.`;
 }
 
 /** Settings that exist only on an added organisation's card; the first organisation's form never shows them. */

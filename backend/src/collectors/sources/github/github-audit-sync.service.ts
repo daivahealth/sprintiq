@@ -614,20 +614,29 @@ export class GithubAuditSyncService {
         .map((c) => c.organization.toLowerCase()),
     );
     if (seededOrgs.size === 0) return { status: 'not_seeded', ...empty };
+    if (organization && !seededOrgs.has(organization.toLowerCase())) {
+      return { status: 'not_seeded', ...empty };
+    }
     const registered = await this.registeredRepos(tenantId);
-    // `repos` wins; else one organisation's registered repos; else all.
-    const wanted =
-      repos && repos.length > 0
-        ? repos
-        : [...registered.keys()].filter(
-            (r) => !organization || repoInOrg(r, organization),
-          );
+    // Named repos, else all registered ones; with an organisation, only its
+    // repos — a named repo of another organisation is reported as unknown.
+    const named = repos && repos.length > 0 ? repos : undefined;
+    const outsideOrg =
+      organization && named
+        ? named.filter((r) => !repoInOrg(r, organization))
+        : [];
+    const wanted = (named ?? [...registered.keys()]).filter(
+      (r) => !organization || repoInOrg(r, organization),
+    );
     // A repo whose organisation has not been seeded yet is not re-read: its
     // first seeding pass reads its history anyway (ADR-0013).
     const targets = wanted.filter(
       (r) => registered.has(r) && seededOrgs.has(orgOfRepo(r)),
     );
-    const unknown = wanted.filter((r) => !targets.includes(r));
+    const unknown = [
+      ...wanted.filter((r) => !targets.includes(r)),
+      ...outsideOrg,
+    ];
     if (targets.length > 0) {
       await this.prisma.githubRefTip.deleteMany({
         where: { tenantId, repoFullName: { in: targets } },

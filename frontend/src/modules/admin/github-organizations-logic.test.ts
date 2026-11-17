@@ -115,9 +115,15 @@ describe('inheritedValuePlaceholder', () => {
 describe('rereadMessage', () => {
   it('words each outcome', () => {
     expect(rereadMessage({ status: 'scheduled', repos: ['a/b', 'a/c'] })).toBe(
-      'Branch history will be read for 2 repos at the next full sweep (runs hourly at :02 UTC).',
+      'Branch history will be read for 2 repos at the next full branch sweep (runs hourly).',
     );
     expect(rereadMessage({ status: 'scheduled', repos: ['a/b'] })).toMatch(/for 1 repo at/);
+    expect(rereadMessage({ status: 'scheduled', repos: ['a/b'], readOnNextPushOnly: true })).toBe(
+      'Branch history will be read for 1 repo when each repository is next pushed to (full sweep is off).',
+    );
+    expect(rereadMessage({ status: 'scheduled', repos: [] })).toBe(
+      'No repositories registered for this organisation yet — run Sync org first.',
+    );
     expect(rereadMessage({ status: 'not_seeded', repos: [] })).toBe('Not seeded yet — wait for the first sweep.');
     expect(rereadMessage({ status: 'not_ingest', repos: [] })).toBe('Audit route is not in ingest mode.');
   });
