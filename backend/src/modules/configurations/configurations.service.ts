@@ -349,6 +349,7 @@ export class ConfigurationsService {
     values: Record<string, unknown>,
     existing: TenantConfiguration | null,
   ): Promise<void> {
+    assertHistorySettingRanges(values);
     const organization =
       typeof values.organization === 'string' ? values.organization.trim() : '';
     const previous = (existing?.values as Record<string, unknown> | null)
@@ -608,4 +609,22 @@ function diffKeys(
     }
   }
   return changed;
+}
+
+/** Per-organisation branch-history settings and their allowed ranges. */
+const HISTORY_SETTING_RANGES: Array<[string, string, number, number]> = [
+  ['branchHistoryLookbackDays', 'Branch history lookback (days)', 1, 90],
+  ['maxHistoryBranches', 'Max branches to read', 0, 500],
+];
+
+function assertHistorySettingRanges(values: Record<string, unknown>): void {
+  for (const [key, label, min, max] of HISTORY_SETTING_RANGES) {
+    const v = values[key];
+    if (v === undefined || v === null || v === '') continue;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) {
+      throw new BadRequestException(
+        `"${label}" must be a whole number between ${min} and ${max}.`,
+      );
+    }
+  }
 }

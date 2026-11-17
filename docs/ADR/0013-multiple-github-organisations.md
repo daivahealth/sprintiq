@@ -65,3 +65,11 @@ The poller, backfill and reconcilers are already per repository (`Connection.con
 **Per-organisation env tunables.** Out of scope. One set of tunables is simpler to operate, and no case yet needs them to differ.
 
 **An organisation filter on dashboards.** Out of scope; every dashboard stays tenant-wide.
+
+## Amendment 2026-11-17: per-organisation branch history, window inheritance
+
+Two settings now live on each organisation's row: `branchHistoryLookbackDays` (1–90) and `maxHistoryBranches` (0–500). Their defaults: the first organisation keeps the env values (`GITHUB_AUDIT_NEW_BRANCH_LOOKBACK_DAYS`, `GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES`), so its behaviour is unchanged; an added organisation uses the env lookback and a cap of 200 (the env cap of 50 left repos with 80–100+ branches without history). The effective values come from one helper (`branchHistorySettings`). This replaces, in part, the "Per-organisation env tunables" alternative above: only these two are per organisation.
+
+An **added** organisation's first seeding pass now plans a `new_ref` range per non-default branch (up to its cap; over it, seeded only and noted in `run.error`), so existing branch history is collected without a manual re-read. The first organisation's first pass is unchanged (tips only). An admin can re-read one organisation's repos later with **Read branch history** (`reread-branch-history` with `organization`).
+
+A blank `backfillDays` / `syncIntervalMinutes` on an added row now inherits the first organisation's value, like the token refs (reported as `inheritedValues`). `organization`, `defaultRepo`, `apiBaseUrl` and the two history settings are never inherited.

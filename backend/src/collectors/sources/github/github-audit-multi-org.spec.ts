@@ -364,3 +364,226 @@ describe('coverageForDay across organisations (ADR-0013)', () => {
     });
   });
 });
+
+describe('first seeding reads branch history for an added org (ADR-0013 amendment)', () => {
+  const TIPS = new Map([
+    ['main', 'n1'],
+    ['feat-a', 'a1'],
+    ['feat-b', 'b1'],
+  ]);
+
+  function ingestSetup(values?: Record<string, unknown>) {
+    const s = setup();
+    seedTenant(s.prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(s.prisma, 't1', 'NHWebsite', ['NHWebsite/site'], { values });
+    s.client.getDefaultBranch.mockResolvedValue({ name: 'main' });
+    s.client.listHeadRefs.mockResolvedValue({ tips: TIPS });
+    return s;
+  }
+  const rangesOf = (prisma: ReturnType<typeof setup>['prisma']) =>
+    prisma.githubPushRange.rows.filter((r) => r.kind === 'new_ref');
+
+  it("an added org's first seedAll plans a new_ref range per non-default branch", async () => {
+    const { svc, prisma } = ingestSetup();
+    const r = await svc.runTenant('t1', INGEST, NOW, 'NHWebsite');
+    expect(r.status).toBe('seeded');
+    expect(
+      rangesOf(prisma)
+        .map((x) => x.ref)
+        .sort(),
+    ).toEqual(['feat-a', 'feat-b']);
+    expect(r.counters.historyRangesPlanned).toBe(2);
+  });
+
+  it("the org's own maxHistoryBranches caps it: over the cap is seeded only", async () => {
+    const { svc, prisma } = ingestSetup({ maxHistoryBranches: 2 });
+    await svc.runTenant('t1', INGEST, NOW, 'NHWebsite');
+    expect(rangesOf(prisma)).toHaveLength(0);
+    expect(
+      prisma.githubRefTip.rows.filter(
+        (t) => t.repoFullName === 'NHWebsite/site',
+      ),
+    ).toHaveLength(4);
+    const error = prisma.githubAuditRun.rows.at(-1)?.error as string;
+    expect(error).toContain('NHWebsite/site');
+  });
+
+  it("the default org's first seedAll plans none (unchanged)", async () => {
+    const { svc, prisma } = ingestSetup();
+    const r = await svc.runTenant('t1', INGEST, NOW);
+    expect(r.status).toBe('seeded');
+    expect(rangesOf(prisma)).toHaveLength(0);
+  });
+
+  it("the default org's cap stays the env value on a re-read", async () => {
+    const { svc, prisma } = ingestSetup();
+    prisma.githubAuditCheckpoint.rows.push({
+      id: 'cp1',
+      tenantId: 't1',
+      organization: 'athmahealth',
+      seededAt,
+      checkpointAt,
+    });
+    const cfg = readGithubAuditConfig({
+      GITHUB_AUDIT_SYNC_MODE: 'ingest',
+      GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES: '2',
+    });
+    const r = await svc.runFullSweep('t1', cfg, NOW);
+    expect(r.counters.historyRangesPlanned).toBe(0);
+  });
+
+  it("range execution uses the org's branchHistoryLookbackDays", async () => {
+    const { svc, prisma, client, audit } = ingestSetup({
+      branchHistoryLookbackDays: 10,
+    });
+    prisma.githubAuditCheckpoint.rows.push({
+      id: 'cp2',
+      tenantId: 't1',
+      organization: 'NHWebsite',
+      seededAt,
+      checkpointAt,
+    });
+    audit.listGitPushes.mockResolvedValue({
+      status: 'complete',
+      events: [],
+      pages: 1,
+      nextTraversals: 0,
+    });
+    const createdAt = new Date(NOW.getTime() - 60_000);
+    prisma.githubPushRange.rows.push({
+      id: 'rr',
+      tenantId: 't1',
+      runId: 'old',
+      connectionId: 't1-nhwebsite-conn-0',
+      repoFullName: 'NHWebsite/site',
+      ref: 'feat-a',
+      baseSha: null,
+      baseRef: 'main',
+      headSha: 'a1',
+      kind: 'new_ref',
+      auditDocumentIds: [],
+      status: 'pending',
+      attempts: 0,
+      commitsFound: 0,
+      alreadyPresent: 0,
+      ingested: 0,
+      truncated: false,
+      lastError: null,
+      createdAt,
+    });
+    client.compareAll.mockResolvedValue({
+      commits: [],
+      pages: 1,
+      truncated: false,
+    });
+    await svc.runTenant('t1', INGEST, NOW, 'NHWebsite');
+    expect(client.listBranchCommits.mock.calls[0][3]).toEqual(
+      new Date(createdAt.getTime() - 10 * 86_400_000),
+    );
+  });
+});
+
+describe('rereadBranchHistory for one organisation', () => {
+  it("clears only that organisation's repos' tips when named, all when not", async () => {
+    const { svc, prisma } = setup();
+    seedTenant(prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(prisma, 't1', 'NHWebsite', ['NHWebsite/a', 'NHWebsite/b']);
+    for (const o of ['athmahealth', 'NHWebsite']) {
+      prisma.githubAuditCheckpoint.rows.push({
+        id: `cp-${o}`,
+        tenantId: 't1',
+        organization: o,
+        seededAt,
+        checkpointAt,
+      });
+    }
+    const tip = (repo: string) => ({
+      id: `tip-${repo}`,
+      tenantId: 't1',
+      repoFullName: repo,
+      ref: 'HEAD',
+      sha: 'm',
+      seenAt: NOW,
+    });
+    const reset = () => {
+      prisma.githubRefTip.rows.splice(
+        0,
+        prisma.githubRefTip.rows.length,
+        tip('athmahealth/ehr'),
+        tip('NHWebsite/a'),
+        tip('NHWebsite/b'),
+      );
+    };
+    reset();
+    const one = await svc.rereadBranchHistory(
+      't1',
+      undefined,
+      INGEST,
+      'nhwebsite',
+    );
+    expect(one.status).toBe('scheduled');
+    expect(one.repos.sort()).toEqual(['NHWebsite/a', 'NHWebsite/b']);
+    expect(prisma.githubRefTip.rows.map((r) => r.repoFullName)).toEqual([
+      'athmahealth/ehr',
+    ]);
+    reset();
+    const all = await svc.rereadBranchHistory('t1', undefined, INGEST);
+    expect(all.repos).toHaveLength(3);
+    expect(prisma.githubRefTip.rows).toHaveLength(0);
+  });
+});
+
+describe('rereadBranchHistory with an organisation — guards', () => {
+  function seeded(orgs: string[]) {
+    const s = setup();
+    seedTenant(s.prisma, 't1', ['athmahealth/ehr']);
+    seedOrg(s.prisma, 't1', 'NHWebsite', ['NHWebsite/a']);
+    for (const o of orgs) {
+      s.prisma.githubAuditCheckpoint.rows.push({
+        id: `cp-${o}`,
+        tenantId: 't1',
+        organization: o,
+        seededAt,
+        checkpointAt,
+      });
+    }
+    for (const repo of ['athmahealth/ehr', 'NHWebsite/a']) {
+      s.prisma.githubRefTip.rows.push({
+        id: `tip-${repo}`,
+        tenantId: 't1',
+        repoFullName: repo,
+        ref: 'HEAD',
+        sha: 'm',
+        seenAt: NOW,
+      });
+    }
+    return s;
+  }
+
+  it('named repos of another organisation are reported unknown and their tips untouched', async () => {
+    const { svc, prisma } = seeded(['athmahealth', 'NHWebsite']);
+    const r = await svc.rereadBranchHistory(
+      't1',
+      ['NHWebsite/a', 'athmahealth/ehr'],
+      INGEST,
+      'NHWebsite',
+    );
+    expect(r.repos).toEqual(['NHWebsite/a']);
+    expect(r.unknown).toEqual(['athmahealth/ehr']);
+    expect(prisma.githubRefTip.rows.map((t) => t.repoFullName)).toEqual([
+      'athmahealth/ehr',
+    ]);
+  });
+
+  it('an organisation that is not seeded yet is not_seeded, even if another is', async () => {
+    const { svc, prisma } = seeded(['athmahealth']);
+    const r = await svc.rereadBranchHistory(
+      't1',
+      undefined,
+      INGEST,
+      'NHWebsite',
+    );
+    expect(r).toMatchObject({ status: 'not_seeded', repos: [] });
+    expect(prisma.githubRefTip.rows).toHaveLength(2);
+  });
+});

@@ -13,6 +13,7 @@ import type {
 } from '../../lib/api/types';
 import { Badge, Button, Card, Field, Input, Spinner } from '../../components/ui';
 import { timeAgo } from '../../lib/utils';
+import { withoutOrgOnlyFields } from './github-organizations-logic';
 
 type Draft = Record<string, string | boolean>;
 type ConfigStatus = 'active' | 'disabled';
@@ -30,6 +31,9 @@ function useConfigurationCatalog() {
       api.get<ConfigurationCatalogResponse>(
         '/api/admin/configurations/catalog',
       ),
+    // The per-organisation history settings belong to added organisations'
+    // cards only; the first organisation's form stays as it was.
+    select: withoutOrgOnlyFields,
     staleTime: 10 * 60_000,
   });
 }

@@ -140,7 +140,7 @@ describe('GithubOrgSyncSchedulerService', () => {
           'NHWebsite',
           'GITHUB_TOKEN_NHWEBSITE',
           'tok:GITHUB_TOKEN_NHWEBSITE',
-          90,
+          30, // blank backfillDays inherits the default row's (ADR-0013 amendment)
         ],
       ]);
     } finally {

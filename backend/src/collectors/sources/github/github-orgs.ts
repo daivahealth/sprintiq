@@ -21,6 +21,16 @@ export const INHERITABLE_GITHUB_REFS = [
 ] as const;
 export type InheritableGithubRef = (typeof INHERITABLE_GITHUB_REFS)[number];
 
+/** Window values a non-default row may leave blank to use the default row's (shown as inherited). */
+export const INHERITABLE_GITHUB_VALUES = [
+  'backfillDays',
+  'syncIntervalMinutes',
+] as const;
+export type InheritableGithubValue = (typeof INHERITABLE_GITHUB_VALUES)[number];
+
+/** Max branches to read for an added organisation that sets none. */
+export const DEFAULT_ADDED_ORG_MAX_HISTORY_BRANCHES = 200;
+
 export interface GithubOrgConfigRow {
   id: string;
   tenantId: string;
@@ -43,6 +53,8 @@ export interface GithubOrg {
   /** Effective refs: the row's own, plus inherited ones. Names only. */
   secretRefs: Record<string, string>;
   inheritedRefs: InheritableGithubRef[];
+  /** Window values taken from the default row because this row left them blank. */
+  inheritedValues: InheritableGithubValue[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -85,13 +97,16 @@ export function toGithubOrgs(rows: GithubOrgConfigRow[]): GithubOrg[] {
     const defaultRefs = asRecord(
       tenantRows.find((r) => r.key === DEFAULT_GITHUB_CONFIG_KEY)?.secretRefs,
     );
+    const defaultValues = asRecord(
+      tenantRows.find((r) => r.key === DEFAULT_GITHUB_CONFIG_KEY)?.values,
+    );
     const ordered = [...tenantRows].sort((a, b) => {
       if (a.key === DEFAULT_GITHUB_CONFIG_KEY) return -1;
       if (b.key === DEFAULT_GITHUB_CONFIG_KEY) return 1;
       return createdMs(a) - createdMs(b) || a.key.localeCompare(b.key);
     });
     for (const row of ordered) {
-      const values = asRecord(row.values);
+      const values = { ...asRecord(row.values) };
       const organization =
         typeof values.organization === 'string'
           ? values.organization.trim()
@@ -112,6 +127,23 @@ export function toGithubOrgs(rows: GithubOrgConfigRow[]): GithubOrg[] {
           }
         }
       }
+      const inheritedValues: InheritableGithubValue[] = [];
+      if (!isDefault) {
+        for (const k of INHERITABLE_GITHUB_VALUES) {
+          const fallback = defaultValues[k];
+          if (
+            (values[k] === undefined ||
+              values[k] === null ||
+              values[k] === '') &&
+            fallback !== undefined &&
+            fallback !== null &&
+            fallback !== ''
+          ) {
+            values[k] = fallback;
+            inheritedValues.push(k);
+          }
+        }
+      }
       out.push({
         configId: row.id,
         tenantId: row.tenantId,
@@ -122,6 +154,7 @@ export function toGithubOrgs(rows: GithubOrgConfigRow[]): GithubOrg[] {
         values,
         secretRefs,
         inheritedRefs,
+        inheritedValues,
       });
     }
   }
@@ -161,4 +194,38 @@ export function pickGithubOrg(
         (o) => o.organization.toLowerCase() === organization.toLowerCase(),
       )
     : orgs.find((o) => o.isDefault);
+}
+
+function validInt(
+  value: unknown,
+  min: number,
+  max: number,
+): number | undefined {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= min &&
+    value <= max
+    ? value
+    : undefined;
+}
+
+/**
+ * The effective branch-history read settings of one organisation: its own
+ * values, else the env-derived defaults (the first organisation) or 200
+ * branches (an added one). The single place both are decided.
+ */
+export function branchHistorySettings(
+  org: GithubOrg,
+  cfg: { newBranchLookbackDays: number; newRepoMaxBranches: number },
+): { lookbackDays: number; maxBranches: number } {
+  return {
+    lookbackDays:
+      validInt(org.values.branchHistoryLookbackDays, 1, 90) ??
+      cfg.newBranchLookbackDays,
+    maxBranches:
+      validInt(org.values.maxHistoryBranches, 0, 500) ??
+      (org.isDefault
+        ? cfg.newRepoMaxBranches
+        : DEFAULT_ADDED_ORG_MAX_HISTORY_BRANCHES),
+  };
 }

@@ -154,6 +154,8 @@ export interface GithubOrganizationView {
   /** Effective ref NAMES — never secret values. */
   secretRefs: Record<string, string>;
   inheritedRefs: string[];
+  /** Window values (backfillDays, syncIntervalMinutes) shown as inherited from the default row. */
+  inheritedValues: string[];
   audit: AuditStatus;
   digest: 'included' | 'collecting' | 'disabled';
 }
@@ -171,6 +173,7 @@ export function toOrganizationView(
     values: org.values,
     secretRefs: org.secretRefs,
     inheritedRefs: org.inheritedRefs,
+    inheritedValues: org.inheritedValues,
     audit,
     digest,
   };
@@ -698,7 +701,7 @@ export class ConfigurationsController {
 
   /**
    * Re-reads the existing branch history of already-seeded repos (all active
-   * GitHub repos, or `repos`), so their branches appear on Developer pages
+   * GitHub repos, `repos`, or one `organization`'s), so their branches appear on Developer pages
    * without waiting for a push. Ingest mode only; the next full sweep does the
    * reading. Audited.
    */
@@ -706,14 +709,26 @@ export class ConfigurationsController {
   @Post('github/audit-sync/reread-branch-history')
   async rereadBranchHistory(
     @CurrentUser() user: AuthUser,
-    @Body() body: { repos?: unknown },
+    @Body() body: { repos?: unknown; organization?: unknown },
   ) {
+    const organization =
+      typeof body?.organization === 'string' && body.organization
+        ? body.organization
+        : undefined;
+    if (organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        organization,
+      );
+    }
     const repos = Array.isArray(body?.repos)
       ? body.repos.filter((r): r is string => typeof r === 'string')
       : undefined;
     const result = await this.auditSync.rereadBranchHistory(
       user.tenantId,
       repos,
+      undefined,
+      organization,
     );
     if (result.status === 'not_ingest') {
       throw new BadRequestException(
@@ -732,7 +747,11 @@ export class ConfigurationsController {
       action: 'collectors.github_branch_history.reread',
       targetType: 'tenant_configuration',
       targetId: 'github',
-      metadata: { repos: result.repos.length, unknown: result.unknown },
+      metadata: {
+        repos: result.repos.length,
+        unknown: result.unknown,
+        organization: organization ?? null,
+      },
     });
     return result;
   }

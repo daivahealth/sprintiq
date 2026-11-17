@@ -7,8 +7,11 @@ import {
   draftOf,
   emptyOrgDraft,
   inheritedPlaceholder,
+  inheritedValuePlaceholder,
   ORG_REF_FIELDS,
   orgPayload,
+  rereadMessage,
+  type RereadResult,
   validateOrgLogin,
   type OrgDraft,
 } from './github-organizations-logic';
@@ -105,6 +108,13 @@ function OrgEditor({
       ),
   });
 
+  const reread = useMutation({
+    mutationFn: () =>
+      api.post<RereadResult>('/api/admin/configurations/github/audit-sync/reread-branch-history', {
+        organization: saved?.organization,
+      }),
+  });
+
   const onSave = () => {
     const problem = saved ? null : validateOrgLogin(draft.organization, existing);
     setError(problem);
@@ -137,10 +147,16 @@ function OrgEditor({
           </Field>
         ))}
         <Field label="Backfill window (days)">
-          <Input value={draft.backfillDays} inputMode="numeric" placeholder="90" onChange={(e) => set('backfillDays', e.target.value)} />
+          <Input value={draft.backfillDays} inputMode="numeric" placeholder={inheritedValuePlaceholder('backfillDays', defaultOrg, '90')} onChange={(e) => set('backfillDays', e.target.value)} />
         </Field>
         <Field label="Sync interval (minutes)">
-          <Input value={draft.syncIntervalMinutes} inputMode="numeric" onChange={(e) => set('syncIntervalMinutes', e.target.value)} />
+          <Input value={draft.syncIntervalMinutes} inputMode="numeric" placeholder={inheritedValuePlaceholder('syncIntervalMinutes', defaultOrg, '240')} onChange={(e) => set('syncIntervalMinutes', e.target.value)} />
+        </Field>
+        <Field label="Branch history lookback (days)">
+          <Input value={draft.branchHistoryLookbackDays} inputMode="numeric" placeholder="blank = default (30)" onChange={(e) => set('branchHistoryLookbackDays', e.target.value)} />
+        </Field>
+        <Field label="Max branches to read">
+          <Input value={draft.maxHistoryBranches} inputMode="numeric" placeholder="blank = default (200)" onChange={(e) => set('maxHistoryBranches', e.target.value)} />
         </Field>
       </div>
       <label className="flex items-center gap-2 text-xs text-fg-secondary">
@@ -156,6 +172,11 @@ function OrgEditor({
             {sync.isPending ? 'Syncing…' : 'Sync org'}
           </Button>
         ) : null}
+        {saved ? (
+          <Button type="button" variant="secondary" onClick={() => reread.mutate()} disabled={reread.isPending || saved.status !== 'active'}>
+            {reread.isPending ? 'Scheduling…' : 'Read branch history'}
+          </Button>
+        ) : null}
         {onDone ? (
           <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
         ) : null}
@@ -164,6 +185,10 @@ function OrgEditor({
             Found {sync.data.reposFound} · created {sync.data.created} · already registered {sync.data.updated} · skipped {sync.data.skipped}
             {sync.data.rateLimited ? ' — stopped early on the GitHub rate limit; run again to continue.' : ''}
           </p>
+        ) : null}
+        {reread.data ? <p className="text-xs text-fg-subtle">{rereadMessage(reread.data)}</p> : null}
+        {reread.isError ? (
+          <p className="text-xs text-danger-fg">{reread.error instanceof ApiError ? reread.error.message : 'Could not schedule the branch history read.'}</p>
         ) : null}
         {sync.isError ? (
           <p className="text-xs text-danger-fg">{sync.error instanceof ApiError ? sync.error.message : 'Organisation sync failed.'}</p>

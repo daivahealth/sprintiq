@@ -217,7 +217,12 @@ export function seedOrg(
   tenantId: string,
   organization: string,
   repos: string[],
-  opts: { tokenRef?: string; auditRef?: string; status?: string } = {},
+  opts: {
+    tokenRef?: string;
+    auditRef?: string;
+    status?: string;
+    values?: Record<string, unknown>;
+  } = {},
 ) {
   prisma.tenantConfiguration.rows.push({
     id: `${tenantId}-cfg-${organization.toLowerCase()}`,
@@ -226,7 +231,7 @@ export function seedOrg(
     key: organization.toLowerCase(),
     status: opts.status ?? 'active',
     createdAt: new Date('2026-11-16T00:00:00Z'),
-    values: { organization },
+    values: { organization, ...(opts.values ?? {}) },
     secretRefs: {
       ...(opts.tokenRef ? { tokenRef: opts.tokenRef } : {}),
       ...(opts.auditRef ? { auditLogTokenRef: opts.auditRef } : {}),
