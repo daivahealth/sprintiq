@@ -348,6 +348,8 @@ export interface GithubOrganization {
   /** Effective ref names — never values. */
   secretRefs: Record<string, string>;
   inheritedRefs: string[];
+  /** Window values (backfillDays, syncIntervalMinutes) taken from the default organisation. */
+  inheritedValues: string[];
   audit: {
     organization: string | null;
     mode: string;
