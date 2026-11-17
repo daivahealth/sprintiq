@@ -289,10 +289,56 @@ describe('NoCommitDetectionService audit-sync coverage gate', () => {
   });
 
   it('falls through when the route applies and has covered the day', async () => {
-    const audit = coverage({ applies: true, ok: true, reasons: [] });
+    const audit = coverage({
+      applies: true,
+      ok: true,
+      reasons: [],
+      included: ['acme'],
+      collecting: [],
+    });
     const result = await harness({ audit }).service.detect('tenant_a', DAY);
     expect(result.withhold).toBeNull();
     expect(result.evaluation.flagged.map((f) => f.developer)).toEqual(['erin']);
+  });
+
+  it('carries the organisations the audit route covered into the detection', async () => {
+    const audit = coverage({
+      applies: true,
+      ok: true,
+      reasons: [],
+      included: ['athmahealth', 'NHWebsite'],
+      collecting: [],
+    });
+    const detected = await harness({ audit }).service.detect('tenant_a', DAY);
+    expect(detected.githubOrganizations).toEqual(['athmahealth', 'NHWebsite']);
+  });
+
+  it('still carries the covered organisations when the audit gate withholds the day', async () => {
+    const audit = coverage({
+      applies: true,
+      ok: false,
+      reasons: ['audit log behind'],
+      included: ['athmahealth', 'NHWebsite'],
+      collecting: [],
+    });
+    const result = await harness({ audit }).service.detect('tenant_a', DAY);
+    expect(result.withhold?.outcome).toBe('withheld_stale_data');
+    expect(result.githubOrganizations).toEqual(['athmahealth', 'NHWebsite']);
+  });
+
+  it('still carries the covered organisations when a truncated commit read withholds the day', async () => {
+    const audit = coverage({
+      applies: true,
+      ok: true,
+      reasons: [],
+      included: ['athmahealth'],
+      collecting: [],
+    });
+    const { service, code } = harness({ audit });
+    code.listCommitsPage.mockResolvedValue({ commits: [], truncated: true });
+    const result = await service.detect('tenant_a', DAY);
+    expect(result.withhold?.outcome).toBe('withheld_truncated_read');
+    expect(result.githubOrganizations).toEqual(['athmahealth']);
   });
 
   it('reports how many tracked developers were active, and no count when the roster was never evaluated', async () => {

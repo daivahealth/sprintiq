@@ -93,6 +93,8 @@ export interface PreviousDayView {
   /** Why names are withheld, as the digest would record it. Null otherwise. */
   withheld: { outcome: DigestOutcome; detail: string } | null;
   ruleText: string;
+  /** Organisations the list covers; a scope line is shown when more than one. */
+  githubOrganizations: string[];
   rosterCount: number;
   /** Empty whenever `withheld` is set — the same invariant as the digest. */
   flagged: NamedDeveloper[];
@@ -203,6 +205,8 @@ export function implausible(flaggedCount: number, evaluated: number): boolean {
 export interface DigestDetection {
   reportedDay: string;
   rosterCount: number;
+  /** Organisations the day was checked across (ADR-0013); absent when the audit route was not consulted. */
+  githubOrganizations?: string[];
   /**
    * Invariant: `evaluation.flagged` is populated only when `withhold` is
    * null — at every gate, not just the ones that had nothing to compute yet.
@@ -322,6 +326,7 @@ export class NoCommitDetectionService {
       outcome: withhold ? 'withheld' : flagged.length ? 'named' : 'all_clear',
       withheld: withhold,
       ruleText: DIGEST_RULE_TEXT,
+      githubOrganizations: detected.githubOrganizations ?? [],
       rosterCount: detected.rosterCount,
       flagged,
       unresolved: evaluation.unresolved,
@@ -484,6 +489,7 @@ export class NoCommitDetectionService {
     // (`GithubAuditSyncService.coverageForDay`). Withhold, never add, so a
     // check that cannot run withholds too (fail closed). Absent service or
     // `applies: false` leaves the digest exactly as it was.
+    let githubOrganizations: string[] | undefined;
     if (this.auditSync) {
       let auditGap: string | null = null;
       try {
@@ -491,6 +497,7 @@ export class NoCommitDetectionService {
           tenantId,
           reportedDay,
         );
+        githubOrganizations = coverage.included;
         if (coverage.applies && !coverage.ok) {
           auditGap = `GitHub audit sync has not covered ${reportedDay}: ${coverage.reasons.join(
             '; ',
@@ -506,6 +513,7 @@ export class NoCommitDetectionService {
           rosterCount: roster.length,
           evaluation: empty,
           withhold: { outcome: 'withheld_stale_data', detail: auditGap },
+          githubOrganizations,
           lastSyncAt: freshness.lastSyncAt,
           // No commit read has run yet — nothing to count.
           unattributedCommits: 0,
@@ -533,6 +541,7 @@ export class NoCommitDetectionService {
           outcome: 'withheld_truncated_read',
           detail: `The commit read for ${reportedDay} hit its row ceiling, so the active set is incomplete. Names withheld.`,
         },
+        githubOrganizations,
         lastSyncAt: freshness.lastSyncAt,
         // The read that would answer this hit its ceiling — a count off a
         // truncated read would itself be an unreliable figure to disclose.
@@ -618,6 +627,7 @@ export class NoCommitDetectionService {
         },
         lastSyncAt: freshness.lastSyncAt,
         unattributedCommits,
+        githubOrganizations,
       };
     }
 
@@ -647,6 +657,7 @@ export class NoCommitDetectionService {
         },
         lastSyncAt: freshness.lastSyncAt,
         unattributedCommits,
+        githubOrganizations,
       };
     }
 
@@ -658,6 +669,7 @@ export class NoCommitDetectionService {
       withhold: null,
       lastSyncAt: freshness.lastSyncAt,
       unattributedCommits,
+      githubOrganizations,
     };
   }
 

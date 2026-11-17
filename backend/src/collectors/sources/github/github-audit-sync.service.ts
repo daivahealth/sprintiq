@@ -34,6 +34,14 @@ import {
   buildCommitBranchEnvelope,
   commitIdempotencyKey,
 } from './github-commit-envelope';
+import {
+  loadGithubOrgs,
+  orgOfRepo,
+  pickGithubOrg,
+  repoInOrg,
+  repoInOrgWhere,
+  type GithubOrg,
+} from './github-orgs';
 import { evaluateBudget, rateReserve } from './github-rate-budget';
 import {
   GithubCallFailure,
@@ -109,6 +117,8 @@ export interface AuditRunSummary {
  * entirely still shows as behind.
  */
 export interface AuditStatus {
+  /** The organisation this status describes; null when none is configured. */
+  organization: string | null;
   mode: GithubAuditMode;
   enabled: boolean;
   seededAt: Date | null;
@@ -143,6 +153,10 @@ export interface AuditDayCoverage {
   applies: boolean;
   ok: boolean;
   reasons: string[];
+  /** Organisations the digest covers and names (ADR-0013), in row order. */
+  included: string[];
+  /** Active non-default organisations still on their first collection — left out until included. */
+  collecting: string[];
 }
 
 /** Ranges named in a coverage reason; the rest are counted. */
@@ -386,19 +400,14 @@ export class GithubAuditSyncService {
     @Optional() @Inject(AUDIT_SINK) private readonly audit?: AuditSink,
   ) {}
 
-  /** Tenants with an active GitHub configuration that names an audit-log token ref. */
-  async listEnabledTenants(): Promise<string[]> {
-    const rows = await this.prisma.tenantConfiguration.findMany({
-      where: { namespace: 'github', key: 'default', status: 'active' },
-      select: { tenantId: true, secretRefs: true },
-    });
-    return rows
-      .filter(
-        (r) =>
-          typeof (r.secretRefs as Record<string, unknown> | null)
-            ?.auditLogTokenRef === 'string',
-      )
-      .map((r) => r.tenantId);
+  /** Active GitHub organisations whose effective refs name an audit-log token (ADR-0013). */
+  async listEnabledOrgs(): Promise<
+    { tenantId: string; organization: string }[]
+  > {
+    const orgs = await loadGithubOrgs(this.prisma, { activeOnly: true });
+    return orgs
+      .filter((o) => typeof o.secretRefs.auditLogTokenRef === 'string')
+      .map((o) => ({ tenantId: o.tenantId, organization: o.organization }));
   }
 
   /**
@@ -412,9 +421,15 @@ export class GithubAuditSyncService {
     tenantId: string,
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
+    organization?: string,
   ): Promise<AuditStatus> {
+    const org = pickGithubOrg(
+      await loadGithubOrgs(this.prisma, { tenantId }),
+      organization,
+    );
+    const orgName = org?.organization ?? '';
+    const inOrg = { repoFullName: repoInOrgWhere(orgName) };
     const [
-      config,
       checkpoint,
       pendingRanges,
       failedRanges,
@@ -422,44 +437,37 @@ export class GithubAuditSyncService {
       truncatedRanges,
       dismissedRanges,
     ] = await Promise.all([
-      this.prisma.tenantConfiguration.findUnique({
-        where: {
-          tenantId_namespace_key: {
-            tenantId,
-            namespace: 'github',
-            key: 'default',
-          },
-        },
-      }),
-      this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
-      this.prisma.githubPushRange.findMany({
-        where: { tenantId, status: 'pending' },
+      this.prisma.githubAuditCheckpoint.findUnique({
+        where: { tenantId_organization: { tenantId, organization: orgName } },
       }),
       this.prisma.githubPushRange.findMany({
-        where: { tenantId, status: 'failed' },
+        where: { tenantId, status: 'pending', ...inOrg },
+      }),
+      this.prisma.githubPushRange.findMany({
+        where: { tenantId, status: 'failed', ...inOrg },
       }),
       this.prisma.githubAuditRun.findFirst({
-        where: { tenantId, trigger: 'full_sweep' },
+        where: { tenantId, organization: orgName, trigger: 'full_sweep' },
         orderBy: { startedAt: 'desc' },
         select: { startedAt: true, finishedAt: true, status: true },
       }),
       this.prisma.githubPushRange.count({
-        where: { tenantId, status: 'done', truncated: true },
+        where: { tenantId, status: 'done', truncated: true, ...inOrg },
       }),
       this.prisma.githubPushRange.count({
-        where: { tenantId, status: 'dismissed' },
+        where: { tenantId, status: 'dismissed', ...inOrg },
       }),
     ]);
-    const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
     const enabled =
-      !!config &&
-      config.status === 'active' &&
-      typeof refs.auditLogTokenRef === 'string';
+      !!org &&
+      org.active &&
+      typeof org.secretRefs.auditLogTokenRef === 'string';
     const checkpointAt = checkpoint?.checkpointAt ?? null;
     const lagMinutes = checkpointAt
       ? Math.round((now.getTime() - checkpointAt.getTime()) / 60_000)
       : null;
     return {
+      organization: org?.organization ?? null,
       mode: cfg.mode,
       enabled,
       seededAt: checkpoint?.seededAt ?? null,
@@ -581,14 +589,23 @@ export class GithubAuditSyncService {
   }> {
     const empty = { repos: [], unknown: [], readOnNextPushOnly: false };
     if (cfg.mode !== 'ingest') return { status: 'not_ingest', ...empty };
-    const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+    const checkpoints = await this.prisma.githubAuditCheckpoint.findMany({
       where: { tenantId },
     });
-    if (!checkpoint?.seededAt) return { status: 'not_seeded', ...empty };
+    const seededOrgs = new Set(
+      checkpoints
+        .filter((c) => c.seededAt)
+        .map((c) => c.organization.toLowerCase()),
+    );
+    if (seededOrgs.size === 0) return { status: 'not_seeded', ...empty };
     const registered = await this.registeredRepos(tenantId);
     const wanted = repos && repos.length > 0 ? repos : [...registered.keys()];
-    const targets = wanted.filter((r) => registered.has(r));
-    const unknown = wanted.filter((r) => !registered.has(r));
+    // A repo whose organisation has not been seeded yet is not re-read: its
+    // first seeding pass reads its history anyway (ADR-0013).
+    const targets = wanted.filter(
+      (r) => registered.has(r) && seededOrgs.has(orgOfRepo(r)),
+    );
+    const unknown = wanted.filter((r) => !targets.includes(r));
     if (targets.length > 0) {
       await this.prisma.githubRefTip.deleteMany({
         where: { tenantId, repoFullName: { in: targets } },
@@ -714,6 +731,10 @@ export class GithubAuditSyncService {
    *     finished) successfully after the day ended, covering pushes the
    *     audit log never records.
    * Every failing condition is reported, so the withheld card names them all.
+   *
+   * Across organisations (ADR-0013): every *included* organisation must be
+   * covered; reasons are prefixed with the organisation when the tenant has
+   * more than one active GitHub row.
    */
   async coverageForDay(
     tenantId: string,
@@ -721,27 +742,108 @@ export class GithubAuditSyncService {
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
   ): Promise<AuditDayCoverage> {
-    const notApplicable: AuditDayCoverage = {
-      applies: false,
-      ok: true,
-      reasons: [],
+    const orgs = await loadGithubOrgs(this.prisma, { tenantId });
+    const inclusion = await this.inclusionOf(tenantId, orgs, cfg);
+    const active = orgs.filter((o) => o.active);
+    const included = active.filter(
+      (o) => inclusion.get(o.organization) === 'included',
+    );
+    const prefix = active.length > 1;
+    let applies = false;
+    const reasons: string[] = [];
+    for (const org of included) {
+      const c = await this.coverageForOrg(tenantId, org, day, cfg, now);
+      if (!c.applies) continue;
+      applies = true;
+      reasons.push(
+        ...c.reasons.map((r) => (prefix ? `${org.organization}: ${r}` : r)),
+      );
+    }
+    return {
+      applies,
+      ok: reasons.length === 0,
+      reasons,
+      included: included.map((o) => o.organization),
+      collecting: active
+        .filter((o) => inclusion.get(o.organization) === 'collecting')
+        .map((o) => o.organization),
     };
-    if (cfg.mode !== 'ingest') return notApplicable;
-    const config = await this.prisma.tenantConfiguration.findUnique({
-      where: {
-        tenantId_namespace_key: {
-          tenantId,
-          namespace: 'github',
-          key: 'default',
+  }
+
+  /** Whether each of the tenant's organisations is in the digest yet (ADR-0013). */
+  async digestInclusion(
+    tenantId: string,
+    cfg: GithubAuditConfig = readGithubAuditConfig(),
+  ): Promise<Map<string, 'included' | 'collecting' | 'disabled'>> {
+    return this.inclusionOf(
+      tenantId,
+      await loadGithubOrgs(this.prisma, { tenantId }),
+      cfg,
+    );
+  }
+
+  /**
+   * The default organisation is always included — exactly as before, so a
+   * fresh tenant still withholds until it is seeded. Any other active
+   * organisation joins once its first seeding is done and, when the full
+   * sweep is on, it has had one successful ingest-mode sweep; where the audit
+   * route does not apply to it, it joins at once. Until then its partial data
+   * can only add activity, never name someone.
+   */
+  private async inclusionOf(
+    tenantId: string,
+    orgs: GithubOrg[],
+    cfg: GithubAuditConfig,
+  ): Promise<Map<string, 'included' | 'collecting' | 'disabled'>> {
+    const out = new Map<string, 'included' | 'collecting' | 'disabled'>();
+    for (const org of orgs) {
+      if (!org.active) {
+        out.set(org.organization, 'disabled');
+        continue;
+      }
+      if (
+        org.isDefault ||
+        cfg.mode !== 'ingest' ||
+        typeof org.secretRefs.auditLogTokenRef !== 'string'
+      ) {
+        out.set(org.organization, 'included');
+        continue;
+      }
+      const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
+        where: {
+          tenantId_organization: { tenantId, organization: org.organization },
         },
-      },
-    });
-    const refs = (config?.secretRefs as Record<string, unknown> | null) ?? {};
-    if (
-      !config ||
-      config.status !== 'active' ||
-      typeof refs.auditLogTokenRef !== 'string'
-    ) {
+      });
+      const sweptOnce =
+        cfg.fullSweepMinutes === 0 ||
+        !!(await this.prisma.githubAuditRun.findFirst({
+          where: {
+            tenantId,
+            organization: org.organization,
+            trigger: 'full_sweep',
+            status: 'success',
+            mode: 'ingest',
+          },
+          select: { id: true },
+        }));
+      out.set(
+        org.organization,
+        checkpoint?.seededAt && sweptOnce ? 'included' : 'collecting',
+      );
+    }
+    return out;
+  }
+
+  private async coverageForOrg(
+    tenantId: string,
+    org: GithubOrg,
+    day: string,
+    cfg: GithubAuditConfig,
+    now: Date,
+  ): Promise<{ applies: boolean; ok: boolean; reasons: string[] }> {
+    const notApplicable = { applies: false, ok: true, reasons: [] };
+    if (cfg.mode !== 'ingest') return notApplicable;
+    if (!org.active || typeof org.secretRefs.auditLogTokenRef !== 'string') {
       return notApplicable;
     }
 
@@ -758,6 +860,7 @@ export class GithubAuditSyncService {
     );
     const unfinishedWhere = {
       tenantId,
+      repoFullName: repoInOrgWhere(org.organization),
       // No upper bound (controller ruling, fix round 1): an audit catch-up
       // after a stall, or a late sweep that plans a missed push and stops on
       // budget, can create the day's ranges well after any fixed window —
@@ -777,13 +880,18 @@ export class GithubAuditSyncService {
     // the admin's way to accept the gap.
     const truncatedWhere = {
       tenantId,
+      repoFullName: repoInOrgWhere(org.organization),
       status: 'done',
       truncated: true,
       createdAt: { gte: dayStart },
     };
     const [checkpoint, unfinished, shown, sweep, truncated] = await Promise.all(
       [
-        this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+        this.prisma.githubAuditCheckpoint.findUnique({
+          where: {
+            tenantId_organization: { tenantId, organization: org.organization },
+          },
+        }),
         this.prisma.githubPushRange.count({ where: unfinishedWhere }),
         this.prisma.githubPushRange.findMany({
           where: unfinishedWhere,
@@ -795,6 +903,7 @@ export class GithubAuditSyncService {
           ? this.prisma.githubAuditRun.findFirst({
               where: {
                 tenantId,
+                organization: org.organization,
                 trigger: 'full_sweep',
                 status: 'success',
                 // A shadow-mode sweep ingests nothing — its ranges are only
@@ -850,8 +959,9 @@ export class GithubAuditSyncService {
     tenantId: string,
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
+    organization?: string,
   ): Promise<AuditRunSummary> {
-    const prep = await this.prepareRun(tenantId, cfg);
+    const prep = await this.prepareRun(tenantId, cfg, organization);
     if ('summary' in prep) return prep.summary;
     const { settings, repos, counters, startedMs, skipped } = prep;
     return this.withRunClaim(
@@ -886,15 +996,21 @@ export class GithubAuditSyncService {
     tenantId: string,
     cfg: GithubAuditConfig = readGithubAuditConfig(),
     now: Date = new Date(),
+    organization?: string,
   ): Promise<AuditRunSummary> {
-    const prep = await this.prepareRun(tenantId, cfg);
+    const prep = await this.prepareRun(tenantId, cfg, organization);
     if ('summary' in prep) return prep.summary;
     const { settings, repos, counters, startedMs, skipped } = prep;
     // Seeding is the audit sync's job (it owns seededAt/checkpointAt and the
     // org-wide refusal guard); a sweep before it would seed every repo with
     // none of those checks, so it waits.
     const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
-      where: { tenantId },
+      where: {
+        tenantId_organization: {
+          tenantId,
+          organization: settings.organization,
+        },
+      },
     });
     if (!checkpoint?.seededAt) {
       return skipped('not seeded yet — the audit sync seeds first');
@@ -925,6 +1041,7 @@ export class GithubAuditSyncService {
   private async prepareRun(
     tenantId: string,
     cfg: GithubAuditConfig,
+    organization?: string,
   ): Promise<
     | { summary: AuditRunSummary }
     | {
@@ -947,12 +1064,12 @@ export class GithubAuditSyncService {
     if (cfg.mode === 'off') {
       return { summary: skipped('GITHUB_AUDIT_SYNC_MODE is off.') };
     }
-    const settings = await this.loadSettings(tenantId);
+    const settings = await this.loadSettings(tenantId, organization);
     if ('reason' in settings) {
       return { summary: skipped(settings.reason) };
     }
     try {
-      const repos = await this.registeredRepos(tenantId);
+      const repos = await this.registeredRepos(tenantId, settings.organization);
       return { settings, repos, counters, startedMs, skipped };
     } catch (err) {
       return {
@@ -968,8 +1085,8 @@ export class GithubAuditSyncService {
   }
 
   /**
-   * Per-tenant claim, shared by the audit cron, the sweep cron and the manual
-   * admin endpoint, so two runs for one tenant never plan/execute at once.
+   * Per-(tenant, organisation) claim, shared by the audit cron, the sweep cron and the manual
+   * admin endpoint, so two runs for one organisation never plan/execute at once.
    * `body` runs only while the claim is held; the claim is released after it
    * whatever happens.
    */
@@ -983,13 +1100,14 @@ export class GithubAuditSyncService {
     // The row must exist before it can be claimed; the upsert leaves
     // seededAt/checkpointAt untouched on an existing row.
     await this.prisma.githubAuditCheckpoint.upsert({
-      where: { tenantId },
+      where: { tenantId_organization: { tenantId, organization } },
       create: { id: newId(), tenantId, organization },
-      update: { organization },
+      update: {},
     });
     const claim = await this.prisma.githubAuditCheckpoint.updateMany({
       where: {
         tenantId,
+        organization,
         OR: [
           { runningSince: null },
           {
@@ -1000,7 +1118,9 @@ export class GithubAuditSyncService {
       data: { runningSince: now },
     });
     if (claim.count === 0) {
-      return skipped('Another audit sync run for this tenant is in progress.');
+      return skipped(
+        `Another audit sync run for organisation ${organization} is in progress.`,
+      );
     }
     // Heartbeat (2026-10-19): move the claim forward while the run is alive,
     // so a long run is never mistaken for a dead one. Each refresh only moves
@@ -1013,7 +1133,7 @@ export class GithubAuditSyncService {
       const next = new Date(Math.max(Date.now(), held.getTime() + 1));
       beating = this.prisma.githubAuditCheckpoint
         .updateMany({
-          where: { tenantId, runningSince: held },
+          where: { tenantId, organization, runningSince: held },
           data: { runningSince: next },
         })
         .then((r) => {
@@ -1045,7 +1165,7 @@ export class GithubAuditSyncService {
         // Release only OUR claim, by its current value: if it was taken
         // over, the newer run's claim must stay in place.
         await this.prisma.githubAuditCheckpoint.updateMany({
-          where: { tenantId, runningSince: held },
+          where: { tenantId, organization, runningSince: held },
           data: { runningSince: null },
         });
       } catch (err) {
@@ -1066,13 +1186,19 @@ export class GithubAuditSyncService {
     startedMs: number,
   ): Promise<AuditRunSummary> {
     const checkpoint = await this.prisma.githubAuditCheckpoint.findUnique({
-      where: { tenantId },
+      where: {
+        tenantId_organization: {
+          tenantId,
+          organization: settings.organization,
+        },
+      },
     });
     const run = await this.prisma.githubAuditRun.create({
       data: {
         id: newId(),
         tenantId,
         mode: cfg.mode,
+        organization: settings.organization,
         trigger: 'audit',
         startedAt: now,
         status: 'running',
@@ -1125,7 +1251,12 @@ export class GithubAuditSyncService {
         const seedResult = await this.seedAll(ctx);
         if (seedResult.status === 'complete') {
           await this.prisma.githubAuditCheckpoint.upsert({
-            where: { tenantId },
+            where: {
+              tenantId_organization: {
+                tenantId,
+                organization: ctx.organization,
+              },
+            },
             create: {
               id: newId(),
               tenantId,
@@ -1134,7 +1265,6 @@ export class GithubAuditSyncService {
               checkpointAt: now,
             },
             update: {
-              organization: ctx.organization,
               seededAt: now,
               checkpointAt: now,
             },
@@ -1161,7 +1291,12 @@ export class GithubAuditSyncService {
         const discovered = await this.discover(ctx, windowFrom);
         if (discovered.ok) {
           await this.prisma.githubAuditCheckpoint.update({
-            where: { tenantId },
+            where: {
+              tenantId_organization: {
+                tenantId,
+                organization: ctx.organization,
+              },
+            },
             data: { checkpointAt: now },
           });
           checkpointAt = now;
@@ -1232,13 +1367,13 @@ export class GithubAuditSyncService {
       },
     });
     await this.prisma.githubAuditCheckpoint.updateMany({
-      where: { tenantId },
+      where: { tenantId, organization: ctx.organization },
       data: { lastRunAt: now, lastStatus: status, lastError: error ?? null },
     });
 
     const durationMs = Date.now() - startedMs;
     this.logger.log(
-      `github audit sync tenant=${tenantId} mode=${cfg.mode} status=${status} ` +
+      `github audit sync tenant=${tenantId} org=${ctx.organization} mode=${cfg.mode} status=${status} ` +
         Object.entries(counters)
           .map(([k, v]) => `${k}=${v}`)
           .join(' ') +
@@ -1270,6 +1405,7 @@ export class GithubAuditSyncService {
         id: newId(),
         tenantId,
         mode: cfg.mode,
+        organization: settings.organization,
         trigger: 'full_sweep',
         startedAt: now,
         status: 'running',
@@ -1378,7 +1514,7 @@ export class GithubAuditSyncService {
 
     const durationMs = Date.now() - startedMs;
     this.logger.log(
-      `github audit full sweep tenant=${tenantId} mode=${cfg.mode} status=${status} ` +
+      `github audit full sweep tenant=${tenantId} org=${settings.organization} mode=${cfg.mode} status=${status} ` +
         Object.entries(counters)
           .map(([k, v]) => `${k}=${v}`)
           .join(' ') +
@@ -1396,57 +1532,49 @@ export class GithubAuditSyncService {
 
   private async loadSettings(
     tenantId: string,
+    organization?: string,
   ): Promise<AuditSettings | { reason: string }> {
-    const config = await this.prisma.tenantConfiguration.findUnique({
-      where: {
-        tenantId_namespace_key: {
-          tenantId,
-          namespace: 'github',
-          key: 'default',
-        },
-      },
-    });
-    const values = (config?.values ?? {}) as Record<string, unknown>;
-    const refs = (config?.secretRefs ?? {}) as Record<string, unknown>;
-    if (
-      !config ||
-      config.status !== 'active' ||
-      typeof values.organization !== 'string'
-    ) {
+    const org = pickGithubOrg(
+      await loadGithubOrgs(this.prisma, { tenantId }),
+      organization,
+    );
+    if (!org || !org.active) {
       return {
-        reason: 'GitHub is not configured (organization, saved as active).',
+        reason: organization
+          ? `GitHub organisation "${organization}" is not configured (saved as active).`
+          : 'GitHub is not configured (organization, saved as active).',
       };
     }
-    if (typeof refs.auditLogTokenRef !== 'string') {
+    const auditRef = org.secretRefs.auditLogTokenRef;
+    if (!auditRef) {
       return {
         reason: 'No audit-log token secret ref is configured for GitHub.',
       };
     }
-    const auditToken = await this.secrets.resolve(
-      tenantId,
-      refs.auditLogTokenRef,
-    );
+    const auditToken = await this.secrets.resolve(tenantId, auditRef);
     if (!auditToken) {
       return {
-        reason: `No value is stored for audit-log token ref "${refs.auditLogTokenRef}".`,
+        reason: `No value is stored for audit-log token ref "${auditRef}".`,
       };
     }
+    const backfillDays = org.values.backfillDays;
     return {
-      organization: values.organization,
+      organization: org.organization,
       auditToken,
-      collectorTokenRef:
-        typeof refs.tokenRef === 'string' ? refs.tokenRef : undefined,
+      collectorTokenRef: org.secretRefs.tokenRef,
       // As the admin org sync reads it (a number, else 90); a non-positive
       // value is not a usable history horizon, so it falls back too.
       backfillDays:
-        typeof values.backfillDays === 'number' && values.backfillDays > 0
-          ? values.backfillDays
+        typeof backfillDays === 'number' && backfillDays > 0
+          ? backfillDays
           : DEFAULT_BACKFILL_DAYS,
     };
   }
 
+  /** Active GitHub connections by repo; one organisation's only when `organization` is given (ADR-0013). */
   private async registeredRepos(
     tenantId: string,
+    organization?: string,
   ): Promise<Map<string, Connection>> {
     const connections = await this.prisma.connection.findMany({
       where: { tenantId, sourceSystem: 'github', status: 'active' },
@@ -1454,7 +1582,9 @@ export class GithubAuditSyncService {
     const byRepo = new Map<string, Connection>();
     for (const c of connections) {
       const repo = (c.config as { repoFullName?: string } | null)?.repoFullName;
-      if (repo) byRepo.set(repo, c);
+      if (repo && (!organization || repoInOrg(repo, organization))) {
+        byRepo.set(repo, c);
+      }
     }
     return byRepo;
   }
@@ -2029,6 +2159,7 @@ export class GithubAuditSyncService {
       ctx.cfg.mode === 'ingest'
         ? {
             tenantId: ctx.tenantId,
+            repoFullName: repoInOrgWhere(ctx.organization),
             OR: [
               { status: 'pending' },
               {
@@ -2039,7 +2170,11 @@ export class GithubAuditSyncService {
               },
             ],
           }
-        : { tenantId: ctx.tenantId, status: 'pending' };
+        : {
+            tenantId: ctx.tenantId,
+            repoFullName: repoInOrgWhere(ctx.organization),
+            status: 'pending',
+          };
     const ranges = (
       await this.prisma.githubPushRange.findMany({
         where,
@@ -2059,7 +2194,11 @@ export class GithubAuditSyncService {
     });
     ctx.counters.pendingRanges = (
       await this.prisma.githubPushRange.findMany({
-        where: { tenantId: ctx.tenantId, status: { in: ['pending'] } },
+        where: {
+          tenantId: ctx.tenantId,
+          repoFullName: repoInOrgWhere(ctx.organization),
+          status: { in: ['pending'] },
+        },
       })
     ).length;
   }

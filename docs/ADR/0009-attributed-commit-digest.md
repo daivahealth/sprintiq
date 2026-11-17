@@ -1,6 +1,6 @@
 # ADR-0009: Attributed daily commit digest to Microsoft Teams
 
-- **Status:** Accepted — implemented 2026-09-18; amended 2026-10-19, 2026-11-03 and 2026-11-04
+- **Status:** Accepted — implemented 2026-09-18; amended 2026-10-19, 2026-11-03, 2026-11-04 and 2026-11-16
 - **Date:** 2026-09-18
 - **Deciders:** Product owner
 - **Related:** [CLAUDE.md](../../CLAUDE.md) ("Metrics are ethics-first"), [features/NOTIFICATIONS.md](../features/NOTIFICATIONS.md), [api/README.md §8](../api/README.md), [security/AUTH-AND-RBAC.md §5](../security/AUTH-AND-RBAC.md), [METRICS.md `sprint_productivity_grade`](../features/METRICS.md) (the first, and until now only, exception to this rule)
@@ -67,6 +67,10 @@ Why the edges fall where they do:
 **Conditions 1–3 are unchanged in substance.** The rule text is updated to match — "Counts commits that changed files only — PRs, merges, reviews and Jira aren't counted." (`DIGEST_RULE_TEXT`) — and still ships beside the list on the Watchlist. Suppressions, withhold gates, alphabetical order, run records and audit are untouched. The invisible-commit (`committedAt` null) check applies the same rule, so an invisible merge withholds nobody.
 
 **The cost, stated plainly.** More people are named: anyone whose day was reviewing, opening or merging PRs, or merging branches. That widens the cost §Consequences already accepts for reviewers to PR and merge work, and the card no longer says so (2026-11-03 amendment). It is a product decision about what "activity" means for this list, not a defect.
+
+## Amendment, 2026-11-16 — every included GitHub organisation
+
+The digest and its admin-only Watchlist view cover every *included* GitHub organisation of the tenant ([ADR-0013](0013-multiple-github-organisations.md)), decided by the product owner on 2026-11-16. A tracked developer counts as active with a qualifying commit in any included organisation. The rule (`activeDeveloperSet`, `DIGEST_RULE_TEXT`), suppressions, alphabetical order, withhold gates, run records and audit are unchanged; the card's lead-in names every included organisation; the gate requires every included organisation to be covered; the Watchlist adds a scope line when more than one organisation is included. A newly added organisation joins once its first seeding and full sweep complete.
 
 ## Consequences
 

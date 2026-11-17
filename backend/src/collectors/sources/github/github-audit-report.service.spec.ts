@@ -56,13 +56,16 @@ describe('GithubAuditReportService.dayReport', () => {
         ]),
       },
       githubAuditCheckpoint: {
-        findUnique: rec({
-          checkpointAt: new Date('2026-10-06T04:00:00Z'),
-          seededAt: null,
-          lastStatus: 'success',
-          lastError: null,
-        }),
+        findMany: rec([
+          {
+            checkpointAt: new Date('2026-10-06T04:00:00Z'),
+            seededAt: null,
+            lastStatus: 'success',
+            lastError: null,
+          },
+        ]),
       },
+      tenantConfiguration: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const svc = new GithubAuditReportService(prisma as never);
     const r = await svc.dayReport('t1', '2026-10-05');
@@ -144,7 +147,8 @@ describe('GithubAuditReportService.dayReport rangeDetails', () => {
         ]),
       },
       rawEvent: { findMany: jest.fn().mockResolvedValue([]) },
-      githubAuditCheckpoint: { findUnique: jest.fn().mockResolvedValue(null) },
+      githubAuditCheckpoint: { findMany: jest.fn().mockResolvedValue([]) },
+      tenantConfiguration: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const svc = new GithubAuditReportService(prisma as never);
     const r = await svc.dayReport('t1', '2026-10-05');
@@ -175,5 +179,84 @@ describe('GithubAuditReportService.dayReport rangeDetails', () => {
         commitOutcomes: [],
       },
     ]);
+  });
+});
+
+describe('GithubAuditReportService.dayReport checkpoint across organisations', () => {
+  const orgRow = (key: string, organization: string, status = 'active') => ({
+    id: `cfg-${key}`,
+    tenantId: 't1',
+    key,
+    status,
+    values: { organization },
+    secretRefs: {},
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+  });
+  const cp = (
+    organization: string,
+    checkpointAt: string | null,
+    seededAt: string | null,
+  ) => ({
+    organization,
+    checkpointAt: checkpointAt ? new Date(checkpointAt) : null,
+    seededAt: seededAt ? new Date(seededAt) : null,
+    lastStatus: null,
+    lastError: null,
+  });
+  async function checkpointFor(
+    orgs: ReturnType<typeof orgRow>[],
+    checkpoints: ReturnType<typeof cp>[],
+  ) {
+    const prisma = {
+      githubAuditRun: { findMany: jest.fn().mockResolvedValue([]) },
+      githubPushRange: { findMany: jest.fn().mockResolvedValue([]) },
+      rawEvent: { findMany: jest.fn().mockResolvedValue([]) },
+      githubAuditCheckpoint: {
+        findMany: jest.fn().mockResolvedValue(checkpoints),
+      },
+      tenantConfiguration: { findMany: jest.fn().mockResolvedValue(orgs) },
+    };
+    const svc = new GithubAuditReportService(prisma as never);
+    return (await svc.dayReport('t1', '2026-10-05')).checkpoint;
+  }
+  const acme = orgRow('default', 'Acme');
+  const beta = orgRow('beta', 'Beta');
+
+  it('takes the older checkpoint of two active, seeded organisations', async () => {
+    const r = await checkpointFor(
+      [acme, beta],
+      [
+        cp('Acme', '2026-10-06T04:00:00Z', '2026-09-01T00:00:00Z'),
+        cp('beta', '2026-10-05T04:00:00Z', '2026-09-01T00:00:00Z'),
+      ],
+    );
+    expect(r?.checkpointAt?.toISOString()).toBe('2026-10-05T04:00:00.000Z');
+  });
+
+  it('ignores an additional active organisation that has not been seeded yet', async () => {
+    const r = await checkpointFor(
+      [acme, beta],
+      [
+        cp('Acme', '2026-10-06T04:00:00Z', '2026-09-01T00:00:00Z'),
+        cp('Beta', null, null),
+      ],
+    );
+    expect(r?.checkpointAt?.toISOString()).toBe('2026-10-06T04:00:00.000Z');
+  });
+
+  it("ignores a disabled organisation's older row", async () => {
+    const r = await checkpointFor(
+      [acme, orgRow('beta', 'Beta', 'disabled')],
+      [
+        cp('Acme', '2026-10-06T04:00:00Z', '2026-09-01T00:00:00Z'),
+        cp('Beta', '2026-09-01T04:00:00Z', '2026-08-01T00:00:00Z'),
+      ],
+    );
+    expect(r?.checkpointAt?.toISOString()).toBe('2026-10-06T04:00:00.000Z');
+  });
+
+  it('reports no checkpoint when no active, seeded organisation has one', async () => {
+    const r = await checkpointFor([acme], [cp('Acme', null, null)]);
+    expect(r).toBeNull();
   });
 });

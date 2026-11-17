@@ -189,6 +189,16 @@ Execution also respects the existing `GITHUB_BACKFILL_RATE_RESERVE` ([api/README
 
 A run always uses the **GraphQL** transport, whatever `GITHUB_COLLECTION_MODE` is, with each repository's own connection token. It draws on the GraphQL points bucket, which is separate from REST's `core` bucket. It stops at `GITHUB_BACKFILL_RATE_RESERVE` like the reconcilers, so verification cannot starve scheduled collection. By the query shapes, and not yet measured on the reference org, a run costs about one point per repository read plus one per 10 active branches. "Where they worked" reads only a developer's repositories. "All repositories" reads every collected one.
 
+### 5.4 Multiple GitHub organisations ([ADR-0013](../ADR/0013-multiple-github-organisations.md))
+
+Each GitHub organisation is its own `github` configuration row (`github/default` for the first, `github/<lowercased login>` for the rest). Procedure: [runbooks/add-github-organisation.md](../runbooks/add-github-organisation.md).
+
+- **Token refs are per organisation, with inheritance.** `tokenRef`, `auditLogTokenRef` and `copilotMetricsTokenRef` left blank on an additional row resolve to the `default` row's ref. Set a ref on the additional row to override it.
+- **A fine-grained PAT covers one organisation.** It is bound to a single resource owner. Use one fine-grained PAT per organisation under its own ref (for example `GITHUB_TOKEN_NHWEBSITE`), or one classic PAT SSO-authorized for every organisation.
+- **The audit-log token must belong to an owner of each organisation** and be SSO-authorized for it (§5.1). Without that the organisation's audit run fails with a refused-token status; the other organisations are unaffected.
+- **Env tunables apply to every organisation.** `GITHUB_ORG_SYNC_HOURS`, `GITHUB_AUDIT_*`, `GITHUB_BACKFILL_RATE_RESERVE` and `GITHUB_COPILOT_USAGE_SYNC` are global; there are no per-organisation values.
+- **Migration `20261116100000_multi_github_org`** is applied by hand (`npx prisma migrate deploy`) before the new build starts, as for every migration (§3.1, §6.6). It adds a column and backfills it, but it also drops the unique index `collectors_github_audit_checkpoint_tenantId_key`, which the previous build's checkpoint `upsert({ where: { tenantId } })` relies on — so **rolling back the build is not a plain redeploy**. The preferred rollback is to disable the additional organisation's row (no code rollback). To roll back the build, first restore the index: `CREATE UNIQUE INDEX "collectors_github_audit_checkpoint_tenantId_key" ON "collectors_github_audit_checkpoint"("tenantId");` It only succeeds while each tenant has exactly one checkpoint row; otherwise first delete the additional organisations' checkpoint rows (`DELETE FROM "collectors_github_audit_checkpoint" WHERE "organization" <> '<default org login>';`). Runs written by the old build after a rollback carry a NULL `organization` and do not appear in per-organisation status after re-deploying.
+
 ---
 
 ## 6. Collector operations

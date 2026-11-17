@@ -13,7 +13,10 @@ function setup(
     },
   };
   const sync = {
-    listEnabledTenants: jest.fn().mockResolvedValue(['t1', 't2']),
+    listEnabledOrgs: jest.fn().mockResolvedValue([
+      { tenantId: 't1', organization: 'acme' },
+      { tenantId: 't2', organization: 'acme' },
+    ]),
     runTenant: jest.fn().mockResolvedValue({ status: 'success' }),
     runFullSweep: jest.fn().mockResolvedValue({ status: 'success' }),
   };
@@ -43,7 +46,7 @@ describe('GithubAuditSchedulerService', () => {
     process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: '' };
     const { svc, sync, prisma } = setup();
     await svc.tick();
-    expect(sync.listEnabledTenants).not.toHaveBeenCalled();
+    expect(sync.listEnabledOrgs).not.toHaveBeenCalled();
     expect(prisma.schedulerTick.upsert).not.toHaveBeenCalled();
   });
 
@@ -62,6 +65,62 @@ describe('GithubAuditSchedulerService', () => {
         data: expect.objectContaining({ finishedAt: expect.any(Date) }),
       }),
     );
+  });
+
+  it('runs every enabled organisation of a tenant, one after another', async () => {
+    process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: 'shadow' };
+    const order: string[] = [];
+    const { svc, sync } = setup();
+    sync.listEnabledOrgs.mockResolvedValue([
+      { tenantId: 't1', organization: 'athmahealth' },
+      { tenantId: 't1', organization: 'NHWebsite' },
+    ]);
+    sync.runTenant.mockImplementation(
+      async (_t: string, _c: unknown, _n: unknown, org: string) => {
+        order.push(`start:${org}`);
+        await Promise.resolve();
+        order.push(`end:${org}`);
+        return {
+          tenantId: 't1',
+          status: 'success',
+          counters: {},
+          durationMs: 0,
+        };
+      },
+    );
+
+    await svc.tick();
+
+    expect(order).toEqual([
+      'start:athmahealth',
+      'end:athmahealth',
+      'start:NHWebsite',
+      'end:NHWebsite',
+    ]);
+    expect(sync.runTenant).toHaveBeenCalledWith(
+      't1',
+      expect.anything(),
+      undefined,
+      'NHWebsite',
+    );
+  });
+
+  it('a throwing organisation never stops the next', async () => {
+    process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: 'shadow' };
+    const { svc, sync } = setup();
+    sync.listEnabledOrgs.mockResolvedValue([
+      { tenantId: 't1', organization: 'athmahealth' },
+      { tenantId: 't1', organization: 'NHWebsite' },
+    ]);
+    sync.runTenant.mockRejectedValueOnce(new Error('boom'));
+    sync.runTenant.mockResolvedValueOnce({
+      tenantId: 't1',
+      status: 'success',
+      counters: {},
+      durationMs: 0,
+    });
+    await svc.tick();
+    expect(sync.runTenant).toHaveBeenCalledTimes(2);
   });
 
   it('skips the tick while a recent sweep is still open', async () => {
@@ -90,7 +149,7 @@ describe('GithubAuditSchedulerService', () => {
       appRole: 'api',
     });
     await svc.tick();
-    expect(sync.listEnabledTenants).not.toHaveBeenCalled();
+    expect(sync.listEnabledOrgs).not.toHaveBeenCalled();
     expect(prisma.schedulerTick.findUnique).not.toHaveBeenCalled();
   });
 
@@ -135,7 +194,7 @@ describe('GithubAuditSchedulerService.sweepTick (full branch sweep)', () => {
     process.env = { ...env, GITHUB_AUDIT_SYNC_MODE: '' };
     const { svc, sync, prisma } = setup();
     await svc.sweepTick();
-    expect(sync.listEnabledTenants).not.toHaveBeenCalled();
+    expect(sync.listEnabledOrgs).not.toHaveBeenCalled();
     expect(prisma.schedulerTick.findUnique).not.toHaveBeenCalled();
   });
 
@@ -147,7 +206,7 @@ describe('GithubAuditSchedulerService.sweepTick (full branch sweep)', () => {
     };
     const { svc, sync, prisma } = setup();
     await svc.sweepTick();
-    expect(sync.listEnabledTenants).not.toHaveBeenCalled();
+    expect(sync.listEnabledOrgs).not.toHaveBeenCalled();
     expect(sync.runFullSweep).not.toHaveBeenCalled();
     expect(prisma.schedulerTick.findUnique).not.toHaveBeenCalled();
   });
@@ -211,7 +270,7 @@ describe('GithubAuditSchedulerService.sweepTick (full branch sweep)', () => {
       appRole: 'api',
     });
     await svc.sweepTick();
-    expect(sync.listEnabledTenants).not.toHaveBeenCalled();
+    expect(sync.listEnabledOrgs).not.toHaveBeenCalled();
     expect(prisma.schedulerTick.findUnique).not.toHaveBeenCalled();
   });
 

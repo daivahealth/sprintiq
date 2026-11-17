@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { istDayEnd, istDayStart } from '../../../common/time';
 import { PrismaService } from '../../../database/prisma.service';
+import { loadGithubOrgs } from './github-orgs';
 import {
   AuditRunCounters,
   CommitOutcome,
@@ -61,6 +62,30 @@ export interface AuditDayReport {
 export class GithubAuditReportService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * The checkpoint furthest behind across the tenant's active, seeded
+   * organisations (ADR-0013) — the conservative answer to "how far has the
+   * audit log been read". A just-added organisation that has not been seeded
+   * yet, or a disabled one's frozen row, must not drag the value. Null when no
+   * active, seeded organisation has a checkpoint.
+   */
+  private async oldestCheckpoint(tenantId: string) {
+    const [allRows, orgs] = await Promise.all([
+      this.prisma.githubAuditCheckpoint.findMany({ where: { tenantId } }),
+      loadGithubOrgs(this.prisma, { tenantId, activeOnly: true }),
+    ]);
+    const active = new Set(orgs.map((o) => o.organization.toLowerCase()));
+    const rows = allRows.filter(
+      (r) => r.seededAt && active.has(r.organization.toLowerCase()),
+    );
+    if (rows.length === 0) return null;
+    return rows.reduce((a, b) =>
+      (a.checkpointAt?.getTime() ?? 0) <= (b.checkpointAt?.getTime() ?? 0)
+        ? a
+        : b,
+    );
+  }
+
   async dayReport(tenantId: string, day: string): Promise<AuditDayReport> {
     const from = istDayStart(day);
     const to = istDayEnd(day);
@@ -83,7 +108,7 @@ export class GithubAuditReportService {
         },
         select: { envelope: true },
       }),
-      this.prisma.githubAuditCheckpoint.findUnique({ where: { tenantId } }),
+      this.oldestCheckpoint(tenantId),
     ]);
 
     const totals = emptyCounters();

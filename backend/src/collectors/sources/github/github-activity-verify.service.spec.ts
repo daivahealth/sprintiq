@@ -40,7 +40,28 @@ function commitNode(
   };
 }
 
-function build(handlers: Record<string, Handler>, repos = ['acme/api']) {
+type CheckpointRow = {
+  organization: string;
+  checkpointAt: Date | null;
+  seededAt: Date | null;
+};
+type OrgRow = { key: string; organization: string; status?: string };
+
+const DEFAULT_CHECKPOINTS: CheckpointRow[] = [
+  {
+    organization: 'acme',
+    checkpointAt: new Date('2026-10-27T09:35:00Z'),
+    seededAt: new Date('2026-09-01T00:00:00Z'),
+  },
+];
+const DEFAULT_ORGS: OrgRow[] = [{ key: 'default', organization: 'acme' }];
+
+function build(
+  handlers: Record<string, Handler>,
+  repos = ['acme/api'],
+  checkpoints: CheckpointRow[] = DEFAULT_CHECKPOINTS,
+  orgs: OrgRow[] = DEFAULT_ORGS,
+) {
   const calls: { name: string; vars: Record<string, unknown> }[] = [];
   const gql = {
     query: jest.fn(
@@ -67,9 +88,20 @@ function build(handlers: Record<string, Handler>, repos = ['acme/api']) {
     },
   };
   (prisma as Record<string, unknown>).githubAuditCheckpoint = {
-    findUnique: jest.fn(async () => ({
-      checkpointAt: new Date('2026-10-27T09:35:00Z'),
-    })),
+    findMany: jest.fn(async () => checkpoints),
+  };
+  (prisma as Record<string, unknown>).tenantConfiguration = {
+    findMany: jest.fn(async () =>
+      orgs.map((o) => ({
+        id: `cfg-${o.key}`,
+        tenantId: 't1',
+        key: o.key,
+        status: o.status ?? 'active',
+        values: { organization: o.organization },
+        secretRefs: {},
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+      })),
+    ),
   };
   const secrets = { resolve: jest.fn(async () => 'tok') };
   const service = new GithubActivityVerifyService(
@@ -483,5 +515,78 @@ describe('helpers', () => {
     expect(searchStamp(new Date('2026-10-01T05:30:00.123Z'))).toBe(
       '2026-10-01T05:30:00Z',
     );
+  });
+});
+
+describe('GithubActivityVerifyService branchCommitsCollectedThrough across organisations', () => {
+  const seeded = new Date('2026-09-01T00:00:00Z');
+  const run = async (checkpoints: CheckpointRow[], orgs: OrgRow[]) => {
+    const { service } = build(baseHandlers, ['acme/api'], checkpoints, orgs);
+    const snap = await service.verify({
+      tenantId: 't1',
+      logins: ['dev'],
+      emails: [],
+      from: FROM,
+      to: TO,
+      scope: 'active',
+    });
+    return snap.coverage.branchCommitsCollectedThrough;
+  };
+  const acme = { key: 'default', organization: 'acme' };
+
+  it('takes the older checkpoint of two active, seeded organisations', async () => {
+    expect(
+      await run(
+        [
+          {
+            organization: 'acme',
+            checkpointAt: new Date('2026-10-27T09:35:00Z'),
+            seededAt: seeded,
+          },
+          {
+            organization: 'beta',
+            checkpointAt: new Date('2026-10-20T00:00:00Z'),
+            seededAt: seeded,
+          },
+        ],
+        [acme, { key: 'beta', organization: 'beta' }],
+      ),
+    ).toBe('2026-10-20T00:00:00.000Z');
+  });
+
+  it('ignores a newly added organisation with no seed or checkpoint', async () => {
+    expect(
+      await run(
+        [
+          {
+            organization: 'acme',
+            checkpointAt: new Date('2026-10-27T09:35:00Z'),
+            seededAt: seeded,
+          },
+          { organization: 'beta', checkpointAt: null, seededAt: null },
+        ],
+        [acme, { key: 'beta', organization: 'beta' }],
+      ),
+    ).toBe('2026-10-27T09:35:00.000Z');
+  });
+
+  it("ignores a disabled organisation's older row", async () => {
+    expect(
+      await run(
+        [
+          {
+            organization: 'acme',
+            checkpointAt: new Date('2026-10-27T09:35:00Z'),
+            seededAt: seeded,
+          },
+          {
+            organization: 'Beta',
+            checkpointAt: new Date('2026-09-01T00:00:00Z'),
+            seededAt: seeded,
+          },
+        ],
+        [acme, { key: 'beta', organization: 'beta', status: 'disabled' }],
+      ),
+    ).toBe('2026-10-27T09:35:00.000Z');
   });
 });

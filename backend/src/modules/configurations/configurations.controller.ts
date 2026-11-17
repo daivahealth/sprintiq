@@ -22,12 +22,20 @@ import {
 import { AUDIT_SINK, AuditSink } from '../../common/audit/audit-sink';
 import { ConnectionsService } from '../connections/connections.service';
 import { GithubAuditReportService } from '../../collectors/sources/github/github-audit-report.service';
-import { GithubAuditSyncService } from '../../collectors/sources/github/github-audit-sync.service';
+import {
+  AuditStatus,
+  GithubAuditSyncService,
+} from '../../collectors/sources/github/github-audit-sync.service';
 import { GithubCommitMessageReconcilerService } from '../../collectors/sources/github/github-commit-message-reconciler.service';
 import { GithubPrCommitBackfillService } from '../../collectors/sources/github/github-pr-commit-backfill.service';
 import { GithubCommitReconcilerService } from '../../collectors/sources/github/github-commit-reconciler.service';
 import { GithubCopilotUsageSyncService } from '../../collectors/sources/github/github-copilot-usage-sync.service';
 import { readGithubCopilotConfig } from '../../collectors/sources/github/github-copilot.config';
+import {
+  GithubOrg,
+  loadGithubOrgs,
+  pickGithubOrg,
+} from '../../collectors/sources/github/github-orgs';
 import { GithubOrgSyncService } from '../../collectors/sources/github/github-org-sync.service';
 import { GithubPrReconcilerService } from '../../collectors/sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../../collectors/sources/github/github-review-reconciler.service';
@@ -39,6 +47,7 @@ import { Role } from '../../common/auth/role.enum';
 import { Roles } from '../../common/auth/roles.decorator';
 import { SecretsService } from '../../common/secrets/secrets.service';
 import { AuthUser } from '../../common/tenancy/tenant-context.service';
+import { PrismaService } from '../../database/prisma.service';
 import { CorrelationService } from '../../correlation/correlation.service';
 import { DeveloperIdentityService } from '../../correlation/developer-identity.service';
 import {
@@ -93,11 +102,40 @@ class UpsertConfigurationDto {
   expectedUpdatedAt?: string;
 }
 
+/**
+ * Org-scoped routes take an optional `organization` (ADR-0013): omitted means
+ * the default row's organisation; one that is not a configured, active
+ * organisation is a 400 rather than a silent empty result.
+ */
+export function assertKnownActiveOrgIn(
+  orgs: GithubOrg[],
+  organization?: string,
+): void {
+  if (!organization) return;
+  const org = pickGithubOrg(orgs, organization);
+  if (!org || !org.active) {
+    throw new BadRequestException(
+      `GitHub organisation "${organization}" is not configured and active.`,
+    );
+  }
+}
+
+class RunAuditSyncDto {
+  @IsOptional()
+  @IsString()
+  organization?: string;
+}
+
 class SyncGithubOrgDto {
   /** Overrides the github namespace's own backfillDays for this sync only. */
   @IsOptional()
   @IsNumber()
   backfillDays?: number;
+
+  /** Which configured organisation to sync; omitted = the first (default) one. */
+  @IsOptional()
+  @IsString()
+  organization?: string;
 }
 
 /**
@@ -107,9 +145,41 @@ class SyncGithubOrgDto {
  */
 const MAX_REBACKFILL_MONTHS = 60;
 
+export interface GithubOrganizationView {
+  key: string;
+  organization: string;
+  status: 'active' | 'disabled';
+  isDefault: boolean;
+  values: Record<string, unknown>;
+  /** Effective ref NAMES — never secret values. */
+  secretRefs: Record<string, string>;
+  inheritedRefs: string[];
+  audit: AuditStatus;
+  digest: 'included' | 'collecting' | 'disabled';
+}
+
+export function toOrganizationView(
+  org: GithubOrg,
+  audit: AuditStatus,
+  digest: 'included' | 'collecting' | 'disabled',
+): GithubOrganizationView {
+  return {
+    key: org.key,
+    organization: org.organization,
+    status: org.active ? 'active' : 'disabled',
+    isDefault: org.isDefault,
+    values: org.values,
+    secretRefs: org.secretRefs,
+    inheritedRefs: org.inheritedRefs,
+    audit,
+    digest,
+  };
+}
+
 @Controller('admin/configurations')
 export class ConfigurationsController {
   constructor(
+    private readonly prisma: PrismaService,
     private readonly configurations: ConfigurationsService,
     private readonly secrets: SecretsService,
     private readonly githubOrgSync: GithubOrgSyncService,
@@ -240,6 +310,35 @@ export class ConfigurationsController {
     return { removed: true };
   }
 
+  /**
+   * Every configured GitHub organisation (ADR-0013) with its effective token
+   * ref names, audit-route status and whether the digest includes it yet.
+   * Read-only; never resolves or returns a secret value.
+   */
+  @Roles(Role.ADMIN)
+  @Get('github/organizations')
+  async githubOrganizations(@CurrentUser() user: AuthUser) {
+    const orgs = await loadGithubOrgs(this.prisma, { tenantId: user.tenantId });
+    const inclusion = await this.auditSync.digestInclusion(user.tenantId);
+    const organizations: GithubOrganizationView[] = [];
+    for (const org of orgs) {
+      const audit = await this.auditSync.status(
+        user.tenantId,
+        undefined,
+        undefined,
+        org.organization,
+      );
+      organizations.push(
+        toOrganizationView(
+          org,
+          audit,
+          inclusion.get(org.organization) ?? 'disabled',
+        ),
+      );
+    }
+    return { organizations };
+  }
+
   @Roles(Role.ADMIN)
   @Get('catalog')
   catalog() {
@@ -299,22 +398,16 @@ export class ConfigurationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: SyncGithubOrgDto,
   ) {
-    const configs = await this.configurations.listTenantConfigurations(
-      user.tenantId,
+    const org = pickGithubOrg(
+      await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+      dto.organization,
     );
-    const github = configs.find(
-      (c) => c.namespace === 'github' && c.key === 'default',
-    );
-    const values = (github?.values ?? {}) as Record<string, unknown>;
-    const secretRefs = (github?.secretRefs ?? {}) as Record<string, unknown>;
-    const organization =
-      typeof values.organization === 'string' ? values.organization : undefined;
-    const tokenRef =
-      typeof secretRefs.tokenRef === 'string' ? secretRefs.tokenRef : undefined;
-
-    if (!github || github.status !== 'active' || !organization || !tokenRef) {
+    const tokenRef = org?.secretRefs.tokenRef;
+    if (!org || !org.active || !tokenRef) {
       throw new BadRequestException(
-        'Configure GitHub (organization + token secret ref, saved as active) before syncing the whole org.',
+        dto.organization
+          ? `GitHub organisation "${dto.organization}" is not configured with a token secret ref and saved as active.`
+          : 'Configure GitHub (organization + token secret ref, saved as active) before syncing the whole org.',
       );
     }
 
@@ -327,11 +420,13 @@ export class ConfigurationsController {
 
     const backfillDays =
       dto.backfillDays ??
-      (typeof values.backfillDays === 'number' ? values.backfillDays : 90);
+      (typeof org.values.backfillDays === 'number'
+        ? org.values.backfillDays
+        : 90);
 
     return this.githubOrgSync.syncOrgRepos(
       user.tenantId,
-      organization,
+      org.organization,
       tokenRef,
       token,
       backfillDays,
@@ -477,8 +572,22 @@ export class ConfigurationsController {
    */
   @Roles(Role.ADMIN)
   @Post('github/audit-sync/run')
-  async runAuditSync(@CurrentUser() user: AuthUser) {
-    const summary = await this.auditSync.runTenant(user.tenantId);
+  async runAuditSync(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RunAuditSyncDto,
+  ) {
+    if (dto?.organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        dto.organization,
+      );
+    }
+    const summary = await this.auditSync.runTenant(
+      user.tenantId,
+      undefined,
+      undefined,
+      dto?.organization,
+    );
     await this.audit?.record({
       tenantId: user.tenantId,
       actorType: 'user',
@@ -486,7 +595,11 @@ export class ConfigurationsController {
       action: 'collectors.github_audit_sync.run',
       targetType: 'github_audit_run',
       targetId: summary.runId,
-      metadata: { status: summary.status, counters: summary.counters },
+      metadata: {
+        status: summary.status,
+        counters: summary.counters,
+        organization: dto?.organization ?? null,
+      },
     });
     return summary;
   }
@@ -498,8 +611,22 @@ export class ConfigurationsController {
    */
   @Roles(Role.ADMIN)
   @Get('github/audit-sync/status')
-  async auditSyncStatus(@CurrentUser() user: AuthUser) {
-    return this.auditSync.status(user.tenantId);
+  async auditSyncStatus(
+    @CurrentUser() user: AuthUser,
+    @Query('organization') organization?: string,
+  ) {
+    if (organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        organization,
+      );
+    }
+    return this.auditSync.status(
+      user.tenantId,
+      undefined,
+      undefined,
+      organization,
+    );
   }
 
   /**
@@ -712,10 +839,19 @@ export class ConfigurationsController {
    */
   @Roles(Role.ADMIN)
   @Post('github/copilot-sync')
-  async runCopilotSync(@CurrentUser() user: AuthUser) {
+  async runCopilotSync(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: RunAuditSyncDto,
+  ) {
     if (!readGithubCopilotConfig().syncEnabled) {
       throw new BadRequestException(
         'Copilot usage sync is off for this deployment — set GITHUB_COPILOT_USAGE_SYNC=on first.',
+      );
+    }
+    if (dto?.organization) {
+      assertKnownActiveOrgIn(
+        await loadGithubOrgs(this.prisma, { tenantId: user.tenantId }),
+        dto.organization,
       );
     }
     await this.audit?.record({
@@ -725,8 +861,13 @@ export class ConfigurationsController {
       action: 'collector.copilot_usage_sync.requested',
       targetType: 'tenant_configuration',
       targetId: 'github',
+      metadata: { organization: dto?.organization ?? null },
     });
-    return this.copilotSync.syncTenant(user.tenantId);
+    return this.copilotSync.syncTenant(
+      user.tenantId,
+      undefined,
+      dto?.organization,
+    );
   }
 
   /** Where the Copilot sync has got to, and how its last run ended. */

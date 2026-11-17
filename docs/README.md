@@ -19,7 +19,7 @@ Canonical documentation for **SprintIQ** — the AI-powered Engineering Intellig
 | **Development** | [`development/`](development/) | [Onboarding](development/DEVELOPER-ONBOARDING.md), local workflow, commands, coding patterns. |
 | **Deployment** | [`deployment/`](deployment/) | [Deployment & collector operations](deployment/README.md) — Docker, Kubernetes, ingress, secrets, scaling. |
 | **Security** | [`security/`](security/) | [Auth, RBAC & multi-tenancy](security/AUTH-AND-RBAC.md), audit. |
-| **Runbooks** | [`runbooks/`](runbooks/) | [Run locally & exercise the slice](runbooks/LOCAL-RUN.md); operational procedures. |
+| **Runbooks** | [`runbooks/`](runbooks/) | [Run locally & exercise the slice](runbooks/LOCAL-RUN.md); [add a GitHub organisation](runbooks/add-github-organisation.md); operational procedures. |
 
 ## How the system fits together (one screen)
 

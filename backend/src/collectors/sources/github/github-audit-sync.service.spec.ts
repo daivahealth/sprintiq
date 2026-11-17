@@ -93,7 +93,7 @@ function seeded(
   prisma.githubAuditCheckpoint.rows.push({
     id: `cp-${tenantId}`,
     tenantId,
-    organization: 'acme',
+    organization: Object.keys(tips)[0]?.split('/')[0] ?? 'acme',
     seededAt: new Date(NOW.getTime() - 3_600_000),
     checkpointAt: new Date(NOW.getTime() - 300_000),
   });
@@ -741,7 +741,7 @@ describe('GithubAuditSyncService.runTenant (per-tenant run claim)', () => {
     const r = await svc.runTenant('t1', SHADOW, NOW);
     expect(r).toMatchObject({
       status: 'skipped',
-      reason: 'Another audit sync run for this tenant is in progress.',
+      reason: 'Another audit sync run for organisation acme is in progress.',
     });
     expect(prisma.githubAuditRun.rows).toHaveLength(0);
     expect(audit.listGitPushes).not.toHaveBeenCalled();
@@ -1139,9 +1139,9 @@ describe('GithubAuditSyncService.status', () => {
     prisma.githubAuditCheckpoint.rows[0].lastStatus = 'success';
     prisma.githubAuditCheckpoint.rows[0].lastError = null;
     prisma.githubPushRange.rows.push(
-      { id: 'r1', tenantId: 't1', status: 'pending' },
-      { id: 'r2', tenantId: 't1', status: 'pending' },
-      { id: 'r3', tenantId: 't1', status: 'failed' },
+      { id: 'r1', tenantId: 't1', repoFullName: 'acme/ehr', status: 'pending' },
+      { id: 'r2', tenantId: 't1', repoFullName: 'acme/ehr', status: 'pending' },
+      { id: 'r3', tenantId: 't1', repoFullName: 'acme/ehr', status: 'failed' },
     );
     const cfg = readGithubAuditConfig({
       GITHUB_AUDIT_SYNC_MODE: 'ingest',
@@ -1166,9 +1166,27 @@ describe('GithubAuditSyncService.status', () => {
     seedTenant(prisma, 't1', ['acme/ehr']);
     seeded(prisma, 't1', { 'acme/ehr': { master: 'm1' } });
     prisma.githubPushRange.rows.push(
-      { id: 'a', tenantId: 't1', status: 'done', truncated: true },
-      { id: 'b', tenantId: 't1', status: 'done', truncated: false },
-      { id: 'c', tenantId: 't1', status: 'dismissed', truncated: true },
+      {
+        id: 'a',
+        tenantId: 't1',
+        repoFullName: 'acme/ehr',
+        status: 'done',
+        truncated: true,
+      },
+      {
+        id: 'b',
+        tenantId: 't1',
+        repoFullName: 'acme/ehr',
+        status: 'done',
+        truncated: false,
+      },
+      {
+        id: 'c',
+        tenantId: 't1',
+        repoFullName: 'acme/ehr',
+        status: 'dismissed',
+        truncated: true,
+      },
       { id: 'd', tenantId: 't2', status: 'done', truncated: true },
     );
     expect(await svc.status('t1', SHADOW, NOW)).toMatchObject({
@@ -1240,6 +1258,7 @@ describe('GithubAuditSyncService.status', () => {
       {
         id: 'sweep-1',
         tenantId: 't1',
+        organization: 'acme',
         trigger: 'full_sweep',
         status: 'success',
         startedAt: new Date('2026-10-04T18:50:00.000Z'),
@@ -1248,6 +1267,7 @@ describe('GithubAuditSyncService.status', () => {
       {
         id: 'sweep-2',
         tenantId: 't1',
+        organization: 'acme',
         trigger: 'full_sweep',
         status: 'partial',
         startedAt: new Date('2026-10-05T18:50:00.000Z'),
@@ -1307,6 +1327,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     prisma.githubAuditRun.rows.push({
       id: `sweep-${tenantId}`,
       tenantId,
+      organization: 'acme',
       mode: 'ingest',
       trigger: 'full_sweep',
       status: 'success',
@@ -1330,7 +1351,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it('does not apply in shadow mode', async () => {
     const { svc, prisma } = setup();
     covered(prisma, 't1');
-    expect(await svc.coverageForDay('t1', DAY, SHADOW)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, SHADOW)).toMatchObject({
       applies: false,
       ok: true,
       reasons: [],
@@ -1340,7 +1361,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it('does not apply when no audit-log token ref is configured', async () => {
     const { svc, prisma, secrets } = setup();
     seedTenant(prisma, 't1', ['acme/ehr'], {});
-    expect(await svc.coverageForDay('t1', DAY, INGEST)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, INGEST)).toMatchObject({
       applies: false,
       ok: true,
       reasons: [],
@@ -1358,7 +1379,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
   it('is ok when checkpoint, ranges and the sweep all cover the day — and never resolves a secret or calls GitHub', async () => {
     const { svc, prisma, secrets, audit, client } = setup();
     covered(prisma, 't1');
-    expect(await svc.coverageForDay('t1', DAY, INGEST)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, INGEST)).toMatchObject({
       applies: true,
       ok: true,
       reasons: [],
@@ -1594,7 +1615,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     const { svc, prisma } = setup();
     covered(prisma, 't1');
     prisma.githubAuditRun.rows.length = 0;
-    expect(await svc.coverageForDay('t1', DAY, NO_SWEEP)).toEqual({
+    expect(await svc.coverageForDay('t1', DAY, NO_SWEEP)).toMatchObject({
       applies: true,
       ok: true,
       reasons: [],
@@ -1624,7 +1645,7 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
     prisma.githubAuditRun.rows.splice(0, 1);
     // t2's unfinished range in the window must not count against t1.
     prisma.githubPushRange.rows.push(
-      range('t2-r', 't2', 'pending', DAY_END, 'other/ehr', 'main'),
+      range('t2-r', 't2', 'pending', DAY_END, 'acme/other', 'main'),
     );
     // t1 not seeded; t2's seeded checkpoint must not stand in for it.
     prisma.githubAuditCheckpoint.rows[0].seededAt = null;
@@ -1639,14 +1660,17 @@ describe('GithubAuditSyncService.coverageForDay (digest seal)', () => {
       const where = call.where as {
         tenantId?: string;
         tenantId_namespace_key?: { tenantId: string };
+        tenantId_organization?: { tenantId: string };
       };
-      expect(where.tenantId ?? where.tenantId_namespace_key?.tenantId).toBe(
-        't1',
-      );
+      expect(
+        where.tenantId ??
+          where.tenantId_namespace_key?.tenantId ??
+          where.tenantId_organization?.tenantId,
+      ).toBe('t1');
     }
     // And t2 sees its own range, not t1's state.
     const c2 = await svc.coverageForDay('t2', DAY, INGEST);
-    expect(c2.reasons).toEqual(['1 unfinished range(s): other/ehr@main']);
+    expect(c2.reasons).toEqual(['1 unfinished range(s): acme/other@main']);
   });
 });
 
@@ -1765,7 +1789,7 @@ describe('GithubAuditSyncService.runFullSweep (full branch sweep)', () => {
     const r = await svc.runFullSweep('t1', SHADOW, NOW);
     expect(r).toMatchObject({
       status: 'skipped',
-      reason: 'Another audit sync run for this tenant is in progress.',
+      reason: 'Another audit sync run for organisation acme is in progress.',
     });
     expect(prisma.githubAuditRun.rows).toHaveLength(0);
     expect(client.listHeadRefs).not.toHaveBeenCalled();

@@ -901,32 +901,49 @@ export class CodeService implements OnModuleInit {
   }
 
   /**
-   * Whether any Copilot report was ever collected for the tenant, the newest
-   * report day held, and how many report days fall inside the window — the
-   * freshness a board must show beside the column.
+   * Whether any Copilot report was ever collected for the tenant, the
+   * freshness (the oldest of each organisation's newest report day, so the
+   * organisation furthest behind sets it), and how many distinct report days
+   * fall inside the window — the freshness a board must show beside the column.
    */
   async copilotCoverage(
     tenantId: string,
     fromDay: string,
     toDay: string,
   ): Promise<CopilotCoverage> {
-    const [newest, inWindow] = await Promise.all([
-      this.prisma.copilotReportDay.findFirst({
+    // Per organisation (ADR-0013): the column is only as fresh as the
+    // organisation furthest behind, and a day reported by two organisations
+    // is still one report day.
+    const [newestByOrg, daysInWindow] = await Promise.all([
+      this.prisma.copilotReportDay.groupBy({
+        by: ['org'],
         where: { tenantId },
-        orderBy: { day: 'desc' },
-        select: { day: true },
+        _max: { day: true },
+        orderBy: { org: 'asc' },
       }),
-      this.prisma.copilotReportDay.count({
+      this.prisma.copilotReportDay.findMany({
         where: {
           tenantId,
           day: { gte: dayDate(fromDay), lte: dayDate(toDay) },
         },
+        select: { day: true },
+        distinct: ['day'],
       }),
     ]);
+    const newest = newestByOrg
+      .map((g) => g._max.day)
+      .filter((d): d is Date => d instanceof Date);
+    const oldestNewest =
+      newest.length > 0
+        ? new Date(Math.min(...newest.map((d) => d.getTime())))
+        : null;
     return {
-      collected: newest !== null,
-      coveredThrough: newest ? newest.day.toISOString().slice(0, 10) : null,
-      reportDaysInWindow: inWindow,
+      collected: newest.length > 0,
+      coveredThrough: oldestNewest
+        ? oldestNewest.toISOString().slice(0, 10)
+        : null,
+      reportDaysInWindow: daysInWindow.length,
+      orgs: newestByOrg.map((g) => g.org),
     };
   }
 }
@@ -945,6 +962,8 @@ export interface CopilotCoverage {
   collected: boolean;
   coveredThrough: string | null;
   reportDaysInWindow: number;
+  /** Organisations with any collected report, A–Z. */
+  orgs: string[];
 }
 
 /** A `YYYY-MM-DD` report day as the Date a `@db.Date` column stores. */

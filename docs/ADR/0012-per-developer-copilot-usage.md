@@ -1,6 +1,6 @@
 # ADR-0012: Per-developer Copilot usage on the Activity Overview roster
 
-- **Status:** Accepted — implemented 2026-10-15
+- **Status:** Accepted — implemented 2026-10-15; amended 2026-11-16
 - **Date:** 2026-10-15
 - **Deciders:** Product owner
 - **Related:** [CLAUDE.md](../../CLAUDE.md) ("Metrics are ethics-first"), [ADR-0009](0009-attributed-commit-digest.md) (the second exception), [features/DASHBOARDS.md §4.4.1](../features/DASHBOARDS.md), [features/METRICS.md](../features/METRICS.md) (`copilot_active_days`, `copilot_lines_added`), [api/README.md §3, §6](../api/README.md), [architecture/DATA-MODEL.md](../architecture/DATA-MODEL.md), [deployment/README.md](../deployment/README.md)
@@ -41,6 +41,10 @@ These conditions are load-bearing and enforced in code:
 - any notification.
 
 Each of those needs its own decision, taken again. The same is true of any other Copilot figure GitHub reports (acceptance rate, AI credits), even though it is stored.
+
+## Amendment, 2026-11-16 — usage across GitHub organisations
+
+Copilot usage is collected per GitHub organisation ([ADR-0013](0013-multiple-github-organisations.md)). The column combines a person's usage across organisations — active days are the union of days, lines are summed, a seat in any organisation counts — and its freshness is the furthest-behind organisation's newest report day; the caption names the organisations when more than one reports. Nothing else changes: never ordered or filtered by, never feeds the grade, digest, Watchlist or notifications.
 
 ## Consequences
 

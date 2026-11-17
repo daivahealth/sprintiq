@@ -19,6 +19,7 @@ import type {
 } from "../../lib/api/types";
 import { timeAgo } from "../../lib/utils";
 import { AuditRoutePanel } from "./AuditRoutePanel";
+import { AuditOrgStatusList } from "./AuditOrgStatusList";
 
 function useSyncStatus() {
   return useQuery({
@@ -548,6 +549,7 @@ export function SyncStatusPage() {
       </div>
 
       <AuditRoutePanel />
+      <AuditOrgStatusList />
 
       {query.isLoading && (
         <Card className="flex items-center gap-2 text-sm text-fg-subtle">

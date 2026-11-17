@@ -11,6 +11,10 @@ import { previousWorkingDayKey } from '../../common/time';
 import { buildDigestCard } from '../../collectors/delivery/digest-card';
 import { TeamsClient } from '../../collectors/delivery/teams.client';
 import {
+  GITHUB_LOGIN_PATTERN,
+  loadGithubOrgs,
+} from '../../collectors/sources/github/github-orgs';
+import {
   DigestOutcome,
   NamedDeveloper,
   NoCommitDetectionService,
@@ -287,14 +291,17 @@ export class NotificationsService {
     // stops this looking like a dead cron — skip straight to the audit
     // entry rather than building or posting a card.
     if (outcome !== 'skipped_no_roster') {
-      const githubOrganization = await this.resolveGithubOrganization(tenantId);
+      const githubOrganizations = await this.resolveGithubOrganizations(
+        tenantId,
+        detected.githubOrganizations,
+      );
       const card = buildDigestCard({
         reportedDay,
         flagged: result.flagged,
         evaluatedCount,
         unattributedCommits: detected.unattributedCommits,
         ...(detail ? { withheldDetail: detail } : {}),
-        ...(githubOrganization ? { githubOrganization } : {}),
+        githubOrganizations,
       });
 
       try {
@@ -405,31 +412,22 @@ export class NotificationsService {
   }
 
   /**
-   * The tenant's GitHub organization login, for the card's lead-in line
-   * ("… no recorded activity in GitHub athmahealth organisation:"). Read from the same
-   * `github`/`default` configuration row the org sync uses. Returns undefined
-   * unless it is a valid GitHub login, so an admin-typed value cannot carry
-   * markdown or HTML into the card.
+   * The GitHub organisation logins for the card's lead-in ("… no recorded
+   * activity in GitHub athmahealth and NHWebsite organisations:"). The ones
+   * the day's coverage check included when it ran (ADR-0013), else every
+   * active organisation row. Only valid GitHub logins, so an admin-typed
+   * value cannot carry markdown or HTML into the card.
    */
-  private async resolveGithubOrganization(
+  private async resolveGithubOrganizations(
     tenantId: string,
-  ): Promise<string | undefined> {
-    const config = await this.prisma.tenantConfiguration.findUnique({
-      where: {
-        tenantId_namespace_key: {
-          tenantId,
-          namespace: 'github',
-          key: CONFIG_KEY,
-        },
-      },
-      select: { values: true },
-    });
-    const organization = ((config?.values ?? {}) as Record<string, unknown>)
-      .organization;
-    return typeof organization === 'string' &&
-      /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(organization)
-      ? organization
-      : undefined;
+    included: string[] | undefined,
+  ): Promise<string[]> {
+    const orgs =
+      included ??
+      (await loadGithubOrgs(this.prisma, { tenantId, activeOnly: true })).map(
+        (o) => o.organization,
+      );
+    return orgs.filter((o) => GITHUB_LOGIN_PATTERN.test(o));
   }
 }
 

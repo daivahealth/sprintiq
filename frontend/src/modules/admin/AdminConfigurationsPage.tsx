@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { DeveloperIdentitiesPanel } from './DeveloperIdentitiesPanel';
+import { GithubOrganizationsPanel } from './GithubOrganizationsPanel';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api/client';
 import type {
@@ -490,6 +491,16 @@ export function AdminConfigurationsPage() {
                           type={field.kind === 'number' ? 'number' : 'text'}
                           value={String(value ?? '')}
                           placeholder={isSecretRef ? 'e.g. GITHUB_TOKEN' : undefined}
+                          readOnly={
+                            selected.namespace === 'github' &&
+                            field.key === 'organization' &&
+                            !!savedSnapshots.github?.draft.organization
+                          }
+                          disabled={
+                            selected.namespace === 'github' &&
+                            field.key === 'organization' &&
+                            !!savedSnapshots.github?.draft.organization
+                          }
                           onChange={(event) =>
                             updateDraft(selected, field, event.target.value)
                           }
@@ -619,6 +630,8 @@ export function AdminConfigurationsPage() {
                 </div>
               </div>
             ) : null}
+
+            {selected.namespace === 'github' ? <GithubOrganizationsPanel /> : null}
 
             {selected.namespace === 'jira' ? (
               <div className="rounded-md border border-border bg-surface-sunken p-3">

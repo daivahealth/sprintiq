@@ -42,10 +42,16 @@ export function copilotCaption(coverage: CopilotCoverage): string {
   const through = coverage.coveredThrough
     ? ` Reported by GitHub about two days late — data through ${coverage.coveredThrough} (UTC).`
     : '';
+  const orgs = coverage.orgs ?? [];
+  const scope =
+    orgs.length > 1
+      ? ` Across GitHub organisations ${orgs.slice(0, -1).join(', ')} and ${orgs[orgs.length - 1]}.`
+      : '';
   return (
     'Copilot: days GitHub reported any Copilot activity for the person (UTC days), and the lines Copilot added. ' +
     'Context, never a ranking or a productivity score — the column cannot be sorted on.' +
     through +
+    scope +
     " GitHub doesn't count Copilot on github.com or mobile, or IDEs with telemetry off, so no data doesn't mean not using AI."
   );
 }

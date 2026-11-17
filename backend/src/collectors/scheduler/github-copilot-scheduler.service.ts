@@ -55,15 +55,18 @@ export class GithubCopilotSchedulerService {
     }
     this.running = true;
     try {
-      for (const tenantId of await this.sync.listEnabledTenants()) {
-        // One tenant's revoked token must not cancel the sweep for the rest.
+      for (const {
+        tenantId,
+        organization,
+      } of await this.sync.listEnabledOrgs()) {
+        // One organisation's revoked token must not cancel the sweep for the rest.
         try {
           await this.tenantContext.runWithTenant(tenantId, () =>
-            this.sync.syncTenant(tenantId),
+            this.sync.syncTenant(tenantId, undefined, organization),
           );
         } catch (error) {
           this.logger.error(
-            `Copilot usage sync failed for tenant ${tenantId}: ${(error as Error).message}`,
+            `Copilot usage sync failed for tenant ${tenantId} org ${organization}: ${(error as Error).message}`,
           );
         }
       }

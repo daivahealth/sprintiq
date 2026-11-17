@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   developerDayHref,
   formatReportedDay,
+  githubScopeLine,
   previousDayHeadline,
   withheldExplanation,
   type PreviousDayView,
@@ -62,6 +63,18 @@ describe('previous-day view text', () => {
   it('links to the developer page scoped to that one day', () => {
     expect(developerDayHref('Arun-Balaji-M_athma', '2026-10-16')).toBe(
       '../developer?developer=Arun-Balaji-M_athma&window=custom&from=2026-10-16&to=2026-10-16',
+    );
+  });
+});
+
+describe('githubScopeLine', () => {
+  it('is absent for one organisation, so the single-org card is unchanged', () => {
+    expect(githubScopeLine(['athmahealth'])).toBeNull();
+    expect(githubScopeLine(undefined)).toBeNull();
+  });
+  it('names every organisation when there are several', () => {
+    expect(githubScopeLine(['athmahealth', 'NHWebsite'])).toBe(
+      'Across GitHub organisations: athmahealth, NHWebsite.',
     );
   });
 });

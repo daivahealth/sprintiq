@@ -297,6 +297,7 @@ export function validateConfigurationValues(
   values: Record<string, unknown>,
   secretRefs: Record<string, unknown>,
   status: string,
+  opts: { inheritSecretRefs?: boolean } = {},
 ): string[] {
   const section = getConfigurationSection(namespace);
   const errors: string[] = [];
@@ -322,7 +323,10 @@ export function validateConfigurationValues(
     const raw = bucket[field.key];
     const present = raw !== undefined && raw !== null && raw !== '';
 
-    if (status === 'active' && field.required && !present) {
+    // A non-default GitHub organisation row may leave a token ref blank to use
+    // the default row's (ADR-0013), so its refs are never required here.
+    const inherits = opts.inheritSecretRefs && field.kind === 'secret-ref';
+    if (status === 'active' && field.required && !present && !inherits) {
       errors.push(`"${field.label}" is required.`);
       continue;
     }

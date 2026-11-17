@@ -63,7 +63,7 @@ function setup() {
   prisma.githubAuditCheckpoint.rows.push({
     id: 'cp',
     tenantId: 't1',
-    organization: 'acme',
+    organization: 'athmahealth',
     seededAt: new Date(NOW.getTime() - 3_600_000),
     checkpointAt: new Date(NOW.getTime() - 300_000),
   });
