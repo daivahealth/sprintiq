@@ -188,7 +188,7 @@ export function AuditRoutePanel() {
               {reread.data.repos.length} repo(s) queued —{" "}
               {reread.data.readOnNextPushOnly
                 ? "read on each repo's next push (the branch sweep is off)."
-                : "read on the next branch sweep, at :02 past the hour."}
+                : "read on the next hourly branch sweep (two minutes past the hour, server time)."}
             </span>
           )}
           {reread.isError && (
