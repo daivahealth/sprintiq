@@ -35,6 +35,7 @@ import {
   commitIdempotencyKey,
 } from './github-commit-envelope';
 import {
+  branchHistorySettings,
   loadGithubOrgs,
   orgOfRepo,
   pickGithubOrg,
@@ -196,6 +197,10 @@ export interface RunContext {
   budgetSkipped: string[];
   /** Auto-registration of pushed repos with no connection (spec item 4); read only by `discover`. */
   registration: RegistrationContext;
+  /** The organisation's effective branch-history settings (its own values, else the env defaults). */
+  history: { lookbackDays: number; maxBranches: number };
+  /** True for the tenant's first organisation (`github/default`). */
+  defaultOrg: boolean;
 }
 
 /** What the audit sync needs from the tenant's GitHub configuration. */
@@ -206,6 +211,8 @@ interface AuditSettings {
   collectorTokenRef?: string;
   /** The GitHub configuration's `backfillDays` (default 90), as the org sync uses it. */
   backfillDays: number;
+  history: { lookbackDays: number; maxBranches: number };
+  defaultOrg: boolean;
 }
 
 export interface RegistrationContext {
@@ -217,6 +224,14 @@ export interface RegistrationContext {
   overCap: string[];
   /** Shadow mode: repos that would have been auto-registered, named in `run.error`. */
   wouldRegister: string[];
+}
+
+/** Names the cap an over-cap note refers to: the env default for the first organisation, else the card's setting. */
+function capLabel(ctx: RunContext): string {
+  const n = ctx.history.maxBranches;
+  return ctx.defaultOrg && n === ctx.cfg.newRepoMaxBranches
+    ? `GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${n})`
+    : `the organisation's "Max branches to read" (${n})`;
 }
 
 /** Org-sync default when the GitHub configuration sets no `backfillDays`. */
@@ -581,6 +596,7 @@ export class GithubAuditSyncService {
     tenantId: string,
     repos?: string[],
     cfg: GithubAuditConfig = readGithubAuditConfig(),
+    organization?: string,
   ): Promise<{
     status: 'scheduled' | 'not_ingest' | 'not_seeded';
     repos: string[];
@@ -599,7 +615,13 @@ export class GithubAuditSyncService {
     );
     if (seededOrgs.size === 0) return { status: 'not_seeded', ...empty };
     const registered = await this.registeredRepos(tenantId);
-    const wanted = repos && repos.length > 0 ? repos : [...registered.keys()];
+    // `repos` wins; else one organisation's registered repos; else all.
+    const wanted =
+      repos && repos.length > 0
+        ? repos
+        : [...registered.keys()].filter(
+            (r) => !organization || repoInOrg(r, organization),
+          );
     // A repo whose organisation has not been seeded yet is not re-read: its
     // first seeding pass reads its history anyway (ADR-0013).
     const targets = wanted.filter(
@@ -1064,7 +1086,7 @@ export class GithubAuditSyncService {
     if (cfg.mode === 'off') {
       return { summary: skipped('GITHUB_AUDIT_SYNC_MODE is off.') };
     }
-    const settings = await this.loadSettings(tenantId, organization);
+    const settings = await this.loadSettings(tenantId, cfg, organization);
     if ('reason' in settings) {
       return { summary: skipped(settings.reason) };
     }
@@ -1220,6 +1242,8 @@ export class GithubAuditSyncService {
       unseedable: [],
       budgetSkipped: [],
       registration: registrationOf(settings),
+      history: settings.history,
+      defaultOrg: settings.defaultOrg,
     };
 
     let status: AuditRunSummary['status'] = 'success';
@@ -1322,7 +1346,7 @@ export class GithubAuditSyncService {
     }
     const { overCap, noTokenRef } = ctx.registration;
     if (overCap.length > 0) {
-      const note = `${overCap.length} newly registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so they were seeded only — their existing branch history is not read, and their non-default-branch pushes in this window are left to the regular collector: ${nameRepos(overCap)}.`;
+      const note = `${overCap.length} newly registered repo(s) have more than ${capLabel(ctx)} branches, so they were seeded only — their existing branch history is not read, and their non-default-branch pushes in this window are left to the regular collector: ${nameRepos(overCap)}.`;
       error = error ? `${error} ${note}` : note;
     }
     if (ctx.registration.wouldRegister.length > 0) {
@@ -1427,6 +1451,8 @@ export class GithubAuditSyncService {
       unseedable: [],
       budgetSkipped: [],
       registration: registrationOf(settings),
+      history: settings.history,
+      defaultOrg: settings.defaultOrg,
     };
 
     let status: AuditRunSummary['status'] = 'success';
@@ -1493,7 +1519,7 @@ export class GithubAuditSyncService {
     }
     if (ctx.registration.overCap.length > 0) {
       notes.push(
-        `${ctx.registration.overCap.length} newly registered repo(s) have more than GITHUB_AUDIT_NEW_REPO_MAX_BRANCHES (${cfg.newRepoMaxBranches}) branches, so their existing branch history was not read: ${nameRepos(ctx.registration.overCap)}.`,
+        `${ctx.registration.overCap.length} newly registered repo(s) have more than ${capLabel(ctx)} branches, so their existing branch history was not read: ${nameRepos(ctx.registration.overCap)}.`,
       );
     }
     const error = notes.length > 0 ? notes.join(' ') : undefined;
@@ -1532,6 +1558,7 @@ export class GithubAuditSyncService {
 
   private async loadSettings(
     tenantId: string,
+    cfg: GithubAuditConfig,
     organization?: string,
   ): Promise<AuditSettings | { reason: string }> {
     const org = pickGithubOrg(
@@ -1568,6 +1595,8 @@ export class GithubAuditSyncService {
         typeof backfillDays === 'number' && backfillDays > 0
           ? backfillDays
           : DEFAULT_BACKFILL_DAYS,
+      history: branchHistorySettings(org, cfg),
+      defaultOrg: org.isDefault,
     };
   }
 
@@ -1642,7 +1671,14 @@ export class GithubAuditSyncService {
       todo,
       ctx.cfg.compareConcurrency,
       async ([repo, connection]) => {
-        const outcome = await this.seedRepo(ctx, repo, connection);
+        // An added organisation's first pass reads each repo's branch history
+        // (up to its own cap); the first organisation keeps tips only.
+        const outcome = await this.seedRepo(
+          ctx,
+          repo,
+          connection,
+          ctx.defaultOrg ? undefined : { documentIds: [] },
+        );
         if (outcome === 'seeded') ctx.counters.reposSeeded++;
         else if (outcome === 'budget') {
           ctx.budgetSkipped.push(repo);
@@ -1731,7 +1767,7 @@ export class GithubAuditSyncService {
     if (!refs.tips) return this.seedFailure(ctx, repo, refs.failure);
     let ranges: PlannedRange[] = [];
     if (history && ctx.cfg.mode === 'ingest') {
-      if (refs.tips.size <= ctx.cfg.newRepoMaxBranches) {
+      if (refs.tips.size <= ctx.history.maxBranches) {
         ranges = diffTips(repo, new Map(), refs.tips, branch.name).ranges;
         const c = countRanges(ranges);
         ctx.counters.compareRequestsPlanned += c.compareRequestsPlanned;
@@ -1959,7 +1995,7 @@ export class GithubAuditSyncService {
     // Against an empty store every branch is new: the default branch gets a
     // tip only, every other branch a `new_ref` range based on it.
     const diff = diffTips(repo, new Map(), refs.tips, branch.name);
-    const planRanges = refs.tips.size <= ctx.cfg.newRepoMaxBranches;
+    const planRanges = refs.tips.size <= ctx.history.maxBranches;
     if (!planRanges) registration.overCap.push(repo);
     const ranges = planRanges ? diff.ranges : [];
     const c = countRanges(ranges);
@@ -2505,7 +2541,7 @@ export class GithubAuditSyncService {
   ): Promise<GithubCompareResult & { linkShas?: Set<string> }> {
     const head = range.headSha as string;
     const since = new Date(
-      range.createdAt.getTime() - ctx.cfg.newBranchLookbackDays * 86_400_000,
+      range.createdAt.getTime() - ctx.history.lookbackDays * 86_400_000,
     );
     const readOwnHistory = () =>
       this.client.listBranchCommits(

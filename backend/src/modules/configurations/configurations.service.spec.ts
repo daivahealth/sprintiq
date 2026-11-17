@@ -689,6 +689,45 @@ describe('ConfigurationsService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it.each([
+      ['branchHistoryLookbackDays', 0],
+      ['branchHistoryLookbackDays', 91],
+      ['branchHistoryLookbackDays', 1.5],
+      ['maxHistoryBranches', -1],
+      ['maxHistoryBranches', 501],
+      ['maxHistoryBranches', 'many'],
+    ])('rejects %s = %p with a 400 naming the range', async (field, value) => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      const call = svc.upsertTenantConfiguration('t1', {
+        namespace: 'github',
+        key: 'nhwebsite',
+        values: { organization: 'NHWebsite', [field]: value },
+      });
+      await expect(call).rejects.toBeInstanceOf(BadRequestException);
+      if (typeof value === 'number')
+        await expect(call).rejects.toThrow(/between/);
+      expect(prisma.tenantConfiguration.upsert).not.toHaveBeenCalled();
+    });
+
+    it('accepts in-range history settings, including 0 branches, on any github row', async () => {
+      const { svc, prisma } = build(null);
+      (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);
+      (prisma.tenantConfiguration.upsert as jest.Mock).mockResolvedValue(
+        saved({}),
+      );
+      await svc.upsertTenantConfiguration('t1', {
+        namespace: 'github',
+        key: 'nhwebsite',
+        values: {
+          organization: 'NHWebsite',
+          branchHistoryLookbackDays: 90,
+          maxHistoryBranches: 0,
+        },
+      });
+      expect(prisma.tenantConfiguration.upsert).toHaveBeenCalled();
+    });
+
     it('rejects a default repository on a non-default row', async () => {
       const { svc, prisma } = build(null);
       (prisma.tenantConfiguration.findMany as jest.Mock).mockResolvedValue([]);

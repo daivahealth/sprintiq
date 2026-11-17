@@ -110,6 +110,20 @@ export const CONFIGURATION_CATALOG: ConfigurationSection[] = [
         helper:
           'How often to check GitHub for changes (default 240 = every 4 hours). GitHub and Jira sync independently, each on their own interval — this does not affect Jira.',
       },
+      {
+        key: 'branchHistoryLookbackDays',
+        label: 'Branch history lookback (days)',
+        kind: 'number',
+        helper:
+          'Added organisations only (1–90). How far back commits on each non-default branch are read when its history is collected. Blank = the deployment default (30 days).',
+      },
+      {
+        key: 'maxHistoryBranches',
+        label: 'Max branches to read',
+        kind: 'number',
+        helper:
+          'Added organisations only (0–500). A repo with more branches than this is seeded without reading its branch history. Blank = 200.',
+      },
     ],
   },
   {

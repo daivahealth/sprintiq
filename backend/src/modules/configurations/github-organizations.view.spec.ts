@@ -9,7 +9,7 @@ describe('toOrganizationView', () => {
         tenantId: 't1',
         key: 'default',
         status: 'active',
-        values: { organization: 'athmahealth' },
+        values: { organization: 'athmahealth', syncIntervalMinutes: 15 },
         secretRefs: { tokenRef: 'GITHUB_TOKEN' },
       },
       {
@@ -28,9 +28,14 @@ describe('toOrganizationView', () => {
       organization: 'NHWebsite',
       status: 'active',
       isDefault: false,
-      values: { organization: 'NHWebsite', backfillDays: 30 },
+      values: {
+        organization: 'NHWebsite',
+        backfillDays: 30,
+        syncIntervalMinutes: 15,
+      },
       secretRefs: { tokenRef: 'GITHUB_TOKEN' },
       inheritedRefs: ['tokenRef'],
+      inheritedValues: ['syncIntervalMinutes'],
       audit,
       digest: 'collecting',
     });
