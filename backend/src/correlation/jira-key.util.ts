@@ -41,3 +41,28 @@ export function extractJiraKeys(
 
   return [...byKey.values()];
 }
+
+/**
+ * Looser candidates than `JIRA_KEY_RE`, for reads that check every key against
+ * a known story before using it (2026-11-19). Two shapes the strict pattern
+ * misses, both seen in real branch names and commit messages:
+ *   - lowercase or mixed case: `act-92982`, `fix-cihl-1189`, `Namah-10033`;
+ *   - an underscore after the number: `ACT-97104_avoid_sending_…` (`\b` treats
+ *     `_` as a word character, so the strict pattern finds no boundary there).
+ * A number followed by `.digit` is a version (`cms-1.0`), never a key.
+ *
+ * Lowercase text is full of `utf-8`, `oct-26` and `release-1`, so these are
+ * only ever candidates — a caller that cannot resolve them to a story it knows
+ * must use `extractJiraKeys` instead. Keys come back upper-cased, distinct.
+ */
+const LOOSE_JIRA_KEY_RE =
+  /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]+)-(\d+)(?![0-9]|\.[0-9])/g;
+
+export function extractJiraKeyCandidates(text: string | undefined): string[] {
+  if (!text) return [];
+  const keys = new Set<string>();
+  for (const m of text.matchAll(LOOSE_JIRA_KEY_RE)) {
+    keys.add(`${m[1].toUpperCase()}-${m[2]}`);
+  }
+  return [...keys];
+}

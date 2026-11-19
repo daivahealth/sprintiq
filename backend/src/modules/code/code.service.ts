@@ -586,7 +586,9 @@ export class CodeService implements OnModuleInit {
   async branchesForCommits(
     tenantId: string,
     commits: { repoFullName: string; sha: string }[],
-  ): Promise<{ repoFullName: string; branch: string; sha: string }[]> {
+  ): Promise<
+    { repoFullName: string; branch: string; sha: string; firstSeenAt: Date }[]
+  > {
     const byRepo = new Map<string, string[]>();
     for (const c of commits) {
       byRepo.set(c.repoFullName, [
@@ -603,7 +605,14 @@ export class CodeService implements OnModuleInit {
           sha: { in: shas },
         })),
       },
-      select: { repoFullName: true, branch: true, sha: true },
+      // `firstSeenAt` tells the branch a commit was pushed to first from the
+      // ones it reached later (developer-tickets.ts `ticketKeysByCommit`).
+      select: {
+        repoFullName: true,
+        branch: true,
+        sha: true,
+        firstSeenAt: true,
+      },
     });
   }
 

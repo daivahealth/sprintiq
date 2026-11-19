@@ -22,6 +22,12 @@ export interface DeveloperTicketCommit {
   additions: number;
   deletions: number;
   linkedVia: LinkSource[];
+  /**
+   * Known tickets this commit also points at but is not credited to — named
+   * by a branch it reached later, or by a branch its message overrides.
+   * Optional: an older API omits it.
+   */
+  notCreditedTo?: string[];
 }
 
 /** One Jira item from `developerActivity.tickets` (2026-11-02). */
@@ -54,9 +60,12 @@ const COLUMNS = 7;
  * The Jira items this person's commits in the range reference, most recently
  * committed first (DASHBOARDS.md §4.4.3).
  *
- * Only tickets their own commits point at — a key in the commit message, or in
- * the branch the commit was on. Tickets merely assigned to them are not here:
- * assignment says what the plan expects, this says what the work touched.
+ * Only tickets their own commits point at — a key in the commit message, or,
+ * when the message names none, in the branch the commit was first seen on.
+ * Branches it reached later (a release branch, or one cut from it) don't
+ * count: they carry everyone's earlier commits. Tickets merely assigned to
+ * them are not here: assignment says what the plan expects, this says what
+ * the work touched.
  *
  * A row opens in place to list those commits, each linked to GitHub, so the
  * person and the range stay on screen while the evidence is read. `project`
@@ -69,6 +78,7 @@ export function TicketsSection({
   tickets,
   ticketsTotal,
   commitsWithoutTicket,
+  commitsWithTicketsNotCredited,
   commits,
   project,
   onClearProject,
@@ -76,6 +86,7 @@ export function TicketsSection({
   tickets?: DeveloperTicketRow[];
   ticketsTotal?: number;
   commitsWithoutTicket?: number;
+  commitsWithTicketsNotCredited?: number;
   /** Authored commits in the window — the denominator for the coverage note. */
   commits: number;
   project: string | null;
@@ -110,9 +121,10 @@ export function TicketsSection({
             {project ? `${rows.length} in ${project}` : total}
           </h4>
           <p className="text-xs text-fg-subtle">
-            Jira items named in this developer&apos;s commit messages or branch
-            names in this range. Status is as it stands in Jira now. Open a row
-            to see its commits.
+            Jira items named in this developer&apos;s commit messages in this
+            range — or, when a message names none, in the branch the commit was
+            first pushed to. Status is as it stands in Jira now. Open a row to
+            see its commits.
           </p>
         </div>
         {project && (
@@ -220,7 +232,9 @@ export function TicketsSection({
         </div>
       )}
 
-      {(tickets.length > 0 || (commitsWithoutTicket ?? 0) > 0) && (
+      {(tickets.length > 0 ||
+        (commitsWithoutTicket ?? 0) > 0 ||
+        (commitsWithTicketsNotCredited ?? 0) > 0) && (
         <ProvenanceNote>
           Where the work went, not a ranking. A commit naming two tickets counts
           on both. Merge commits are not counted.
@@ -229,6 +243,9 @@ export function TicketsSection({
             : ''}
           {(commitsWithoutTicket ?? 0) > 0
             ? ` ${commitsWithoutTicket} of ${commits} commits in this range name no known Jira item, so they appear on no ticket.`
+            : ''}
+          {(commitsWithTicketsNotCredited ?? 0) > 0
+            ? ` ${commitsWithTicketsNotCredited} commits also sit on branches named for other tickets — a release branch, or a branch cut from one, carries every earlier commit — so they count only on the ticket their message names, or else the one their first branch names, if either does. Open a row to see which tickets were set aside.`
             : ''}
         </ProvenanceNote>
       )}
@@ -267,6 +284,14 @@ function TicketCommits({
             </span>
             <span className="min-w-0 flex-1 truncate text-fg-secondary" title={c.message}>
               {c.message}
+              {(c.notCreditedTo?.length ?? 0) > 0 && (
+                <span
+                  className="ml-2 text-xs text-fg-faint"
+                  title="This commit is also on branches named for these tickets, but was not made for them, so it isn't counted on them."
+                >
+                  · not credited to {c.notCreditedTo!.join(', ')}
+                </span>
+              )}
             </span>
             <span className="shrink-0 tabular-nums text-xs">
               <span className="text-success-fg">+{c.additions}</span>{' '}

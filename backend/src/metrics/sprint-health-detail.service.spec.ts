@@ -293,7 +293,12 @@ describe('SprintHealthDetailService.commitActivity', () => {
         ]),
       );
       code.branchesForCommits.mockResolvedValue([
-        { repoFullName: 'org/shared', branch: 'feature/ACT-2-login', sha: 'b' },
+        {
+          repoFullName: 'org/shared',
+          branch: 'feature/ACT-2-login',
+          sha: 'b',
+          firstSeenAt: new Date('2026-08-01T00:00:00.000Z'),
+        },
       ]);
       planning.findByKeys.mockResolvedValue([
         { externalKey: 'ACT-99', projectKey: 'ACT' },
@@ -323,13 +328,42 @@ describe('SprintHealthDetailService.commitActivity', () => {
         ]),
       );
       code.branchesForCommits.mockResolvedValue([
-        { repoFullName: 'org/shared-copy', branch: 'ACT-3-fix', sha: 'a' },
+        {
+          repoFullName: 'org/shared-copy',
+          branch: 'ACT-3-fix',
+          sha: 'a',
+          firstSeenAt: new Date('2026-08-01T00:00:00.000Z'),
+        },
       ]);
 
       const view = await service.commitActivity('42');
 
       expect(view?.commits).toBe(1);
       expect(view?.linkage.linkedViaBranchOnly).toBe(1);
+    });
+
+    it('does not link a commit through a sprint ticket’s branch it only reached later', async () => {
+      // Pushed to the release branch first; the sprint ticket's branch was cut
+      // from it afterwards and so carries the commit too.
+      code.listCommitsPage.mockResolvedValue(page([commit('a', 'hotfix')]));
+      code.branchesForCommits.mockResolvedValue([
+        {
+          repoFullName: 'org/shared',
+          branch: '4.61.x',
+          sha: 'a',
+          firstSeenAt: new Date('2026-08-01T00:00:00.000Z'),
+        },
+        {
+          repoFullName: 'org/shared',
+          branch: '4.61.x-ACT-1-x',
+          sha: 'a',
+          firstSeenAt: new Date('2026-08-05T00:00:00.000Z'),
+        },
+      ]);
+
+      const view = await service.commitActivity('42');
+
+      expect(view?.linkage.linkedCommits).toBe(0);
     });
 
     it('takes PRs from the sprint tickets, opened inside the window', async () => {
