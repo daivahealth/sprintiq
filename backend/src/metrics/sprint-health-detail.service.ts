@@ -1437,14 +1437,16 @@ export class SprintHealthDetailService {
 
     // Keys are read across every copy of a commit before copies collapse: a
     // copied repo holds the same SHA, and its branches can name the ticket
-    // when the original's do not.
+    // when the original's do not. Only the branch each copy was first seen on
+    // counts — a later branch (a release branch, or one cut from it) names
+    // tickets the commit was never for (developer-tickets.ts).
     const links = await this.code.branchesForCommits(tenantId, page.commits);
     const keysById = ticketKeysByCommit(page.commits, links);
     const keysBySha = new Map<string, Map<string, Set<string>>>();
     for (const c of page.commits) {
       const merged = keysBySha.get(c.sha) ?? new Map<string, Set<string>>();
-      for (const [key, sources] of keysById.get(`${c.repoFullName}@${c.sha}`) ??
-        []) {
+      for (const [key, sources] of keysById.get(`${c.repoFullName}@${c.sha}`)
+        ?.credited ?? []) {
         const into = merged.get(key) ?? new Set<string>();
         for (const s of sources) into.add(s);
         merged.set(key, into);

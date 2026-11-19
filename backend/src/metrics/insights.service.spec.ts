@@ -210,7 +210,12 @@ describe('InsightsService committer-date windowing', () => {
       }),
     ] as never);
     (code.branchesForCommits as jest.Mock).mockResolvedValue([
-      { repoFullName: 'acme/payments', branch: 'feature/AS2-7', sha: 'aaa' },
+      {
+        repoFullName: 'acme/payments',
+        branch: 'feature/AS2-7',
+        sha: 'aaa',
+        firstSeenAt: new Date('2026-08-01T00:00:00.000Z'),
+      },
     ]);
     planning.findByKeys.mockImplementation((async (
       _tenant: string,
@@ -239,6 +244,47 @@ describe('InsightsService committer-date windowing', () => {
     expect(view.activeProjects).toEqual(['AS2']);
     expect(view.ticketsTotal).toBe(1);
     expect(view.commitsWithoutTicket).toBe(0);
+    expect(view.commitsWithTicketsNotCredited).toBe(0);
+  });
+
+  it('developerActivity credits a lowercase key and only the branch a commit was first seen on', async () => {
+    code.listCommits.mockResolvedValue([
+      commit({ sha: 'aaa', message: 'act-5 fix' }),
+      commit({ sha: 'bbb', message: 'wip' }),
+    ] as never);
+    (code.branchesForCommits as jest.Mock).mockResolvedValue([
+      {
+        repoFullName: 'acme/payments',
+        branch: 'ACT-6-work',
+        sha: 'bbb',
+        firstSeenAt: new Date('2026-06-02T00:00:00.000Z'),
+      },
+      {
+        repoFullName: 'acme/payments',
+        branch: '4.61.x-ACT-7',
+        sha: 'bbb',
+        firstSeenAt: new Date('2026-06-09T00:00:00.000Z'),
+      },
+    ]);
+    planning.findByKeys.mockImplementation((async (
+      _tenant: string,
+      keys: string[],
+    ) =>
+      keys.map((k) => ({
+        externalKey: k,
+        projectKey: k.split('-')[0],
+        type: 'Story',
+        status: 'Done',
+        title: k,
+      }))) as never);
+
+    const view = await service.developerActivity(
+      'jdoe',
+      new Date('2026-06-01T00:00:00.000Z'),
+    );
+
+    expect(view.tickets.map((t) => t.key).sort()).toEqual(['ACT-5', 'ACT-6']);
+    expect(view.commitsWithTicketsNotCredited).toBe(1);
   });
 
   it('developerActivity skips the story lookup when no commit names a key', async () => {

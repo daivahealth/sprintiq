@@ -287,6 +287,7 @@ export function DeveloperPage() {
             tickets={d.tickets}
             ticketsTotal={d.ticketsTotal}
             commitsWithoutTicket={d.commitsWithoutTicket}
+            commitsWithTicketsNotCredited={d.commitsWithTicketsNotCredited}
             commits={d.totals.commits}
             project={project}
             onClearProject={() => setProjectFilter(null)}

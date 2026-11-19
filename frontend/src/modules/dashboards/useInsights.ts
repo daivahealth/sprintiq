@@ -334,6 +334,12 @@ export interface DeveloperActivityView {
   ticketsTotal?: number;
   /** Authored commits in the window that reference no known ticket. */
   commitsWithoutTicket?: number;
+  /**
+   * Authored commits that also point at known tickets they are not credited
+   * to (a later branch's, or a branch's their message overrides). Optional:
+   * an older API omits it.
+   */
+  commitsWithTicketsNotCredited?: number;
   byRepo: {
     repo: string;
     commits: number;

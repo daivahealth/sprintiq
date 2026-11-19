@@ -481,14 +481,21 @@ export interface DeveloperActivityView {
   activeProjects: string[];
   /**
    * Known Jira items this person's authored commits in the window reference,
-   * by a key in the commit message or in a branch the commit was seen on.
-   * Most recent commit first, capped at 50.
+   * by a key in the commit message or, failing that, in the branch the commit
+   * was first seen on (developer-tickets.ts). Most recent commit first,
+   * capped at 50.
    */
   tickets: DeveloperTicket[];
   /** All such tickets, beyond the cap on `tickets`. */
   ticketsTotal: number;
   /** Authored commits in the window that reference no known ticket. */
   commitsWithoutTicket: number;
+  /**
+   * Authored commits that also point at known tickets they are not credited
+   * to — a later branch's ticket, or a branch's ticket their message
+   * overrides. Each such commit lists them in `notCreditedTo`.
+   */
+  commitsWithTicketsNotCredited: number;
   byRepo: {
     repo: string;
     commits: number;
@@ -1686,17 +1693,23 @@ export class InsightsService {
     }
 
     // Projects and tickets both come from the commits themselves: a key in the
-    // message or the branch, resolved to a story Jira knows. Mapping repos to
-    // projects instead credited a shared repo's every project to everyone who
-    // committed to it.
-    const keysByCommit = ticketKeysByCommit(authored, links);
+    // message or the branch first seen on, resolved to a story Jira knows.
+    // Mapping repos to projects instead credited a shared repo's every project
+    // to everyone who committed to it. Loose keys (`act-123`, `ACT-123_fix`)
+    // are safe here because every one is resolved to a known story first.
+    const keysByCommit = ticketKeysByCommit(authored, links, { loose: true });
     const candidateKeys = candidateTicketKeys(keysByCommit);
     const stories =
       candidateKeys.length > 0
         ? await this.planning.findByKeys(tenantId, candidateKeys)
         : [];
-    const { tickets, ticketsTotal, commitsWithoutTicket, projects } =
-      developerTickets(authored, keysByCommit, stories);
+    const {
+      tickets,
+      ticketsTotal,
+      commitsWithoutTicket,
+      commitsWithTicketsNotCredited,
+      projects,
+    } = developerTickets(authored, keysByCommit, stories);
 
     return {
       developer,
@@ -1727,6 +1740,7 @@ export class InsightsService {
       tickets,
       ticketsTotal,
       commitsWithoutTicket,
+      commitsWithTicketsNotCredited,
       byRepo: [...byRepo.entries()]
         .map(([repo, r]) => ({
           repo,
