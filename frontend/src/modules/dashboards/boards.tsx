@@ -9,6 +9,7 @@ import { ScopeBar } from './ScopeBar';
 import { dayWithYearLabel } from './chart-axes';
 import { CheckInGrid } from './sprint-health/CheckInGrid';
 import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
+import { ListPager, ListSearch, usePagedList } from './sprint-health/ListPager';
 import { ProductivityPanel } from './sprint-health/ProductivityPanel';
 import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
@@ -208,6 +209,11 @@ export function SprintHealthBoard() {
   );
   const detail = useSprintHealth(hasProject ? sprint : null, scope.projects);
   const d = hasProject && sprint ? detail.data : undefined;
+  const pagedSprints = usePagedList(
+    active.data?.rows ?? [],
+    scope.projects.join(','),
+    sprintLabel,
+  );
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -271,9 +277,12 @@ export function SprintHealthBoard() {
       )}
       {hasProject && active.data && active.data.rows.length !== 1 && (
         <div>
-          <h4 className="mb-2 text-sm font-medium text-fg-muted">
-            Ongoing sprints ({active.data.rows.length})
-          </h4>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-medium text-fg-muted">
+              Ongoing sprints ({active.data.rows.length})
+            </h4>
+            <ListSearch paged={pagedSprints} noun="sprints" />
+          </div>
           {active.data.rows.length === 0 ? (
             <Card>
               <p className="py-4 text-center text-sm text-fg-faint">
@@ -282,7 +291,7 @@ export function SprintHealthBoard() {
             </Card>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {active.data.rows.map((row) => (
+              {pagedSprints.items.map((row) => (
                 <button
                   key={`${row.projects?.join(',') ?? ''}:${row.sprint.externalId}`}
                   type="button"
@@ -322,6 +331,7 @@ export function SprintHealthBoard() {
               ))}
             </div>
           )}
+          <ListPager paged={pagedSprints} noun="sprints" />
           <StaleSprintsNote
             stale={active.data.stale}
             graceDays={active.data.staleGraceDays}
@@ -364,7 +374,10 @@ export function SprintHealthBoard() {
           />
 
           {d.productivity ? (
-            <ProductivityPanel data={d.productivity} />
+            <ProductivityPanel
+              data={d.productivity}
+              resetKey={`${d.sprint.externalId}|${scope.projects.join(',')}`}
+            />
           ) : (
             <PanelUnavailable label="Productivity" />
           )}

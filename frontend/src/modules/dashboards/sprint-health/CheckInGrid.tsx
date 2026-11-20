@@ -4,6 +4,7 @@ import { Button, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintCheckIns, type CheckInRow } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
+import { ListPager, ListSearch, usePagedList } from './ListPager';
 import { checkInPages } from './pager';
 import { DevName, SectionTitle, Panel } from './parts';
 import { checkInBucket, formatDateRange, MOCKUP_HEAD, type CheckInBucket } from './presentation';
@@ -21,7 +22,8 @@ function formatDayHeader(dateKey: string): string {
 }
 
 /**
- * Cell weight relative to the busiest cell on the current page. Zero gets no
+ * Cell weight relative to the busiest cell in the current week (all
+ * developers, not just the ten on screen). Zero gets no
  * fill — the count still renders, just recessive, so a quiet day reads as
  * quiet rather than missing.
  */
@@ -180,11 +182,11 @@ export function CheckInGrid({
               No ticket movement recorded in this range.
             </p>
           ) : (
-            // Wide content scrolls inside its own container — the page body
-            // never scrolls sideways for it.
-            <div className="overflow-x-auto">
-              <CheckInTable days={d.days} rows={d.rows} />
-            </div>
+            <CheckInRows
+              days={d.days}
+              rows={d.rows}
+              resetKey={`${sprint}|${projects.join(',')}`}
+            />
           )}
 
           <p
@@ -201,8 +203,45 @@ export function CheckInGrid({
   );
 }
 
-function CheckInTable({ days, rows }: { days: string[]; rows: CheckInRow[] }) {
-  const max = Math.max(0, ...rows.flatMap((r) => r.counts));
+/**
+ * Ten developers at a time, searchable by name. The page and the search are
+ * kept across Prev/Next weeks (same people, another week) and reset only when
+ * the sprint or projects change.
+ */
+function CheckInRows({
+  days,
+  rows,
+  resetKey,
+}: {
+  days: string[];
+  rows: CheckInRow[];
+  resetKey: string;
+}) {
+  const paged = usePagedList(rows, resetKey, (r) => r.displayName);
+  return (
+    <>
+      <ListSearch paged={paged} noun="developers" className="mb-3 sm:ml-auto" />
+      {/* Wide content scrolls inside its own container — the page body
+          never scrolls sideways for it. */}
+      <div className="overflow-x-auto">
+        <CheckInTable days={days} rows={paged.items} allRows={rows} />
+      </div>
+      <ListPager paged={paged} noun="developers" />
+    </>
+  );
+}
+
+function CheckInTable({
+  days,
+  rows,
+  allRows,
+}: {
+  days: string[];
+  rows: CheckInRow[];
+  /** Every row in the week, so cell weight doesn't shift between pages. */
+  allRows: CheckInRow[];
+}) {
+  const max = Math.max(0, ...allRows.flatMap((r) => r.counts));
   return (
     <table className="w-full min-w-[720px] text-sm">
       <thead>

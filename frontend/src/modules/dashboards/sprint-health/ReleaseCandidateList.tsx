@@ -3,6 +3,7 @@ import { Badge } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintReleaseCandidates, type ReleaseCandidateView } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
+import { ListPager, ListSearch, usePagedList } from './ListPager';
 import { PlannedDateField } from './PlannedDateField';
 import { SectionTitle, Panel } from './parts';
 import {
@@ -39,6 +40,9 @@ export function ReleaseCandidateList({
 }) {
   const query = useSprintReleaseCandidates(sprint, projects);
   const rows = query.data?.rows ?? [];
+  const resetKey = `${sprint}|${projects.join(',')}`;
+  const paged = usePagedList(rows, resetKey, (rc) => rc.name);
+  const lastRc = rows.length > 1 ? rows[rows.length - 1] : undefined;
 
   return (
     <section>
@@ -60,15 +64,20 @@ export function ReleaseCandidateList({
 
       {rows.length > 0 && (
         <div className="space-y-4">
-          {rows.map((rc, i) => (
+          <ListSearch paged={paged} noun="release candidates" className="sm:ml-auto" />
+          {paged.items.map((rc) => (
             <ReleaseCandidateCard
               key={rc.externalId ?? rc.name}
               rc={rc}
-              latest={rows.length > 1 && i === rows.length - 1}
+              // The last RC of the full list, not of the page or the search:
+              // "latest" stays on the same card wherever paging puts it.
+              latest={rc === lastRc}
               sprint={sprint}
               projectKey={projectKey}
+              resetKey={resetKey}
             />
           ))}
+          <ListPager paged={paged} noun="release candidates" className="mt-0" />
           {rows.length > 1 && (
             <p className="text-xs text-fg-faint">
               Stories delivered across {rows.map((r) => r.name).join(' → ')}:{' '}
@@ -142,13 +151,16 @@ function ReleaseCandidateCard({
   latest,
   sprint,
   projectKey,
+  resetKey,
 }: {
   rc: ReleaseCandidateView;
   latest: boolean;
   sprint: string;
   projectKey: string;
+  resetKey: string;
 }) {
   const pill = releaseCandidatePill(rc);
+  const stories = usePagedList(rc.stories, resetKey, (s) => `${s.key} ${s.title}`);
 
   return (
     <Panel className={cn('space-y-4 pb-5', latest && 'border-success-border')}>
@@ -196,32 +208,36 @@ function ReleaseCandidateCard({
         {rc.stories.length === 0 ? (
           <p className="py-2 text-sm text-fg-faint">No stories in this RC&apos;s scope.</p>
         ) : (
-          <table className="w-full text-[13px]">
-            <tbody>
-              {rc.stories.map((story) => (
-                <tr key={story.key} className="border-t border-border-subtle">
-                  <td className="w-px whitespace-nowrap py-1.5 pr-3 font-semibold text-chart-3">
-                    {story.key}
-                  </td>
-                  <td className="py-1.5 pr-3 text-fg-subtle">{story.title}</td>
-                  <td className="w-px whitespace-nowrap py-1.5 text-right">
-                    {story.delivered ? (
-                      <Badge tone="good" className={MOCKUP_PILL_PLAIN}>
-                        Delivered
-                      </Badge>
-                    ) : (
-                      // After release an undelivered story missed the cut;
-                      // before it, it's still pending.
-                      <Badge tone="warn" className={MOCKUP_PILL_PLAIN}>
-                        {rc.released ? 'Not delivered' : 'Pending'}
-                      </Badge>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <ListSearch paged={stories} noun="stories" className="mb-2.5 sm:ml-auto" />
+            <table className="w-full text-[13px]">
+              <tbody>
+                {stories.items.map((story) => (
+                  <tr key={story.key} className="border-t border-border-subtle">
+                    <td className="w-px whitespace-nowrap py-1.5 pr-3 font-semibold text-chart-3">
+                      {story.key}
+                    </td>
+                    <td className="py-1.5 pr-3 text-fg-subtle">{story.title}</td>
+                    <td className="w-px whitespace-nowrap py-1.5 text-right">
+                      {story.delivered ? (
+                        <Badge tone="good" className={MOCKUP_PILL_PLAIN}>
+                          Delivered
+                        </Badge>
+                      ) : (
+                        // After release an undelivered story missed the cut;
+                        // before it, it's still pending.
+                        <Badge tone="warn" className={MOCKUP_PILL_PLAIN}>
+                          {rc.released ? 'Not delivered' : 'Pending'}
+                        </Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
+        <ListPager paged={stories} noun="stories" />
       </div>
 
       <div className="border-t border-border-subtle pt-4">

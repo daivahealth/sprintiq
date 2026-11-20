@@ -66,3 +66,63 @@ export function checkInPages(sprintFrom: string, sprintTo: string): CheckInPage[
 function dateKey(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
+
+/** Rows shown per page in the board's lists (developers, RCs, stories). */
+export const LIST_PAGE_SIZE = 10;
+
+/** One page of a client-side list: its rows and where it sits in the whole. */
+export interface ListPage<T> {
+  items: T[];
+  /** 0-based index of the page actually returned (clamped into range). */
+  page: number;
+  pageCount: number;
+  /** 1-based position of the first/last row on this page; 0/0 when empty. */
+  first: number;
+  last: number;
+  total: number;
+}
+
+/**
+ * Slices `items` to one page of `size` rows. An out-of-range `page` is
+ * clamped rather than returning an empty page — the list can shrink under
+ * a held page index (another check-in week, a refetch), and an empty page
+ * with rows on earlier pages would read as "nothing here". Order is the
+ * caller's: this never sorts, so a backend order (e.g. productivity's grade
+ * order, never LOC) is preserved across pages.
+ */
+export function listPage<T>(items: readonly T[], page: number, size = LIST_PAGE_SIZE): ListPage<T> {
+  const total = items.length;
+  const pageCount = Math.max(1, Math.ceil(total / size));
+  const p = Math.min(Math.max(0, Math.floor(page)), pageCount - 1);
+  const start = p * size;
+  const slice = items.slice(start, start + size);
+  return {
+    items: slice,
+    page: p,
+    pageCount,
+    first: total === 0 ? 0 : start + 1,
+    last: start + slice.length,
+    total,
+  };
+}
+
+/**
+ * The board's quick search: keeps the items whose `text` contains every
+ * whitespace-separated term of `query`, case-insensitively ("amit pr" finds
+ * "Amit Prasad"). A blank query keeps everything. Like `listPage`, it never
+ * reorders — matches keep the caller's order.
+ */
+export function filterList<T>(
+  items: readonly T[],
+  query: string,
+  text: (item: T) => string,
+): readonly T[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    return items;
+  }
+  return items.filter((item) => {
+    const haystack = text(item).toLowerCase();
+    return terms.every((t) => haystack.includes(t));
+  });
+}
