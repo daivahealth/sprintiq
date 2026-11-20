@@ -191,3 +191,20 @@ export function customSeed(): { from: string; to: string } {
   const today = istTodayKey();
   return { from: today, to: today };
 }
+
+/**
+ * Whether the window toggle should read Custom.
+ *
+ * Always for a custom range. And for the Today preset while the custom
+ * fields are open: choosing Custom seeds today → today, which
+ * `normalizeRange` applies as Today, so reading the highlight off the
+ * applied range alone lit up Today under the very click that chose Custom.
+ * Any other preset under open fields (Back to a `?window=week` link) means
+ * the fields are stale, so it reads as that preset and the fields close.
+ */
+export function isCustomSelected(range: ActivityRange, fieldsOpen: boolean): boolean {
+  return (
+    range.kind === 'custom' ||
+    (fieldsOpen && range.kind === 'preset' && range.window === 'day')
+  );
+}
