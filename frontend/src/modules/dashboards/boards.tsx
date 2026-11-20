@@ -9,7 +9,7 @@ import { ScopeBar } from './ScopeBar';
 import { dayWithYearLabel } from './chart-axes';
 import { CheckInGrid } from './sprint-health/CheckInGrid';
 import { CommitActivityTiles } from './sprint-health/CommitActivityTiles';
-import { ListPager, usePagedList } from './sprint-health/ListPager';
+import { ListPager, ListSearch, usePagedList } from './sprint-health/ListPager';
 import { ProductivityPanel } from './sprint-health/ProductivityPanel';
 import { QualityCheckPanel } from './sprint-health/QualityCheckPanel';
 import { ReleaseCandidateList } from './sprint-health/ReleaseCandidateList';
@@ -212,6 +212,7 @@ export function SprintHealthBoard() {
   const pagedSprints = usePagedList(
     active.data?.rows ?? [],
     scope.projects.join(','),
+    sprintLabel,
   );
 
   return (
@@ -276,9 +277,12 @@ export function SprintHealthBoard() {
       )}
       {hasProject && active.data && active.data.rows.length !== 1 && (
         <div>
-          <h4 className="mb-2 text-sm font-medium text-fg-muted">
-            Ongoing sprints ({active.data.rows.length})
-          </h4>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-sm font-medium text-fg-muted">
+              Ongoing sprints ({active.data.rows.length})
+            </h4>
+            <ListSearch paged={pagedSprints} noun="sprints" />
+          </div>
           {active.data.rows.length === 0 ? (
             <Card>
               <p className="py-4 text-center text-sm text-fg-faint">

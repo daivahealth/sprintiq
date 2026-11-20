@@ -105,3 +105,24 @@ export function listPage<T>(items: readonly T[], page: number, size = LIST_PAGE_
     total,
   };
 }
+
+/**
+ * The board's quick search: keeps the items whose `text` contains every
+ * whitespace-separated term of `query`, case-insensitively ("amit pr" finds
+ * "Amit Prasad"). A blank query keeps everything. Like `listPage`, it never
+ * reorders — matches keep the caller's order.
+ */
+export function filterList<T>(
+  items: readonly T[],
+  query: string,
+  text: (item: T) => string,
+): readonly T[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) {
+    return items;
+  }
+  return items.filter((item) => {
+    const haystack = text(item).toLowerCase();
+    return terms.every((t) => haystack.includes(t));
+  });
+}

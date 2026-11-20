@@ -4,7 +4,7 @@ import { Button, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintCheckIns, type CheckInRow } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
-import { ListPager, usePagedList } from './ListPager';
+import { ListPager, ListSearch, usePagedList } from './ListPager';
 import { checkInPages } from './pager';
 import { DevName, SectionTitle, Panel } from './parts';
 import { checkInBucket, formatDateRange, MOCKUP_HEAD, type CheckInBucket } from './presentation';
@@ -204,8 +204,9 @@ export function CheckInGrid({
 }
 
 /**
- * Ten developers at a time. The page is kept across Prev/Next weeks (same
- * people, another week) and reset only when the sprint or projects change.
+ * Ten developers at a time, searchable by name. The page and the search are
+ * kept across Prev/Next weeks (same people, another week) and reset only when
+ * the sprint or projects change.
  */
 function CheckInRows({
   days,
@@ -216,9 +217,10 @@ function CheckInRows({
   rows: CheckInRow[];
   resetKey: string;
 }) {
-  const paged = usePagedList(rows, resetKey);
+  const paged = usePagedList(rows, resetKey, (r) => r.displayName);
   return (
     <>
+      <ListSearch paged={paged} noun="developers" className="mb-3 sm:ml-auto" />
       {/* Wide content scrolls inside its own container — the page body
           never scrolls sideways for it. */}
       <div className="overflow-x-auto">

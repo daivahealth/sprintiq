@@ -1,7 +1,7 @@
 import { Badge, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import type { ProductivityGrade, ProductivityView } from '../useInsights';
-import { ListPager, usePagedList } from './ListPager';
+import { ListPager, ListSearch, usePagedList } from './ListPager';
 import { DevName, SectionTitle, Panel } from './parts';
 import { MOCKUP_HEAD, MOCKUP_PILL_PLAIN } from './presentation';
 
@@ -32,8 +32,9 @@ export function ProductivityPanel({
   /** Returns the table to page one when the sprint/projects change. */
   resetKey: string;
 }) {
-  // Paged, never re-sorted: each page is a slice of the backend's grade order.
-  const paged = usePagedList(data.rows, resetKey);
+  // Paged and searched, never re-sorted: each page is a slice of the
+  // backend's grade order.
+  const paged = usePagedList(data.rows, resetKey, (r) => r.displayName);
   return (
     <section>
       <SectionTitle
@@ -58,6 +59,7 @@ export function ProductivityPanel({
       )}
 
       <Panel>
+        <ListSearch paged={paged} noun="developers" className="mb-3 sm:ml-auto" />
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm">
             <thead>

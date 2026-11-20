@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkInPages, listPage } from './pager';
+import { checkInPages, filterList, listPage } from './pager';
 
 describe('checkInPages', () => {
   it('splits a sprint into seven-day pages', () => {
@@ -68,5 +68,20 @@ describe('listPage', () => {
 
   it('reports a single empty page for an empty list', () => {
     expect(listPage([], 0)).toMatchObject({ items: [], page: 0, pageCount: 1, first: 0, last: 0 });
+  });
+});
+
+describe('filterList', () => {
+  const people = ['Amit Prasad', 'Priya Nair', 'Arun Kumar'];
+  const self = (s: string) => s;
+
+  it('keeps everything for a blank query', () => {
+    expect(filterList(people, '   ', self)).toEqual(people);
+  });
+
+  it('matches every term, case-insensitively, in the caller’s order', () => {
+    expect(filterList(people, 'PR', self)).toEqual(['Amit Prasad', 'Priya Nair']);
+    expect(filterList(people, 'amit pr', self)).toEqual(['Amit Prasad']);
+    expect(filterList(people, 'zed', self)).toEqual([]);
   });
 });
