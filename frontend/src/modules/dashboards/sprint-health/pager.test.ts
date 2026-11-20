@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkInPages } from './pager';
+import { checkInPages, listPage } from './pager';
 
 describe('checkInPages', () => {
   it('splits a sprint into seven-day pages', () => {
@@ -43,5 +43,30 @@ describe('checkInPages', () => {
     expect(pages).toEqual([
       { from: '2026-08-25', to: '2026-08-31', label: 'Week 1 of 1', firstDay: 1, lastDay: 7 },
     ]);
+  });
+});
+
+describe('listPage', () => {
+  const rows = Array.from({ length: 23 }, (_, i) => i);
+
+  it('returns ten rows per page in the caller’s order', () => {
+    const p = listPage(rows, 1);
+    expect(p.items).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    expect(p).toMatchObject({ page: 1, pageCount: 3, first: 11, last: 20, total: 23 });
+  });
+
+  it('leaves the last page short', () => {
+    expect(listPage(rows, 2)).toMatchObject({ items: [20, 21, 22], first: 21, last: 23 });
+  });
+
+  // The list can shrink under a held page index (another check-in week).
+  it('clamps an out-of-range page instead of returning an empty one', () => {
+    expect(listPage(rows, 9).page).toBe(2);
+    expect(listPage(rows.slice(0, 4), 2)).toMatchObject({ page: 0, items: [0, 1, 2, 3] });
+    expect(listPage(rows, -1).page).toBe(0);
+  });
+
+  it('reports a single empty page for an empty list', () => {
+    expect(listPage([], 0)).toMatchObject({ items: [], page: 0, pageCount: 1, first: 0, last: 0 });
   });
 });

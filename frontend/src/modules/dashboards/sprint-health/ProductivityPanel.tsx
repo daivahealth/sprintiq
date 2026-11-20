@@ -1,6 +1,7 @@
 import { Badge, TableBodyRow, TableHeadRow } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import type { ProductivityGrade, ProductivityView } from '../useInsights';
+import { ListPager, usePagedList } from './ListPager';
 import { DevName, SectionTitle, Panel } from './parts';
 import { MOCKUP_HEAD, MOCKUP_PILL_PLAIN } from './presentation';
 
@@ -23,7 +24,16 @@ const GRADE_TONE: Record<ProductivityGrade, 'good' | 'warn' | 'bad'> = {
  * context, and ordering people by it would turn it into the ranking the
  * ethics rule forbids (CLAUDE.md, decided 2026-09-07).
  */
-export function ProductivityPanel({ data }: { data: ProductivityView }) {
+export function ProductivityPanel({
+  data,
+  resetKey,
+}: {
+  data: ProductivityView;
+  /** Returns the table to page one when the sprint/projects change. */
+  resetKey: string;
+}) {
+  // Paged, never re-sorted: each page is a slice of the backend's grade order.
+  const paged = usePagedList(data.rows, resetKey);
   return (
     <section>
       <SectionTitle
@@ -62,7 +72,7 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
               </TableHeadRow>
             </thead>
             <tbody>
-              {data.rows.map((row) => (
+              {paged.items.map((row) => (
                 <TableBodyRow key={row.developer}>
                   <td className="py-2.5 pr-4">
                     <DevName name={row.displayName} />
@@ -96,6 +106,7 @@ export function ProductivityPanel({ data }: { data: ProductivityView }) {
             </tbody>
           </table>
         </div>
+        <ListPager paged={paged} noun="developers" />
 
         {/* Not in the mockup, and not optional: the 2026-09-07 decision that
             allows this graded table requires the rule it is computed from to

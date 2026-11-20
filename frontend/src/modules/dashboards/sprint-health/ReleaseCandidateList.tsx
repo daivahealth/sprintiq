@@ -3,6 +3,7 @@ import { Badge } from '../../../components/ui';
 import { cn } from '../../../lib/utils';
 import { useSprintReleaseCandidates, type ReleaseCandidateView } from '../useInsights';
 import { ErrorCard, LoadingCard } from '../widgets';
+import { ListPager, usePagedList } from './ListPager';
 import { PlannedDateField } from './PlannedDateField';
 import { SectionTitle, Panel } from './parts';
 import {
@@ -39,6 +40,8 @@ export function ReleaseCandidateList({
 }) {
   const query = useSprintReleaseCandidates(sprint, projects);
   const rows = query.data?.rows ?? [];
+  const resetKey = `${sprint}|${projects.join(',')}`;
+  const paged = usePagedList(rows, resetKey);
 
   return (
     <section>
@@ -60,15 +63,19 @@ export function ReleaseCandidateList({
 
       {rows.length > 0 && (
         <div className="space-y-4">
-          {rows.map((rc, i) => (
+          {paged.items.map((rc, i) => (
             <ReleaseCandidateCard
               key={rc.externalId ?? rc.name}
               rc={rc}
-              latest={rows.length > 1 && i === rows.length - 1}
+              // Index into the full list, not the page: "latest" is the last
+              // RC overall, wherever paging puts it.
+              latest={rows.length > 1 && paged.first - 1 + i === rows.length - 1}
               sprint={sprint}
               projectKey={projectKey}
+              resetKey={resetKey}
             />
           ))}
+          <ListPager paged={paged} noun="release candidates" className="mt-0" />
           {rows.length > 1 && (
             <p className="text-xs text-fg-faint">
               Stories delivered across {rows.map((r) => r.name).join(' → ')}:{' '}
@@ -142,13 +149,16 @@ function ReleaseCandidateCard({
   latest,
   sprint,
   projectKey,
+  resetKey,
 }: {
   rc: ReleaseCandidateView;
   latest: boolean;
   sprint: string;
   projectKey: string;
+  resetKey: string;
 }) {
   const pill = releaseCandidatePill(rc);
+  const stories = usePagedList(rc.stories, resetKey);
 
   return (
     <Panel className={cn('space-y-4 pb-5', latest && 'border-success-border')}>
@@ -198,7 +208,7 @@ function ReleaseCandidateCard({
         ) : (
           <table className="w-full text-[13px]">
             <tbody>
-              {rc.stories.map((story) => (
+              {stories.items.map((story) => (
                 <tr key={story.key} className="border-t border-border-subtle">
                   <td className="w-px whitespace-nowrap py-1.5 pr-3 font-semibold text-chart-3">
                     {story.key}
@@ -222,6 +232,7 @@ function ReleaseCandidateCard({
             </tbody>
           </table>
         )}
+        <ListPager paged={stories} noun="stories" />
       </div>
 
       <div className="border-t border-border-subtle pt-4">
