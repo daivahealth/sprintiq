@@ -4,6 +4,7 @@ import {
   DEFAULT_RANGE,
   customSeed,
   formatDateKey,
+  isCustomSelected,
   isValidCustom,
   normalizeRange,
   parseRange,
@@ -170,5 +171,24 @@ describe('labels and ends', () => {
   it('gives a custom range an end instant, and a preset none', () => {
     expect(rangeTo(CUSTOM)).toBe('2026-06-30T18:29:59.999Z');
     expect(rangeTo(WEEK)).toBeUndefined();
+  });
+});
+
+describe('isCustomSelected', () => {
+  it('reads Custom for any custom range', () => {
+    expect(isCustomSelected(CUSTOM, false)).toBe(true);
+    expect(isCustomSelected(CUSTOM, true)).toBe(true);
+  });
+
+  // Choosing Custom applies today → today as the Today preset; the toggle
+  // must still say Custom while the fields the reader just opened are up.
+  it('reads Custom for Today while the custom fields are open', () => {
+    expect(isCustomSelected(TODAY, true)).toBe(true);
+    expect(isCustomSelected(TODAY, false)).toBe(false);
+  });
+
+  it('reads the preset for any other preset, open fields or not', () => {
+    expect(isCustomSelected(WEEK, true)).toBe(false);
+    expect(isCustomSelected(WEEK, false)).toBe(false);
   });
 });

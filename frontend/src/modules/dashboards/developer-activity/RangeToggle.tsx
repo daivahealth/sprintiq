@@ -3,6 +3,7 @@ import { Field, Input, SegmentedControl } from '../../../components/ui';
 import { istTodayKey } from '../../../lib/utils';
 import {
   customSeed,
+  isCustomSelected,
   isValidCustom,
   normalizeRange,
   type ActivityRange,
@@ -22,8 +23,10 @@ import type { ActivityWindow } from '../useInsights';
  * Whether the fields are showing is this component's own state, not read off
  * the applied range: today → today is applied as the Today preset
  * (`normalizeRange`), and the fields must stay open while it is, or picking
- * today would snatch away the inputs you just used. The segments follow the
- * applied range, so they say Today whenever Today's numbers are on screen.
+ * today would snatch away the inputs you just used. While they are open the
+ * toggle reads Custom (`isCustomSelected`) — it used to follow the applied
+ * range and light up Today under the click that chose Custom (2026-11-20).
+ * Today's numbers are still what's on screen; the open fields say which.
  *
  * The dates are IST calendar days, and the labels say so: the browser's own
  * picker marks "today" in the machine's timezone, which west of India can be
@@ -41,7 +44,9 @@ export function RangeToggle({
   const [draft, setDraft] = useState(() =>
     value.kind === 'custom' ? { from: value.from, to: value.to } : customSeed(),
   );
-  const showFields = open || value.kind === 'custom';
+  // One answer for both the highlight and the fields, so the toggle can never
+  // say Today while Custom's date fields are open beneath it.
+  const showFields = isCustomSelected(value, open);
 
   const select = (key: string) => {
     if (key !== 'custom') {
@@ -73,7 +78,7 @@ export function RangeToggle({
     <div className="flex flex-wrap items-end gap-3">
       <SegmentedControl
         label="Window"
-        value={value.kind === 'custom' ? 'custom' : value.window}
+        value={showFields || value.kind === 'custom' ? 'custom' : value.window}
         onChange={select}
         options={[
           ...WINDOWS.map((w) => ({ value: w.key as string, label: w.label })),
