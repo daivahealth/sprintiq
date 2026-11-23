@@ -3,12 +3,13 @@ import { GithubCommitMessageReconcilerService } from '../sources/github/github-c
 import { GithubPrReconcilerService } from '../sources/github/github-pr-reconciler.service';
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
+import { JiraWorklogReconcilerService } from '../sources/jira/jira-worklog-reconciler.service';
 
 /** How often `BackfillSchedulerService` advances the reconcilers. */
 const BACKFILL_TICK_MINUTES = 10;
 
 export interface ReconcilerBacklog {
-  key: 'reviews' | 'pr-detail' | 'commit-messages' | 'story-dates';
+  key: 'reviews' | 'pr-detail' | 'commit-messages' | 'story-dates' | 'worklogs';
   label: string;
   /** Rows still waiting to be asked about. */
   remaining: number;
@@ -59,15 +60,18 @@ export class CollectionProgressService {
     private readonly prStats: GithubPrReconcilerService,
     private readonly commitMessages: GithubCommitMessageReconcilerService,
     private readonly storyDates: JiraStoryDateReconcilerService,
+    private readonly worklogs: JiraWorklogReconcilerService,
   ) {}
 
   async getBacklog(tenantId: string): Promise<CollectionProgress> {
-    const [reviews, prDetail, commitMessages, storyDates] = await Promise.all([
-      this.reviews.countRemaining(tenantId),
-      this.prStats.countRemaining(tenantId),
-      this.commitMessages.countRemaining(tenantId),
-      this.storyDates.countRemaining(tenantId),
-    ]);
+    const [reviews, prDetail, commitMessages, storyDates, worklogs] =
+      await Promise.all([
+        this.reviews.countRemaining(tenantId),
+        this.prStats.countRemaining(tenantId),
+        this.commitMessages.countRemaining(tenantId),
+        this.storyDates.countRemaining(tenantId),
+        this.worklogs.countRemaining(tenantId),
+      ]);
 
     // `perTick` mirrors each reconciler's own default batch limit. Kept beside
     // the counts so the projection below is inspectable rather than a bare
@@ -77,6 +81,8 @@ export class CollectionProgressService {
       backlog('pr-detail', 'PR detail (stats, merged-by)', prDetail, 200),
       backlog('commit-messages', 'PR commit messages', commitMessages, 500),
       backlog('story-dates', 'Jira story created dates', storyDates, 20_000),
+      // The worklog reconciler's BATCH_SIZE × MAX_BATCHES.
+      backlog('worklogs', 'Jira worklogs and creators', worklogs, 1_000),
     ];
 
     // The SLOWEST queue, not the total: they advance together within one tick,

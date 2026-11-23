@@ -412,6 +412,21 @@ model Story {
   // they are re-walked — such items are excluded from lead time, not guessed.
   sourceCreatedAt  DateTime?
   resolvedAt       DateTime?
+  /// Who created the item in Jira (`fields.creator`) — the account reference
+  /// (accountId on Cloud) and display name. Immutable at the source, unlike
+  /// `reporter`, which anyone can edit and which is often set on someone
+  /// else's behalf. Read by the Sprint Health Efforts page (ADR-0014) to
+  /// attribute subtask creation. Null on items collected before the field was
+  /// requested, until `JiraWorklogReconcilerService` fills it — disclosed as
+  /// "no recorded creator", never counted as anyone's zero.
+  creatorLogin     String?
+  creatorName      String?
+  /// When this item's worklogs were last collected as a COMPLETE set (a
+  /// `planning.issue.worklogs` event with `complete: true`). Null means
+  /// "never collected", not "no worklogs" — the Efforts page discloses how
+  /// many sprint items are still null so an empty cell is never read as "no
+  /// effort logged" when it really means "not collected yet".
+  worklogsCollectedAt DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -457,6 +472,40 @@ model IssueStatusHistory {
   @@unique([tenantId, connectionId, changelogId])
   @@index([tenantId, externalKey, transitionedAt])
   @@map("planning_issue_status_history")
+}
+
+// Jira worklogs — time logged against a work item (ADR-0014, Sprint Health
+// Efforts). Unlike the two timelines above this is NOT append-only: a worklog
+// can be edited or deleted at the source, so each `planning.issue.worklogs`
+// event carrying a COMPLETE set replaces the issue's rows (upsert present,
+// delete absent). An incomplete set — a truncated read whose completion
+// failed — only upserts, so a partial read can never erase logged time.
+//
+// `startedAt` is the day the work was DONE as the person reported it, and is
+// what the Efforts page buckets by (IST). It can be back-dated, so a past day's
+// figure changes when someone backfills — disclosed in the page's rule.
+model JiraWorklog {
+  id               String   @id
+  tenantId         String
+  connectionId     String
+  externalKey      String // issue key, e.g. PAY-2231
+  // Jira's worklog id — unique per site, so it de-dupes re-fetches.
+  sourceWorklogId  String
+  authorLogin      String? // accountId on Cloud
+  authorName       String?
+  authorEmail      String? // only where Jira discloses it (see Story.assigneeEmail)
+  startedAt        DateTime
+  timeSpentSeconds Int
+  sourceUpdatedAt  DateTime?
+  // Lineage: the raw event this row was last written from (BC-16).
+  rawEventId       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([tenantId, connectionId, sourceWorklogId])
+  @@index([tenantId, externalKey])
+  @@index([tenantId, startedAt])
+  @@map("planning_worklog")
 }
 
 // Append-only sprint-membership timeline (`sprint_scope`, DATA-MODEL.md §4) —

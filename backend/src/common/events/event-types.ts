@@ -19,7 +19,10 @@ export const EventTypes = {
   PLANNING_STORY_CREATED: 'planning.issue.created',
   PLANNING_STORY_UPDATED: 'planning.issue.updated',
   PLANNING_VERSION_UPSERTED: 'planning.version.upserted',
+  /** An issue's worklog set as read from Jira (ADR-0014, Sprint Health Efforts). */
+  PLANNING_WORKLOGS_OBSERVED: 'planning.issue.worklogs',
 } as const;
+
 
 export const CODE_PR_EVENT_TYPES: string[] = [
   EventTypes.CODE_PR_OPENED,
@@ -35,4 +38,8 @@ export const PLANNING_STORY_EVENT_TYPES: string[] = [
 
 export const PLANNING_VERSION_EVENT_TYPES: string[] = [
   EventTypes.PLANNING_VERSION_UPSERTED,
+];
+
+export const PLANNING_WORKLOG_EVENT_TYPES: string[] = [
+  EventTypes.PLANNING_WORKLOGS_OBSERVED,
 ];

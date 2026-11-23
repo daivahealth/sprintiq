@@ -5,6 +5,7 @@ import { GithubPrReconcilerService } from '../sources/github/github-pr-reconcile
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraSprintReconcilerService } from '../sources/jira/jira-sprint-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
+import { JiraWorklogReconcilerService } from '../sources/jira/jira-worklog-reconciler.service';
 import { BackfillSchedulerService } from './backfill-scheduler.service';
 
 const idle = { candidates: 0, updated: 0, skipped: 0, rateLimited: false };
@@ -17,6 +18,7 @@ describe('BackfillSchedulerService', () => {
   let prCommits: jest.Mocked<GithubPrCommitBackfillService>;
   let storyDates: jest.Mocked<JiraStoryDateReconcilerService>;
   let sprints: jest.Mocked<JiraSprintReconcilerService>;
+  let worklogs: jest.Mocked<JiraWorklogReconcilerService>;
   let service: BackfillSchedulerService;
 
   beforeEach(() => {
@@ -51,6 +53,17 @@ describe('BackfillSchedulerService', () => {
         .fn()
         .mockResolvedValue({ candidates: 0, created: 0, skipped: 0 }),
     } as unknown as jest.Mocked<JiraSprintReconcilerService>;
+    worklogs = {
+      reconcile: jest.fn().mockResolvedValue({
+        candidates: 0,
+        collected: 0,
+        partial: 0,
+        creatorsFilled: 0,
+        absent: 0,
+        skipped: 0,
+        rateLimited: false,
+      }),
+    } as unknown as jest.Mocked<JiraWorklogReconcilerService>;
     service = new BackfillSchedulerService(
       prisma as unknown as PrismaService,
       reviews,
@@ -59,6 +72,7 @@ describe('BackfillSchedulerService', () => {
       prCommits,
       storyDates,
       sprints,
+      worklogs,
     );
   });
 

@@ -34,6 +34,7 @@ Each ADR follows: **Status · Context · Decision · Consequences · Alternative
 | [0011](0011-per-developer-loc-chart.md) | The Developer page's daily chart leads with changed LOC | Accepted |
 | [0012](0012-per-developer-copilot-usage.md) | Per-developer Copilot usage on the Activity Overview roster | Accepted |
 | [0013](0013-multiple-github-organisations.md) | Multiple GitHub organisations per tenant | Accepted |
+| [0014](0014-per-developer-jira-efforts.md) | Per-developer Jira efforts on Sprint Health (admin only) | Accepted |
 
 ## Conventions
 

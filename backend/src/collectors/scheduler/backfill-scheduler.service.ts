@@ -7,6 +7,7 @@ import { GithubPrReconcilerService } from '../sources/github/github-pr-reconcile
 import { GithubReviewReconcilerService } from '../sources/github/github-review-reconciler.service';
 import { JiraSprintReconcilerService } from '../sources/jira/jira-sprint-reconciler.service';
 import { JiraStoryDateReconcilerService } from '../sources/jira/jira-story-date-reconciler.service';
+import { JiraWorklogReconcilerService } from '../sources/jira/jira-worklog-reconciler.service';
 
 /**
  * Drives the one-off data reconcilers to completion on their own (BC-1).
@@ -64,6 +65,7 @@ export class BackfillSchedulerService {
     private readonly prCommits: GithubPrCommitBackfillService,
     private readonly storyDates: JiraStoryDateReconcilerService,
     private readonly sprints: JiraSprintReconcilerService,
+    private readonly worklogs: JiraWorklogReconcilerService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_MINUTES)
@@ -112,6 +114,16 @@ export class BackfillSchedulerService {
       if (recovered.created > 0 || recovered.skipped > 0) {
         this.logger.log(
           `Backfill (tenant ${tenantId}): ${recovered.created} sprint(s) recovered, ${recovered.skipped} unavailable.`,
+        );
+      }
+
+      // Worklogs and creators for items collected before either was requested
+      // (ADR-0014). Last of the Jira three: it is the largest backlog and the
+      // only one that can cost more than one request per batch.
+      const worklogs = await this.worklogs.reconcile(tenantId);
+      if (worklogs.collected > 0 || worklogs.creatorsFilled > 0) {
+        this.logger.log(
+          `Backfill (tenant ${tenantId}): Jira worklogs — ${worklogs.collected} issues (${worklogs.partial} partial), ${worklogs.creatorsFilled} creators filled.`,
         );
       }
     }

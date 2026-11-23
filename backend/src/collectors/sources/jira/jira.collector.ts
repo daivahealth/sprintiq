@@ -28,6 +28,7 @@ import {
   JiraSearchIssue,
   JiraVersion,
 } from './jira.client';
+import { collectIssueWorklogs, worklogEnvelope } from './jira-worklogs';
 
 /** Jira Software's Sprint field always carries this custom-field schema type, regardless of its per-site numeric id. */
 const SPRINT_FIELD_CUSTOM_TYPE = 'com.pyxis.greenhopper.jira:gh-sprint';
@@ -293,17 +294,40 @@ export class JiraCollector extends BaseSourceCollector {
           apiToken,
           issue,
         );
-        envelopes.push(
-          this.fromPolledIssue(
-            connection,
-            issue,
-            mode,
-            sprintFieldId,
-            storyPointsFieldIds,
-            histories,
-            statusCategories,
-          ),
+        const storyEnvelope = this.fromPolledIssue(
+          connection,
+          issue,
+          mode,
+          sprintFieldId,
+          storyPointsFieldIds,
+          histories,
+          statusCategories,
         );
+        envelopes.push(storyEnvelope);
+        // After the story, so the projector's worklog stamp lands on a row
+        // that exists. Adding, editing or deleting a worklog bumps the issue's
+        // `updated`, so this incremental pass sees every worklog change.
+        const worklogs = await collectIssueWorklogs(
+          this.client,
+          config.siteUrl,
+          config.email,
+          apiToken,
+          issue.key,
+          issue.fields?.worklog,
+        );
+        if (worklogs) {
+          envelopes.push(
+            worklogEnvelope(
+              connection.id,
+              mode,
+              issue.key,
+              (storyEnvelope.data as unknown as PlanningStoryPayload)
+                .projectKey,
+              worklogs,
+              this.nowIso(),
+            ),
+          );
+        }
         const updated = issue.fields?.updated;
         if (typeof updated === 'string') {
           lastSeenUpdatedAt = updated;
@@ -799,6 +823,10 @@ export class JiraCollector extends BaseSourceCollector {
         }
       | undefined;
     const priority = fields.priority as { name?: string } | undefined;
+    // Same reference rule as the assignee: `name` on Server, `accountId` on
+    // Cloud — so a creator and an assignee who are the same person key alike.
+    const creator = fields.creator as
+      { name?: string; accountId?: string; displayName?: string } | undefined;
     const fixVersions = fields.fixVersions;
     const affectsVersions = fields.versions;
 
@@ -828,6 +856,8 @@ export class JiraCollector extends BaseSourceCollector {
       assigneeLogin: assignee?.name ?? assignee?.accountId ?? undefined,
       assigneeName: assignee?.displayName ?? undefined,
       assigneeEmail: assignee?.emailAddress ?? undefined,
+      creatorLogin: creator?.name ?? creator?.accountId ?? undefined,
+      creatorName: creator?.displayName ?? undefined,
       priority: priority?.name ?? undefined,
       sourceCreatedAt:
         typeof fields.created === 'string' ? fields.created : undefined,

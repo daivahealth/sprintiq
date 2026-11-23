@@ -224,6 +224,14 @@ export interface PlanningStoryPayload {
   sourceCreatedAt?: string;
   resolvedAt?: string;
   /**
+   * Who created the item in the source (Jira's `fields.creator`) — account
+   * reference and display name. Immutable at the source, so the projector
+   * keeps a known value when an event omits it (same rule as
+   * `sourceCreatedAt`). Absent on paths that do not collect it.
+   */
+  creatorLogin?: string;
+  creatorName?: string;
+  /**
    * Status-transition timeline (`issue_status_history`, DATA-MODEL.md) — the
    * basis for cycle_time, wip/wip_age, flow_efficiency, blocked_time and
    * aging_work_items (METRICS.md), none of which are derivable from the
@@ -237,6 +245,42 @@ export interface PlanningStoryPayload {
    * Empty when the source didn't return a change log.
    */
   sprintChanges?: PlanningSprintChangeRef[];
+}
+
+/** One Jira worklog as collected (ADR-0014). */
+export interface PlanningWorklogRef {
+  /** Jira's worklog id — unique per site. */
+  id: string;
+  authorLogin?: string;
+  authorName?: string;
+  authorEmail?: string;
+  /** When the work was done, as the person reported it (ISO). */
+  started: string;
+  timeSpentSeconds: number;
+  updated?: string;
+}
+
+/**
+ * An issue's worklogs as read from Jira, in one event (`planning.issue.worklogs`).
+ *
+ * A snapshot, not a delta: worklogs can be edited and deleted at the source, so
+ * the projector reconciles the issue's rows against this set. `complete` says
+ * whether that is safe — true only when every worklog Jira reported for the
+ * issue is in `worklogs`. An incomplete set (truncated in the search and the
+ * completion fetch failed) is applied upsert-only, so a partial read can never
+ * delete logged time.
+ *
+ * Worklogs restricted to a group or role the collecting account cannot see are
+ * absent from Jira's answer entirely; `complete` cannot detect that, and the
+ * Efforts page states it in its rule.
+ */
+export interface PlanningWorklogsPayload {
+  externalKey: string;
+  projectKey: string;
+  complete: boolean;
+  /** Jira's own count of worklogs on the issue, as reported with the set. */
+  total: number;
+  worklogs: PlanningWorklogRef[];
 }
 
 /**

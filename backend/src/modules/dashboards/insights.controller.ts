@@ -147,6 +147,25 @@ export const DASHBOARD_REGISTRY: {
     path: '/sprint-health',
     description: 'Committed vs completed, linkage coverage, by-type progress.',
     roles: ALL_ROLES,
+    // Efforts (2026-11-23, ADR-0014) is admin-only, so for every other role
+    // this filters down to the board alone and the nav shows no sub-items.
+    children: [
+      {
+        key: 'sprint-health-board',
+        title: 'Board',
+        path: '/sprint-health',
+        description:
+          'Commit activity, check-ins, productivity, quality and release candidates for one sprint.',
+      },
+      {
+        key: 'sprint-health-efforts',
+        title: 'Efforts',
+        path: '/sprint-health/efforts',
+        description:
+          'Jira hours logged and subtasks created per day, for ten tracked developers A–Z. Admins only.',
+        roles: [Role.ADMIN],
+      },
+    ],
   },
   // ── Later (2026-10-15) ──────────────────────────────────────────────────
   // Everything below sits in the sidebar's collapsed Later group. The boards
@@ -247,20 +266,22 @@ export function dashboardAssignments(userRoles: readonly string[]) {
   const roles = new Set(userRoles);
   return DASHBOARD_REGISTRY.filter((d) =>
     d.roles.some((r) => roles.has(r)),
-  ).map(({ key, title, path, description, children, group }) => ({
-    key,
-    title,
-    path,
-    description,
-    ...(children
-      ? {
-          children: children
-            .filter((c) => !c.roles || c.roles.some((r) => roles.has(r)))
-            .map(({ roles: _roles, ...child }) => child),
-        }
-      : {}),
-    ...(group ? { group } : {}),
-  }));
+  ).map(({ key, title, path, description, children, group }) => {
+    const visible = (children ?? [])
+      .filter((c) => !c.roles || c.roles.some((r) => roles.has(r)))
+      .map(({ roles: _roles, ...child }) => child);
+    return {
+      key,
+      title,
+      path,
+      description,
+      // One visible child is the parent itself under another name (Sprint
+      // Health for non-admins: Board only). Sent as no children, so the nav
+      // renders exactly as it did before the section had any.
+      ...(visible.length > 1 ? { children: visible } : {}),
+      ...(group ? { group } : {}),
+    };
+  });
 }
 
 /** BC-13 insight endpoints backing the common dashboards. JWT + tenant-scoped. */
@@ -490,6 +511,54 @@ export class InsightsController {
     if (!view) {
       throw new NotFoundException('Sprint not found.');
     }
+    return { ...view, computedAt: new Date().toISOString() };
+  }
+
+  /**
+   * Sprint Health → Efforts (ADR-0014): Jira hours logged and subtasks created
+   * per day by the first ten tracked developers, A–Z.
+   *
+   * **Admins only, and every view is audit-logged** — the conditions the
+   * decision permitting a named per-person figure here was taken on. Not
+   * modelled on `developer-activity`, which is open to every role and
+   * unaudited; the Watchlist's previous-day view is the precedent. Same
+   * `from`/`to` convention as check-ins: IST date keys, not instants.
+   */
+  @Roles(Role.ADMIN)
+  @Get('sprint-health/efforts')
+  async sprintEfforts(
+    @CurrentUser() user: AuthUser,
+    @Query('sprint') sprint?: string,
+    @Query('projects') projects?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const sprintId = requireParam(sprint, 'sprint');
+    const fromKey = parseDateKeyParam(from, 'from');
+    const toKey = parseDateKeyParam(to, 'to');
+    const view = await this.detail.efforts(
+      sprintId,
+      parseList(projects),
+      fromKey ? istDayStart(fromKey) : undefined,
+      toKey ? istDayEnd(toKey) : undefined,
+    );
+    if (!view) {
+      throw new NotFoundException('Sprint not found.');
+    }
+    await this.audit?.record({
+      tenantId: user.tenantId,
+      actorType: 'user',
+      actorId: user.userId,
+      action: 'dashboards.sprint_health.efforts.view',
+      targetType: 'sprint',
+      targetId: sprintId,
+      metadata: {
+        projects: parseList(projects),
+        from: view.days[0] ?? null,
+        to: view.days[view.days.length - 1] ?? null,
+        shown: view.rows.map((row) => row.developer),
+      },
+    });
     return { ...view, computedAt: new Date().toISOString() };
   }
 

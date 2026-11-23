@@ -13,6 +13,7 @@ describe('CollectionProgressService', () => {
     prDetail?: number;
     commitMessages?: number;
     storyDates?: number;
+    worklogs?: number;
   }) {
     const reviews = {
       countRemaining: jest.fn().mockResolvedValue(counts.reviews ?? 0),
@@ -26,11 +27,15 @@ describe('CollectionProgressService', () => {
     const storyDates = {
       countRemaining: jest.fn().mockResolvedValue(counts.storyDates ?? 0),
     };
+    const worklogs = {
+      countRemaining: jest.fn().mockResolvedValue(counts.worklogs ?? 0),
+    };
     return new CollectionProgressService(
       reviews as never,
       prStats as never,
       commitMessages as never,
       storyDates as never,
+      worklogs as never,
     );
   }
 
@@ -49,6 +54,7 @@ describe('CollectionProgressService', () => {
       expect.objectContaining({ key: 'pr-detail', remaining: 200 }),
       expect.objectContaining({ key: 'commit-messages', remaining: 0 }),
       expect.objectContaining({ key: 'story-dates', remaining: 37 }),
+      expect.objectContaining({ key: 'worklogs', remaining: 0 }),
     ]);
   });
 

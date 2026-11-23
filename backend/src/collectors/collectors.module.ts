@@ -32,6 +32,7 @@ import { TeamsClient } from './delivery/teams.client';
 import { JiraAssigneeEmailReconcilerService } from './sources/jira/jira-assignee-email-reconciler.service';
 import { JiraSprintReconcilerService } from './sources/jira/jira-sprint-reconciler.service';
 import { JiraStoryDateReconcilerService } from './sources/jira/jira-story-date-reconciler.service';
+import { JiraWorklogReconcilerService } from './sources/jira/jira-worklog-reconciler.service';
 import { JiraClient } from './sources/jira/jira.client';
 import { JiraCollector } from './sources/jira/jira.collector';
 import { SignatureVerifierRegistry } from './webhooks/signature-verifier.registry';
@@ -89,6 +90,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     JiraCollector,
     JiraSprintReconcilerService,
     JiraStoryDateReconcilerService,
+    JiraWorklogReconcilerService,
     JiraAssigneeEmailReconcilerService,
     CollectorSchedulerService,
     BackfillSchedulerService,
@@ -111,6 +113,7 @@ import { WebhooksController } from './webhooks/webhooks.controller';
     GithubActivityVerifyService,
     JiraSprintReconcilerService,
     JiraStoryDateReconcilerService,
+    JiraWorklogReconcilerService,
     JiraAssigneeEmailReconcilerService,
     CollectionProgressService,
     TeamsClient,

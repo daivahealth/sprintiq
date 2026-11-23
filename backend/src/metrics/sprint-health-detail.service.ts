@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Commit, PrReview, PullRequest, Sprint, Story } from '@prisma/client';
 import { TenantContextService } from '../common/tenancy/tenant-context.service';
-import { istDateKey } from '../common/time';
+import { EFFORTS_RULE_TEXT } from '../common/efforts-rule';
+import { istDateKey, istDayEnd, istDayStart } from '../common/time';
 import { CorrelationService } from '../correlation/correlation.service';
 import { DeveloperIdentityService } from '../correlation/developer-identity.service';
 import {
@@ -18,6 +19,7 @@ import { attributeCommit } from './developer-activity.service';
 import { distinctCommitsBySha } from './commit-dedupe';
 import { candidateTicketKeys, ticketKeysByCommit } from './developer-tickets';
 import { isMergeCommit, partitionMerges } from './merge-commits';
+import { EffortsView, buildEfforts } from './sprint-efforts';
 
 /** The sprint's own elapsed window, clamped to now. */
 export interface SprintWindowDates {
@@ -985,6 +987,133 @@ export class SprintHealthDetailService {
       sprintFrom: istDateKey(win.from),
       sprintTo: istDateKey(win.to),
     };
+  }
+
+  /**
+   * Sprint Health → Efforts (ADR-0014, admin-only): per day, the Jira hours
+   * logged and subtasks created by the first ten tracked developers, A–Z.
+   *
+   * Same window discipline as `checkIns` — the caller's range clamped into the
+   * sprint's elapsed window — but bucketed by IST DAY rather than by instant:
+   * a worklog "started 09:00" on the sprint's first day belongs on that day's
+   * column even when the sprint itself started at 10:00, while a worklog from
+   * before the sprint (a carried-over item's earlier time) falls outside every
+   * column and is not counted.
+   *
+   * Scope is the sprint's items plus their subtasks. Subtasks normally carry
+   * their parent's sprint, but the parent link is the one Jira guarantees, so
+   * both are read.
+   *
+   * People are resolved with `resolveJiraPeople` — the persisted assignee
+   * bridge first, the same ladder in memory for anyone else — so a person who
+   * logs time but is never an assignee is still recognised, without changing
+   * the assignee coverage other boards publish.
+   */
+  async efforts(
+    sprintExternalId: string,
+    projects: string[] = [],
+    from?: Date,
+    to?: Date,
+  ): Promise<EffortsView | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const found = await this.sprintWindow(tenantId, sprintExternalId);
+    if (!found) {
+      return null;
+    }
+    const { win } = found;
+    const start = minDate(maxDate(from ?? win.from, win.from), win.to);
+    const end = maxDate(
+      minDate(to ?? addDays(start, CHECK_IN_PAGE_DAYS - 1), win.to),
+      start,
+    );
+    const days = dayKeysBetween(start, end);
+
+    const [items, index, jiraIndex, roster, exclusionRows] = await Promise.all([
+      this.planning.listItemsForSprint(tenantId, sprintExternalId, projects),
+      this.identities.attributionIndex(tenantId),
+      this.identities.jiraAssigneeIndex(tenantId),
+      this.prisma.trackedDeveloper.findMany({
+        where: { tenantId, active: true },
+        select: { canonicalDeveloperId: true },
+      }),
+      this.prisma.watchlistExclusion.findMany({
+        // Live only — a lapsed exclusion is not a statement about now.
+        where: { tenantId, expiresAt: { gt: new Date() } },
+        select: { canonicalDeveloperId: true },
+      }),
+    ]);
+
+    const sprintKeys = items.map((item) => item.externalKey);
+    const children =
+      sprintKeys.length > 0
+        ? await this.prisma.story.findMany({
+            where: {
+              tenantId,
+              type: 'subtask',
+              parentKey: { in: sprintKeys },
+              ...(projects.length > 0 ? { projectKey: { in: projects } } : {}),
+            },
+          })
+        : [];
+    const scope = new Map<string, Story>();
+    for (const item of [...items, ...children]) {
+      scope.set(item.externalKey, item);
+    }
+    const scopeKeys = [...scope.keys()];
+
+    const worklogs =
+      scopeKeys.length > 0 && days.length > 0
+        ? await this.prisma.jiraWorklog.findMany({
+            where: {
+              tenantId,
+              externalKey: { in: scopeKeys },
+              startedAt: {
+                gte: istDayStart(days[0]),
+                lte: istDayEnd(days[days.length - 1]),
+              },
+            },
+            select: {
+              authorLogin: true,
+              authorName: true,
+              authorEmail: true,
+              startedAt: true,
+              timeSpentSeconds: true,
+            },
+          })
+        : [];
+    const subtasks = [...scope.values()].filter(
+      (item) => item.type === 'subtask',
+    );
+
+    const people = await this.identities.resolveJiraPeople(tenantId, [
+      ...worklogs.map((w) => ({
+        login: w.authorLogin,
+        name: w.authorName,
+        email: w.authorEmail,
+      })),
+      ...subtasks.map((s) => ({ login: s.creatorLogin, name: s.creatorName })),
+    ]);
+
+    return buildEfforts({
+      days,
+      sprintFrom: istDateKey(win.from),
+      sprintTo: istDateKey(win.to),
+      rule: EFFORTS_RULE_TEXT,
+      roster,
+      displayNames: index.displayNames,
+      excluded: new Set([
+        ...index.excluded,
+        ...exclusionRows.map((row) => row.canonicalDeveloperId),
+      ]),
+      jiraLinkedDevelopers: new Set(jiraIndex.byDeveloper.keys()),
+      people,
+      worklogs,
+      subtasks,
+      itemsInScope: scope.size,
+      itemsWithoutWorklogSnapshot: [...scope.values()].filter(
+        (item) => !item.worklogsCollectedAt,
+      ).length,
+    });
   }
 
   /**
