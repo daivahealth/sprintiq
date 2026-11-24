@@ -103,60 +103,63 @@ export class PlanningService implements OnModuleInit {
     const connectionId = event.connectionId ?? '';
     const rawEventId = event.sourceEventIds?.[0] ?? null;
 
-    await this.prisma.$transaction(async (tx) => {
-      for (const w of p.worklogs) {
-        const startedAt = new Date(w.started);
-        if (Number.isNaN(startedAt.getTime())) {
-          continue;
-        }
-        const fields = {
-          externalKey: p.externalKey,
-          authorLogin: w.authorLogin ?? null,
-          authorName: w.authorName ?? null,
-          authorEmail: w.authorEmail ?? null,
-          startedAt,
-          timeSpentSeconds: w.timeSpentSeconds,
-          sourceUpdatedAt: w.updated ? new Date(w.updated) : null,
-          rawEventId,
-        };
-        await tx.jiraWorklog.upsert({
-          where: {
-            tenantId_connectionId_sourceWorklogId: {
+    await this.prisma.$transaction(
+      async (tx) => {
+        for (const w of p.worklogs) {
+          const startedAt = new Date(w.started);
+          if (Number.isNaN(startedAt.getTime())) {
+            continue;
+          }
+          const fields = {
+            externalKey: p.externalKey,
+            authorLogin: w.authorLogin ?? null,
+            authorName: w.authorName ?? null,
+            authorEmail: w.authorEmail ?? null,
+            startedAt,
+            timeSpentSeconds: w.timeSpentSeconds,
+            sourceUpdatedAt: w.updated ? new Date(w.updated) : null,
+            rawEventId,
+          };
+          await tx.jiraWorklog.upsert({
+            where: {
+              tenantId_connectionId_sourceWorklogId: {
+                tenantId,
+                connectionId,
+                sourceWorklogId: w.id,
+              },
+            },
+            create: {
+              id: newId(),
               tenantId,
               connectionId,
               sourceWorklogId: w.id,
+              ...fields,
             },
-          },
-          create: {
-            id: newId(),
-            tenantId,
-            connectionId,
-            sourceWorklogId: w.id,
-            ...fields,
-          },
-          update: fields,
-        });
-      }
+            update: fields,
+          });
+        }
 
-      if (p.complete) {
-        await tx.jiraWorklog.deleteMany({
-          where: {
-            tenantId,
-            connectionId,
-            externalKey: p.externalKey,
-            sourceWorklogId: { notIn: p.worklogs.map((w) => w.id) },
-          },
-        });
-        // updateMany, not update: a no-op rather than a throw if the story row
-        // is somehow not there yet. The reconciler re-asks for such an item.
-        await tx.story.updateMany({
-          where: { tenantId, externalKey: p.externalKey },
-          data: { worklogsCollectedAt: new Date() },
-        });
-      }
-      // One upsert per worklog; a long-lived issue can carry hundreds, which
-      // overruns Prisma's 5s interactive-transaction default.
-    }, { timeout: 30_000 });
+        if (p.complete) {
+          await tx.jiraWorklog.deleteMany({
+            where: {
+              tenantId,
+              connectionId,
+              externalKey: p.externalKey,
+              sourceWorklogId: { notIn: p.worklogs.map((w) => w.id) },
+            },
+          });
+          // updateMany, not update: a no-op rather than a throw if the story row
+          // is somehow not there yet. The reconciler re-asks for such an item.
+          await tx.story.updateMany({
+            where: { tenantId, externalKey: p.externalKey },
+            data: { worklogsCollectedAt: new Date() },
+          });
+        }
+        // One upsert per worklog; a long-lived issue can carry hundreds, which
+        // overruns Prisma's 5s interactive-transaction default.
+      },
+      { timeout: 30_000 },
+    );
 
     this.logger.debug(
       `worklogs for ${p.externalKey}: ${p.worklogs.length} (${p.complete ? 'complete' : 'partial'})`,
@@ -240,12 +243,13 @@ export class PlanningService implements OnModuleInit {
     // The creator belongs to the ISSUE and never changes, so — like the
     // creation date, and unlike the assignee — a known value is kept when an
     // event (e.g. a path that does not collect it) omits it.
-    const creator = p.creatorLogin || p.creatorName
-      ? {
-          creatorLogin: p.creatorLogin ?? null,
-          creatorName: p.creatorName ?? null,
-        }
-      : undefined;
+    const creator =
+      p.creatorLogin || p.creatorName
+        ? {
+            creatorLogin: p.creatorLogin ?? null,
+            creatorName: p.creatorName ?? null,
+          }
+        : undefined;
 
     await this.prisma.story.upsert({
       where: {

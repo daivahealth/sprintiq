@@ -439,7 +439,11 @@ describe('JiraCollector.poll', () => {
       client.searchIssues.mockResolvedValue({
         issues: [
           issue('PAY-1', {
-            worklog: { total: 2, maxResults: 20, worklogs: [worklog('2'), worklog('1')] },
+            worklog: {
+              total: 2,
+              maxResults: 20,
+              worklogs: [worklog('2'), worklog('1')],
+            },
           }),
         ],
       });

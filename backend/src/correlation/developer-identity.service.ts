@@ -582,12 +582,15 @@ export class DeveloperIdentityService {
         excluded: true,
       },
     });
-    const persistedByKey = new Map(persisted.map((row) => [row.sourceKey, row]));
+    const persistedByKey = new Map(
+      persisted.map((row) => [row.sourceKey, row]),
+    );
     for (const [key, identity] of wanted) {
       const row = persistedByKey.get(key);
       if (row) {
         out.set(key, {
-          developer: row.method === 'unresolved' ? null : row.canonicalDeveloperId,
+          developer:
+            row.method === 'unresolved' ? null : row.canonicalDeveloperId,
           excluded: row.excluded,
         });
       } else {
@@ -625,7 +628,8 @@ export class DeveloperIdentityService {
         overrides.get(overrideKeyOf(JIRA_SOURCE_SYSTEM, key)),
       );
       out.set(key, {
-        developer: match.method === 'unresolved' ? null : match.canonicalDeveloperId,
+        developer:
+          match.method === 'unresolved' ? null : match.canonicalDeveloperId,
         excluded,
       });
     }

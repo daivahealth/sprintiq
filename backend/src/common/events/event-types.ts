@@ -23,7 +23,6 @@ export const EventTypes = {
   PLANNING_WORKLOGS_OBSERVED: 'planning.issue.worklogs',
 } as const;
 
-
 export const CODE_PR_EVENT_TYPES: string[] = [
   EventTypes.CODE_PR_OPENED,
   EventTypes.CODE_PR_UPDATED,
