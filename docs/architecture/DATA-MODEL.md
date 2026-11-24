@@ -109,7 +109,7 @@ Resolution is pure in-database work over already-collected facts — no external
 
 Added 2026-08-25 (api/README.md §12 #40). Until then `source_system` was a hardcoded `'github'` despite the column existing for `github | jira | sso`, so a person's **commits** and their **assigned work** had no join between them — which is what Engineering Activity §Watchlist needs to report work happening outside the plan (DASHBOARDS.md §4.4.5).
 
-**Worklog authors and creators are not part of this pass** (2026-11-23, ADR-0014): `resolveJiraPeople` runs them through the same ladder and overrides at read time and writes nothing, so the assignee counts this table holds — which the Watchlist publishes as coverage — are unchanged by them.
+**Worklog authors are not part of this pass** (2026-11-23, ADR-0014): `resolveJiraPeople` runs them through the same ladder and overrides at read time and writes nothing, so the assignee counts this table holds — which the Watchlist publishes as coverage — are unchanged by them.
 
 `resolveJiraAssignees` observes the distinct `(assignee_login, assignee_name)` pairs on `planning_story` and matches them into the canonical ids the GitHub pass has already minted. It therefore runs **strictly after** that pass in the same sweep: against an empty or stale roster it would resolve nothing and record every assignee as unmatched, which the board then publishes as a collapsed match rate.
 

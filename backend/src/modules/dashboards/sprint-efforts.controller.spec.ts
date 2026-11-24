@@ -42,19 +42,14 @@ describe('InsightsController.sprintEfforts', () => {
     ).toEqual([Role.ADMIN]);
   });
 
-  it('passes IST day bounds through and audits who was shown', async () => {
+  it('passes IST day bounds through, reads the whole sprint, and audits who was shown', async () => {
     const { controller, detail, audit } = setup();
-    await controller.sprintEfforts(
-      user,
-      '42',
-      'ACT,NHC',
-      '2026-11-17',
-      '2026-11-18',
-    );
+    await controller.sprintEfforts(user, '42', '2026-11-17', '2026-11-18');
 
+    // No project filter: the page follows people, not projects.
     expect(detail.efforts).toHaveBeenCalledWith(
       '42',
-      ['ACT', 'NHC'],
+      [],
       new Date('2026-11-16T18:30:00.000Z'),
       new Date('2026-11-18T18:29:59.999Z'),
     );
@@ -66,12 +61,20 @@ describe('InsightsController.sprintEfforts', () => {
       targetType: 'sprint',
       targetId: '42',
       metadata: {
-        projects: ['ACT', 'NHC'],
         from: '2026-11-17',
         to: '2026-11-18',
         shown: ['asha', 'bala'],
       },
     });
+  });
+
+  it('restricts the sprint picker to admins too', () => {
+    expect(
+      Reflect.getMetadata(
+        ROLES_KEY,
+        InsightsController.prototype.sprintEffortsSprints,
+      ),
+    ).toEqual([Role.ADMIN]);
   });
 
   it('404s an unknown sprint, without an audit row for a view that never happened', async () => {

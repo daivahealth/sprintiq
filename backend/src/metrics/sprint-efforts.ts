@@ -6,8 +6,8 @@ import {
 } from '../correlation/developer-identity.util';
 
 /**
- * Sprint Health → Efforts (ADR-0014): daily Jira check-ins — hours logged and
- * subtasks created — for the first ten tracked developers, A–Z.
+ * Sprint Health → Efforts (ADR-0014): daily Jira check-ins — hours logged —
+ * for the first ten tracked developers, A–Z.
  *
  * Pure, and kept apart from `SprintHealthDetailService` on purpose: the page is
  * expected to change, and the rules that make it acceptable at all (who may
@@ -23,14 +23,12 @@ export interface EffortRow {
   displayName: string;
   /**
    * Whether SprintIQ can connect this person to a Jira account at all. False
-   * rows carry `null` series: "no Jira account linked" is a data gap, and a row
-   * of zeros would assert that they logged nothing.
+   * rows carry a `null` series: "no Jira account linked" is a data gap, and a
+   * row of zeros would assert that they logged nothing.
    */
   jiraLinked: boolean;
   /** Seconds logged per day, one entry per `EffortsView.days`. */
   effortSeconds: number[] | null;
-  /** Subtasks created per day, one entry per `EffortsView.days`. */
-  subtasksCreated: number[] | null;
 }
 
 export interface EffortsView {
@@ -61,8 +59,6 @@ export interface EffortsView {
     itemsWithoutWorklogSnapshot: number;
     /** Worklogs on the shown days whose author resolves to nobody. */
     unattributedWorklogs: number;
-    /** Subtasks created on the shown days with no recorded creator. */
-    subtasksWithoutCreator: number;
   };
 }
 
@@ -76,12 +72,6 @@ export interface EffortsWorklog {
   authorEmail: string | null;
   startedAt: Date;
   timeSpentSeconds: number;
-}
-
-export interface EffortsSubtask {
-  creatorLogin: string | null;
-  creatorName: string | null;
-  sourceCreatedAt: Date | null;
 }
 
 export interface BuildEffortsInput {
@@ -98,7 +88,6 @@ export interface BuildEffortsInput {
   /** `jiraSourceKeyOf` → resolution, from `resolveJiraPeople`. */
   people: ReadonlyMap<string, { developer: string | null; excluded: boolean }>;
   worklogs: EffortsWorklog[];
-  subtasks: EffortsSubtask[];
   itemsInScope: number;
   itemsWithoutWorklogSnapshot: number;
 }
@@ -146,13 +135,12 @@ export function buildEfforts(input: BuildEffortsInput): EffortsView {
 
   const dayIndex = new Map(input.days.map((key, i) => [key, i]));
   const effort = new Map<string, number[]>();
-  const subtasks = new Map<string, number[]>();
   const seen = new Set<string>();
-  const series = (map: Map<string, number[]>, developer: string) => {
-    let s = map.get(developer);
+  const series = (developer: string) => {
+    let s = effort.get(developer);
     if (!s) {
       s = input.days.map(() => 0);
-      map.set(developer, s);
+      effort.set(developer, s);
     }
     return s;
   };
@@ -179,35 +167,12 @@ export function buildEfforts(input: BuildEffortsInput): EffortsView {
     }
     seen.add(developer);
     if (shownIds.has(developer)) {
-      series(effort, developer)[idx] += w.timeSpentSeconds;
-    }
-  }
-
-  let subtasksWithoutCreator = 0;
-  for (const s of input.subtasks) {
-    if (!s.sourceCreatedAt) {
-      continue;
-    }
-    const idx = dayIndex.get(istDateKey(s.sourceCreatedAt));
-    if (idx === undefined) {
-      continue;
-    }
-    if (!s.creatorLogin && !s.creatorName) {
-      subtasksWithoutCreator++;
-      continue;
-    }
-    const developer = resolve(s.creatorLogin, s.creatorName, null);
-    if (!developer) {
-      continue;
-    }
-    seen.add(developer);
-    if (shownIds.has(developer)) {
-      series(subtasks, developer)[idx] += 1;
+      series(developer)[idx] += w.timeSpentSeconds;
     }
   }
 
   const rows: EffortRow[] = shown.map(({ developer, displayName }) => {
-    // Linked if the persisted bridge knows them, or anything in this sprint
+    // Linked if the persisted bridge knows them, or a worklog in this sprint
     // resolved to them — either way SprintIQ can see their Jira account, so
     // zeros mean zeros.
     const linked =
@@ -218,9 +183,6 @@ export function buildEfforts(input: BuildEffortsInput): EffortsView {
       jiraLinked: linked,
       effortSeconds: linked
         ? (effort.get(developer) ?? input.days.map(() => 0))
-        : null,
-      subtasksCreated: linked
-        ? (subtasks.get(developer) ?? input.days.map(() => 0))
         : null,
     };
   });
@@ -242,7 +204,6 @@ export function buildEfforts(input: BuildEffortsInput): EffortsView {
       itemsInScope: input.itemsInScope,
       itemsWithoutWorklogSnapshot: input.itemsWithoutWorklogSnapshot,
       unattributedWorklogs,
-      subtasksWithoutCreator,
     },
   };
 }

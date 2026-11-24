@@ -6,7 +6,6 @@
  * One constant, like `DIGEST_RULE_TEXT`: two copies of a rule sentence drift.
  */
 export const EFFORTS_RULE_TEXT =
-  'Hours are Jira worklogs on this sprint’s items, counted on the day the work was logged as started (IST) — so a past day can change when someone backfills. ' +
-  'Subtasks are sprint subtasks counted on the day they were created, credited to who created them in Jira. ' +
+  'Hours are Jira worklogs on this sprint’s items and their subtasks, counted on the day the work was logged as started (IST) — so a past day can change when someone backfills. ' +
   'Worklogs hidden from the collecting account by visibility restrictions are not counted. ' +
   'This is a record of what was logged, not a measure of productivity, and people are listed A–Z, never ranked.';

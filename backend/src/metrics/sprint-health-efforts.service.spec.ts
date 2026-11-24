@@ -148,7 +148,6 @@ describe('SprintHealthDetailService.efforts', () => {
         developer: 'asha',
         jiraLinked: true,
         effortSeconds: [3600, 0, 0, 0, 0, 0, 0],
-        subtasksCreated: [1, 0, 0, 0, 0, 0, 0],
       }),
     ]);
     expect(view!.disclosures).toMatchObject({

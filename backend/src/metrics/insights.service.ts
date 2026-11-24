@@ -669,6 +669,26 @@ export class InsightsService {
     };
   }
 
+  /**
+   * Every ongoing sprint in the tenant, newest start first — the Efforts
+   * subpage's picker (ADR-0014). Unlike `activeSprintsHealth` it needs no
+   * project: Efforts follows a fixed list of people across every project, so
+   * its scope is the whole sprint. Same staleness rule, so a sprint Jira still
+   * calls active years after it ended is never offered.
+   */
+  async ongoingSprints(): Promise<SprintSummary[]> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const sprints = await this.planning.listSprints(tenantId, [], 'active');
+    return sprints
+      .filter((s) => !isStaleActive(s))
+      .sort(
+        (a, b) =>
+          (b.startAt?.getTime() ?? 0) - (a.startAt?.getTime() ?? 0) ||
+          a.name.localeCompare(b.name),
+      )
+      .map(toSprintSummary);
+  }
+
   private async buildSprintHealth(
     tenantId: string,
     sprint: Sprint,

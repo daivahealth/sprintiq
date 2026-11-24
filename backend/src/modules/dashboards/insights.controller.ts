@@ -162,7 +162,7 @@ export const DASHBOARD_REGISTRY: {
         title: 'Efforts',
         path: '/sprint-health/efforts',
         description:
-          'Jira hours logged and subtasks created per day, for ten tracked developers A–Z. Admins only.',
+          'Jira hours logged per day, for ten tracked developers A–Z. Admins only.',
         roles: [Role.ADMIN],
       },
     ],
@@ -515,21 +515,24 @@ export class InsightsController {
   }
 
   /**
-   * Sprint Health → Efforts (ADR-0014): Jira hours logged and subtasks created
-   * per day by the first ten tracked developers, A–Z.
+   * Sprint Health → Efforts (ADR-0014): Jira hours logged per day by the first
+   * ten tracked developers, A–Z.
    *
    * **Admins only, and every view is audit-logged** — the conditions the
    * decision permitting a named per-person figure here was taken on. Not
    * modelled on `developer-activity`, which is open to every role and
    * unaudited; the Watchlist's previous-day view is the precedent. Same
    * `from`/`to` convention as check-ins: IST date keys, not instants.
+   *
+   * No project filter, deliberately (2026-11-24): the page follows a fixed
+   * list of people, so their hours are read across the whole sprint, whatever
+   * project each item belongs to.
    */
   @Roles(Role.ADMIN)
   @Get('sprint-health/efforts')
   async sprintEfforts(
     @CurrentUser() user: AuthUser,
     @Query('sprint') sprint?: string,
-    @Query('projects') projects?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -538,7 +541,7 @@ export class InsightsController {
     const toKey = parseDateKeyParam(to, 'to');
     const view = await this.detail.efforts(
       sprintId,
-      parseList(projects),
+      [],
       fromKey ? istDayStart(fromKey) : undefined,
       toKey ? istDayEnd(toKey) : undefined,
     );
@@ -553,13 +556,26 @@ export class InsightsController {
       targetType: 'sprint',
       targetId: sprintId,
       metadata: {
-        projects: parseList(projects),
         from: view.days[0] ?? null,
         to: view.days[view.days.length - 1] ?? null,
         shown: view.rows.map((row) => row.developer),
       },
     });
     return { ...view, computedAt: new Date().toISOString() };
+  }
+
+  /**
+   * The Efforts picker: every ongoing sprint in the tenant, newest first, with
+   * no project needed (ADR-0014, 2026-11-24). Sprint names and dates only —
+   * nobody is named — but admin-only like the page it serves.
+   */
+  @Roles(Role.ADMIN)
+  @Get('sprint-health/efforts/sprints')
+  async sprintEffortsSprints() {
+    return {
+      sprints: await this.insights.ongoingSprints(),
+      computedAt: new Date().toISOString(),
+    };
   }
 
   /**

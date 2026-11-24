@@ -24,7 +24,6 @@ function view(overrides: Partial<EffortsView> = {}): EffortsView {
       itemsInScope: 0,
       itemsWithoutWorklogSnapshot: 0,
       unattributedWorklogs: 0,
-      subtasksWithoutCreator: 0,
     },
     computedAt: '',
     ...overrides,
@@ -44,7 +43,6 @@ describe('effortsDisclosures', () => {
           itemsInScope: 40,
           itemsWithoutWorklogSnapshot: 6,
           unattributedWorklogs: 3,
-          subtasksWithoutCreator: 1,
         },
       }),
     );
@@ -54,7 +52,6 @@ describe('effortsDisclosures', () => {
       '1 tracked entry is excluded (bots, admin exclusions or Watchlist exclusions).',
       'Worklogs not yet collected for 6 of 40 sprint items — hours may be understated until the backfill catches up.',
       '3 worklogs in this range could not be matched to a developer.',
-      '1 subtask has no recorded creator yet and is not credited to anyone.',
     ]);
   });
 });

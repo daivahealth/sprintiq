@@ -26,7 +26,7 @@ const TABS = [
     to: '/sprint-health/efforts',
     end: false,
     label: 'Efforts',
-    title: 'Jira hours logged and subtasks created per day. Admins only.',
+    title: 'Jira hours logged per day. Admins only.',
     adminOnly: true,
   },
 ];

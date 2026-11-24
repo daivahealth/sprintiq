@@ -27,7 +27,6 @@ function input(overrides: Partial<BuildEffortsInput> = {}): BuildEffortsInput {
       ['login:acc-bala', { developer: 'bala', excluded: false }],
     ]),
     worklogs: [],
-    subtasks: [],
     itemsInScope: 4,
     itemsWithoutWorklogSnapshot: 1,
     ...overrides,
@@ -120,34 +119,22 @@ describe('buildEfforts', () => {
     expect(view.disclosures.unattributedWorklogs).toBe(0);
   });
 
-  it('credits subtasks to their creator on the day they were created, and discloses the creatorless', () => {
+  it('reports effort logged only — no per-person figure beyond hours', () => {
     const view = buildEfforts(
-      input({
-        subtasks: [
-          {
-            creatorLogin: 'acc-bala',
-            creatorName: null,
-            sourceCreatedAt: new Date('2026-11-18T11:00:00+05:30'),
-          },
-          {
-            creatorLogin: 'acc-bala',
-            creatorName: null,
-            sourceCreatedAt: new Date('2026-11-18T15:00:00+05:30'),
-          },
-          {
-            creatorLogin: null,
-            creatorName: null,
-            sourceCreatedAt: new Date('2026-11-19T11:00:00+05:30'),
-          },
-        ],
-      }),
+      input({ worklogs: [log('acc-bala', '2026-11-18T11:00:00+05:30', 900)] }),
     );
-    const bala = view.rows.find((r) => r.developer === 'bala');
-    expect(bala?.subtasksCreated).toEqual([0, 2, 0]);
-    expect(view.disclosures.subtasksWithoutCreator).toBe(1);
+    expect(Object.keys(view.rows[0]).sort()).toEqual([
+      'developer',
+      'displayName',
+      'effortSeconds',
+      'jiraLinked',
+    ]);
+    expect(
+      view.rows.find((r) => r.developer === 'bala')?.effortSeconds,
+    ).toEqual([0, 900, 0]);
   });
 
-  it('a person with no Jira link gets null series — a data gap, never a row of zeros', () => {
+  it('a person with no Jira link gets a null series — a data gap, never a row of zeros', () => {
     const view = buildEfforts(
       input({ jiraLinkedDevelopers: new Set(['asha']), people: new Map() }),
     );
@@ -155,7 +142,6 @@ describe('buildEfforts', () => {
     expect(bala).toMatchObject({
       jiraLinked: false,
       effortSeconds: null,
-      subtasksCreated: null,
     });
   });
 

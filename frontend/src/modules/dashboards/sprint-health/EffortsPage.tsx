@@ -1,6 +1,5 @@
 import { CalendarDays } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { MultiSelect } from '../../../components/multi-select';
 import {
   Button,
   Card,
@@ -12,10 +11,8 @@ import {
 import { useScope } from '../../../lib/scope';
 import { timeAgo } from '../../../lib/utils';
 import { FreshnessNote } from '../FreshnessNote';
-import { sprintLabel, useOngoingSprintSelection } from '../ongoing-sprint';
-import { useProjects } from '../useCatalog';
 import {
-  useActiveSprintsHealth,
+  useEffortsSprints,
   useSprintEfforts,
   type EffortsView,
 } from '../useInsights';
@@ -29,22 +26,25 @@ import { formatDateRange, MOCKUP_HEAD } from './presentation';
  * Sprint Health → Efforts (DASHBOARDS.md §4.1.5, ADR-0014). Admin only.
  *
  * Daily Jira check-ins for the first ten tracked developers, A–Z: hours logged
- * (worklogs, by the day the work was started) and subtasks created. Expected
- * to change — the backend owns every rule (who appears, in what order, what is
- * disclosed), so this page only lays the figures out and states the rule.
+ * (worklogs, by the day the work was started). Expected to change — the
+ * backend owns every rule (who appears, in what order, what is disclosed), so
+ * this page only lays the figures out and states the rule.
  *
- * Shares the board's sprint selection through the URL (`?projects=&sprint=`),
- * so switching between Board and Efforts keeps the sprint being read.
+ * No project filter (2026-11-24): the people are a fixed list, independent of
+ * any project, so their hours are read across the whole sprint. The picker
+ * lists every ongoing sprint in the tenant, newest first. The choice is kept
+ * in the URL's `?sprint=`, shared with the Board — which still validates it
+ * against its own projects' sprints.
  */
 export function SprintHealthEffortsPage() {
   const { scope, setScope } = useScope();
-  const [projectSearch, setProjectSearch] = useState('');
-  const projects = useProjects(projectSearch);
-  const hasProject = scope.projects.length > 0;
-  const active = useActiveSprintsHealth(scope.projects);
-  const { options, sprint, setSprint } = useOngoingSprintSelection(
-    hasProject ? active.data?.rows : undefined,
-  );
+  const sprints = useEffortsSprints();
+  const options = sprints.data?.sprints ?? [];
+  // The URL's sprint when it is one of the ongoing ones, else the newest.
+  const sprint =
+    options.find((s) => s.externalId === scope.sprint)?.externalId ??
+    options[0]?.externalId ??
+    null;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -53,56 +53,32 @@ export function SprintHealthEffortsPage() {
           Efforts
         </h2>
         <p className="text-sm text-fg-subtle">
-          Jira hours logged and subtasks created per day, for the selected
-          sprint. A record of what was logged — never a ranking.
+          Jira hours logged per day across the whole sprint, every project. A
+          record of what was logged — never a ranking.
         </p>
       </div>
 
       <FilterBar className="rounded-xl border bg-surface px-5 py-4">
-        <MultiSelect
-          label="Projects"
-          options={(projects.data?.items ?? []).map((p) => p.key)}
-          selected={scope.projects}
-          onChange={(next) => setScope({ projects: next, repos: [] })}
-          onSearch={setProjectSearch}
-          loading={projects.isLoading}
-          emptyText="No projects found"
-        />
         <SprintPicker
-          sprints={options.map((o) => o.sprint)}
+          sprints={options}
           selected={sprint}
-          onChange={setSprint}
-          labelOf={(s) =>
-            sprintLabel(
-              options.find((o) => o.sprint.externalId === s.externalId) ?? {
-                sprint: s,
-              },
-            )
-          }
-          placeholder={hasProject ? 'No ongoing sprint' : 'Pick a project first'}
+          onChange={(externalId) => setScope({ sprint: externalId })}
+          labelOf={(s) => s.name}
+          placeholder={sprints.isLoading ? 'Loading sprints…' : 'No ongoing sprint'}
         />
         <FreshnessNote />
       </FilterBar>
 
-      {!hasProject && (
+      {sprints.isLoading && <LoadingCard />}
+      {sprints.isError && <ErrorCard error={sprints.error} />}
+      {sprints.data && !sprint && (
         <Card>
           <p className="py-4 text-center text-sm text-fg-faint">
-            Pick a project to see its ongoing sprint.
+            No ongoing sprint.
           </p>
         </Card>
       )}
-      {hasProject && active.isLoading && <LoadingCard />}
-      {hasProject && active.isError && <ErrorCard error={active.error} />}
-      {hasProject && active.data && !sprint && (
-        <Card>
-          <p className="py-4 text-center text-sm text-fg-faint">
-            No ongoing sprint for this project.
-          </p>
-        </Card>
-      )}
-      {hasProject && sprint && (
-        <EffortsGrid sprint={sprint} projects={scope.projects} />
-      )}
+      {sprint && <EffortsGrid sprint={sprint} />}
     </div>
   );
 }
@@ -114,7 +90,7 @@ export function SprintHealthEffortsPage() {
  * response — never from the sprint's planned bounds, and with no timezone
  * math on the client.
  */
-function EffortsGrid({ sprint, projects }: { sprint: string; projects: string[] }) {
+function EffortsGrid({ sprint }: { sprint: string }) {
   const [page, setPage] = useState<number | null>(null);
   const [bounds, setBounds] = useState<{ from: string; to: string } | null>(null);
   const [trackedSprint, setTrackedSprint] = useState(sprint);
@@ -131,7 +107,6 @@ function EffortsGrid({ sprint, projects }: { sprint: string; projects: string[] 
   const current = page === null ? undefined : pages[page];
   const query = useSprintEfforts(
     sprint,
-    projects,
     current?.from ?? null,
     current?.to ?? null,
   );
@@ -160,7 +135,7 @@ function EffortsGrid({ sprint, projects }: { sprint: string; projects: string[] 
     <section>
       <SectionTitle
         title="Daily efforts"
-        echo="Hours logged in Jira · subtasks created, per developer, per day"
+        echo="Hours logged in Jira, per developer, per day"
       />
 
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
@@ -244,13 +219,10 @@ function EffortsPanel({ view }: { view: EffortsView }) {
                   <td className="py-2 pr-4">
                     <DevName name={row.displayName} />
                   </td>
-                  {row.effortSeconds && row.subtasksCreated ? (
+                  {row.effortSeconds ? (
                     view.days.map((day, i) => (
                       <td key={day} className="px-1 py-2 text-center">
-                        <EffortCell
-                          seconds={row.effortSeconds![i]}
-                          subtasks={row.subtasksCreated![i]}
-                        />
+                        <EffortCell seconds={row.effortSeconds![i]} />
                       </td>
                     ))
                   ) : (
@@ -285,23 +257,18 @@ function EffortsPanel({ view }: { view: EffortsView }) {
   );
 }
 
-/** Hours on top, subtasks created beneath; a quiet day reads as quiet, not missing. */
-function EffortCell({ seconds, subtasks }: { seconds: number; subtasks: number }) {
-  const quiet = seconds === 0 && subtasks === 0;
+/** Hours logged that day; a quiet day reads as quiet, not missing. */
+function EffortCell({ seconds }: { seconds: number }) {
   return (
     <span
+      title="Hours logged"
       className={
-        quiet
-          ? 'inline-flex flex-col items-center text-fg-faint'
-          : 'inline-flex flex-col items-center rounded bg-muted px-1.5 py-0.5 text-fg-secondary'
+        seconds === 0
+          ? 'inline-block tabular-nums text-fg-faint'
+          : 'inline-block rounded bg-muted px-1.5 py-0.5 tabular-nums text-fg-secondary'
       }
     >
-      <span className="tabular-nums" title="Hours logged">
-        {formatLogged(seconds)}
-      </span>
-      <span className="text-[10.5px] tabular-nums text-fg-faint" title="Subtasks created">
-        {subtasks} {subtasks === 1 ? 'subtask' : 'subtasks'}
-      </span>
+      {formatLogged(seconds)}
     </span>
   );
 }

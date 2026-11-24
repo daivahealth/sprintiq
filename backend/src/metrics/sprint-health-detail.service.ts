@@ -991,7 +991,7 @@ export class SprintHealthDetailService {
 
   /**
    * Sprint Health → Efforts (ADR-0014, admin-only): per day, the Jira hours
-   * logged and subtasks created by the first ten tracked developers, A–Z.
+   * logged by the first ten tracked developers, A–Z.
    *
    * Same window discipline as `checkIns` — the caller's range clamped into the
    * sprint's elapsed window — but bucketed by IST DAY rather than by instant:
@@ -1000,9 +1000,9 @@ export class SprintHealthDetailService {
    * before the sprint (a carried-over item's earlier time) falls outside every
    * column and is not counted.
    *
-   * Scope is the sprint's items plus their subtasks. Subtasks normally carry
-   * their parent's sprint, but the parent link is the one Jira guarantees, so
-   * both are read.
+   * Scope is the sprint's items plus their subtasks — time is usually logged
+   * on the subtask. Subtasks normally carry their parent's sprint, but the
+   * parent link is the one Jira guarantees, so both are read.
    *
    * People are resolved with `resolveJiraPeople` — the persisted assignee
    * bridge first, the same ladder in memory for anyone else — so a person who
@@ -1081,18 +1081,14 @@ export class SprintHealthDetailService {
             },
           })
         : [];
-    const subtasks = [...scope.values()].filter(
-      (item) => item.type === 'subtask',
-    );
-
-    const people = await this.identities.resolveJiraPeople(tenantId, [
-      ...worklogs.map((w) => ({
+    const people = await this.identities.resolveJiraPeople(
+      tenantId,
+      worklogs.map((w) => ({
         login: w.authorLogin,
         name: w.authorName,
         email: w.authorEmail,
       })),
-      ...subtasks.map((s) => ({ login: s.creatorLogin, name: s.creatorName })),
-    ]);
+    );
 
     return buildEfforts({
       days,
@@ -1108,7 +1104,6 @@ export class SprintHealthDetailService {
       jiraLinkedDevelopers: new Set(jiraIndex.byDeveloper.keys()),
       people,
       worklogs,
-      subtasks,
       itemsInScope: scope.size,
       itemsWithoutWorklogSnapshot: [...scope.values()].filter(
         (item) => !item.worklogsCollectedAt,

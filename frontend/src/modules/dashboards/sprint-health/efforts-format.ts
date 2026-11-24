@@ -48,11 +48,6 @@ export function effortsDisclosures(view: EffortsView): string[] {
       `${disclosures.unattributedWorklogs} ${plural(disclosures.unattributedWorklogs, 'worklog', 'worklogs')} in this range could not be matched to a developer.`,
     );
   }
-  if (disclosures.subtasksWithoutCreator > 0) {
-    out.push(
-      `${disclosures.subtasksWithoutCreator} ${plural(disclosures.subtasksWithoutCreator, 'subtask has', 'subtasks have')} no recorded creator yet and ${disclosures.subtasksWithoutCreator === 1 ? 'is' : 'are'} not credited to anyone.`,
-    );
-  }
   return out;
 }
 

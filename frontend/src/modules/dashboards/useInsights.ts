@@ -786,11 +786,10 @@ export function useSprintCheckIns(
 export interface EffortRow {
   developer: string;
   displayName: string;
-  /** False → no Jira account linked; both series are then `null`, never zeros. */
+  /** False → no Jira account linked; the series is then `null`, never zeros. */
   jiraLinked: boolean;
   /** Seconds logged per day, one entry per `EffortsView.days`. */
   effortSeconds: number[] | null;
-  subtasksCreated: number[] | null;
 }
 
 /** Mirrors backend `sprint-efforts.ts#EffortsView`. */
@@ -814,28 +813,39 @@ export interface EffortsView {
     itemsInScope: number;
     itemsWithoutWorklogSnapshot: number;
     unattributedWorklogs: number;
-    subtasksWithoutCreator: number;
   };
   computedAt: string;
 }
 
 /**
- * Sprint Health → Efforts (admin only). Paged a week at a time with
- * `checkInPages`, exactly like `useSprintCheckIns`.
+ * Sprint Health → Efforts' picker (admin only): every ongoing sprint in the
+ * tenant, newest first. No project — Efforts follows people, not projects.
+ */
+export function useEffortsSprints() {
+  return useQuery({
+    queryKey: ['sprint-efforts-sprints'],
+    queryFn: () =>
+      api.get<{ sprints: SprintSummary[]; computedAt: string }>(
+        '/api/dashboards/sprint-health/efforts/sprints',
+      ),
+  });
+}
+
+/**
+ * Sprint Health → Efforts (admin only), across the whole sprint. Paged a week
+ * at a time with `checkInPages`, exactly like `useSprintCheckIns`.
  */
 export function useSprintEfforts(
   sprint: string | null,
-  projects: string[],
   from: string | null,
   to: string | null,
 ) {
   return useQuery({
-    queryKey: ['sprint-efforts', sprint, projects.join(','), from, to],
+    queryKey: ['sprint-efforts', sprint, from, to],
     enabled: Boolean(sprint),
     queryFn: () =>
       api.get<EffortsView>(
         `/api/dashboards/sprint-health/efforts?sprint=${sprint}` +
-          projectsParam(projects) +
           (from ? `&from=${from}` : '') +
           (to ? `&to=${to}` : ''),
       ),
