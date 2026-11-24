@@ -108,6 +108,15 @@ The tracked-roster inactivity digest to Microsoft Teams (BC-15, [features/NOTIFI
 - **`GET /dashboards/developer-activity/watchlist/previous-day`** (2026-10-19) — admin-only. The digest's list for one day, in the app (ADR-0009 amendment). Read-only, and every view is audit-logged (`dashboards.watchlist.previous_day.view`), since unlike the routes above it is a read that names people.
 - All four routes are guarded server-side by `@Roles(Role.ADMIN)`, the same enforcement point as every other admin-only route in this document — no client-side gate is trusted.
 
+### 5.3 Sprint Health → Efforts
+
+The per-developer Jira efforts page (hours logged per day, [features/DASHBOARDS.md §4.1.5](../features/DASHBOARDS.md)) is a further, independent exception to §5, decided under [ADR-0014](../ADR/0014-per-developer-jira-efforts.md) on 2026-11-23. It inherits none of the earlier ones.
+
+- **`GET /dashboards/sprint-health/efforts`** — admin-only (`@Roles(Role.ADMIN)`, enforced server-side; the nav entry and the `RequireRole` route are conveniences, not the gate). Caller's tenant only: the tenant comes from the request context and every read — tracked roster, exclusions, stories, worklogs, identities — filters on it.
+- **Every view is audit-logged** (`dashboards.sprint_health.efforts.view`, target the sprint, metadata the day range and the developer ids shown), because it is a read that names people — the same treatment as the Watchlist previous-day view in §5.2. A `404` for an unknown sprint writes no row.
+- **`GET /dashboards/sprint-health/efforts/sprints`** — the page's sprint picker, admin-only like the page. Sprint names and dates only, so not audited.
+- People are listed A–Z, never ranked; suppressions (unresolved roster entries, bots, admin exclusions, live Watchlist exclusions) apply before anyone is named.
+
 ---
 
 ## 6. Agent authorization & governance

@@ -23,6 +23,8 @@ import {
   VelocityBoard,
 } from '../modules/dashboards/boards';
 import { DeliveryDashboard } from '../modules/dashboards/DeliveryDashboard';
+import { SprintHealthEffortsPage } from '../modules/dashboards/sprint-health/EffortsPage';
+import { SprintHealthSection } from '../modules/dashboards/sprint-health/SprintHealthSection';
 import { TopRepos } from '../modules/dashboards/TopRepos';
 import { StyleguidePage } from '../modules/styleguide/StyleguidePage';
 
@@ -98,7 +100,20 @@ export function AppRouter() {
         }
       />
       <Route path="/delivery-explorer" element={<Page><DeliveryDashboard /></Page>} />
-      <Route path="/sprint-health" element={<Page><SprintHealthBoard /></Page>} />
+      {/* Sprint Health is the Board plus, for admins, Efforts (ADR-0014).
+          The Board is the index route — not a redirect — so Velocity's
+          `/sprint-health?projects=&sprint=` links keep working unchanged. */}
+      <Route path="/sprint-health" element={<Page><SprintHealthSection /></Page>}>
+        <Route index element={<SprintHealthBoard />} />
+        <Route
+          path="efforts"
+          element={
+            <RequireRole role="admin">
+              <SprintHealthEffortsPage />
+            </RequireRole>
+          }
+        />
+      </Route>
       <Route path="/sprint-risk" element={<Page><SprintRiskBoard /></Page>} />
       <Route path="/velocity" element={<Page><VelocityBoard /></Page>} />
       <Route path="/forecast" element={<Page><ForecastBoard /></Page>} />

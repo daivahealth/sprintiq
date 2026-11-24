@@ -86,7 +86,37 @@ export const BASE_SEARCH_FIELDS = [
   'resolutiondate',
   'created',
   'updated',
+  // Who created the item — immutable, unlike `reporter`. Attributes subtask
+  // creation on the Sprint Health Efforts page (ADR-0014).
+  'creator',
+  // The issue's worklogs. The search embeds at most 20; `worklog.total` says
+  // when there are more, and `getIssueWorklogs` completes the set (ADR-0014).
+  'worklog',
 ];
+
+/** One worklog as Jira returns it, embedded in a search or from `/worklog`. */
+export interface JiraWorklog {
+  id: string;
+  author?: {
+    name?: string;
+    accountId?: string;
+    displayName?: string;
+    emailAddress?: string;
+  };
+  /** When the work was done, as reported — e.g. `2026-11-20T09:30:00.000+0530`. */
+  started?: string;
+  timeSpentSeconds?: number;
+  created?: string;
+  updated?: string;
+}
+
+/** The `worklog` field's shape on a searched issue. */
+export interface JiraWorklogField {
+  startAt?: number;
+  maxResults?: number;
+  total?: number;
+  worklogs?: JiraWorklog[];
+}
 
 /**
  * A Jira project version (`fixVersion`), as returned by
@@ -333,6 +363,72 @@ export class JiraClient {
       startAt += maxResults;
     }
     return entries;
+  }
+
+  /**
+   * `GET /rest/api/3/issue/{key}/worklog` — every worklog on one issue, for
+   * the issues whose embedded `worklog` field came back truncated (the search
+   * embeds at most 20). Same shape and reasoning as `getIssueChangelog`: one
+   * request per page, used only for the exception, never as the primary
+   * source.
+   *
+   * Returns `null` on ANY failure — including a page that fails after earlier
+   * pages succeeded — so the caller can never mistake a partial set for a
+   * complete one. That distinction is what keeps the projector from deleting
+   * worklogs it simply failed to read.
+   */
+  async getIssueWorklogs(
+    siteUrl: string,
+    email: string,
+    apiToken: string,
+    issueKey: string,
+    maxResults = 1000,
+  ): Promise<JiraWorklog[] | null> {
+    if (!apiToken) {
+      return null;
+    }
+    const base = `${siteUrl.replace(/\/$/, '')}/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog`;
+    const auth = Buffer.from(`${email}:${apiToken}`).toString('base64');
+    const worklogs: JiraWorklog[] = [];
+    let startAt = 0;
+
+    // Bounded like the changelog walk: 10 pages of 1000 is far beyond any real
+    // issue, and an unbounded loop on a paginated endpoint is never safe.
+    for (let page = 0; page < 10; page++) {
+      const res = await fetch(
+        `${base}?startAt=${startAt}&maxResults=${maxResults}`,
+        {
+          headers: {
+            Authorization: `Basic ${auth}`,
+            Accept: 'application/json',
+          },
+        },
+      );
+      if (!res.ok) {
+        this.logger.warn(
+          `Jira worklog fetch failed (${res.status}) for ${issueKey}`,
+        );
+        return null;
+      }
+      const body = (await res.json()) as {
+        worklogs?: JiraWorklog[];
+        total?: number;
+      };
+      const values = body.worklogs ?? [];
+      worklogs.push(...values);
+      if (
+        values.length === 0 ||
+        (typeof body.total === 'number' && worklogs.length >= body.total)
+      ) {
+        return worklogs;
+      }
+      startAt += values.length;
+    }
+    // Ran out of pages before Jira said it was done — not a complete set.
+    this.logger.warn(
+      `Jira worklog fetch for ${issueKey} exceeded the page bound — treating as incomplete.`,
+    );
+    return null;
   }
 
   /**

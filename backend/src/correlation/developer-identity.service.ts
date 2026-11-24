@@ -531,6 +531,112 @@ export class DeveloperIdentityService {
   }
 
   /**
+   * Resolves Jira people who are not (or not only) assignees — worklog authors
+   * and issue creators — onto canonical developers, WITHOUT persisting
+   * anything (ADR-0014, Sprint Health Efforts).
+   *
+   * Read-time on purpose. `resolveJiraAssignees` writes `DeveloperIdentity`
+   * rows, and those rows are the denominator of the Watchlist's and the
+   * Overview's assignee coverage ("assignees observed / matched") and of the
+   * "committing without assigned work" list. Feeding worklog authors into that
+   * pass would silently change ADR-0009's numbers for a page that has nothing
+   * to do with them. So: the persisted assignee resolution is consulted first
+   * (it already carries admin overrides), and anyone it does not know is run
+   * through the SAME ladder — `resolveJiraIdentity`, then `applyOverride` —
+   * in memory. Same evidence, same refusal to guess, nothing written.
+   *
+   * Keyed by `jiraSourceKeyOf`. `developer` is null when the person resolves to
+   * nobody (unmatched) or to more than one developer (ambiguous) — the caller
+   * counts them as unattributed rather than crediting anyone.
+   */
+  async resolveJiraPeople(
+    tenantId: string,
+    people: JiraAssigneeIdentity[],
+  ): Promise<Map<string, { developer: string | null; excluded: boolean }>> {
+    const out = new Map<
+      string,
+      { developer: string | null; excluded: boolean }
+    >();
+    const pending: { key: string; identity: JiraAssigneeIdentity }[] = [];
+    const wanted = new Map<string, JiraAssigneeIdentity>();
+    for (const identity of people) {
+      const key = jiraSourceKeyOf(identity);
+      if (key && !wanted.has(key)) {
+        wanted.set(key, identity);
+      }
+    }
+    if (wanted.size === 0) {
+      return out;
+    }
+
+    const persisted = await this.prisma.developerIdentity.findMany({
+      where: {
+        tenantId,
+        sourceSystem: JIRA_SOURCE_SYSTEM,
+        sourceKey: { in: [...wanted.keys()] },
+      },
+      select: {
+        sourceKey: true,
+        canonicalDeveloperId: true,
+        method: true,
+        excluded: true,
+      },
+    });
+    const persistedByKey = new Map(
+      persisted.map((row) => [row.sourceKey, row]),
+    );
+    for (const [key, identity] of wanted) {
+      const row = persistedByKey.get(key);
+      if (row) {
+        out.set(key, {
+          developer:
+            row.method === 'unresolved' ? null : row.canonicalDeveloperId,
+          excluded: row.excluded,
+        });
+      } else {
+        pending.push({ key, identity });
+      }
+    }
+    if (pending.length === 0) {
+      return out;
+    }
+
+    const [overrides, githubIdentities] = await Promise.all([
+      this.loadOverrides(tenantId, JIRA_SOURCE_SYSTEM),
+      this.prisma.developerIdentity.findMany({
+        where: { tenantId, ...GITHUB_SOURCED, excluded: false },
+        select: { canonicalDeveloperId: true, email: true },
+      }),
+    ]);
+    const loginsByNameKey = indexLoginsByNormalizedKey(
+      new Set(githubIdentities.map((row) => row.canonicalDeveloperId)),
+    );
+    const developerByEmail = buildDeveloperEmailIndex(githubIdentities);
+
+    for (const { key, identity } of pending) {
+      const matched = resolveJiraIdentity(
+        identity,
+        loginsByNameKey,
+        developerByEmail,
+      );
+      if (!matched) {
+        out.set(key, { developer: null, excluded: false }); // ambiguous
+        continue;
+      }
+      const { match, excluded } = applyOverride(
+        matched,
+        overrides.get(overrideKeyOf(JIRA_SOURCE_SYSTEM, key)),
+      );
+      out.set(key, {
+        developer:
+          match.method === 'unresolved' ? null : match.canonicalDeveloperId,
+        excluded,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Completes a `JiraAssigneeCoverage` for one window's committers.
    *
    * Separate from `jiraAssigneeIndex` because coverage is a property of the

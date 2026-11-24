@@ -224,4 +224,28 @@ describe('InsightsService — sprints Jira still calls active', () => {
     expect(view.rows.map((r) => r.sprint.externalId)).toEqual(['live']);
     expect(view.stale).toHaveLength(1);
   });
+
+  it('offers Efforts every ongoing sprint tenant-wide, newest first, never a stale one', async () => {
+    planning.listSprints.mockResolvedValue([
+      sprint({
+        externalId: 'old',
+        startAt: new Date('2026-07-01T00:00:00.000Z'),
+      }),
+      sprint({
+        externalId: 'stale',
+        startAt: new Date('2018-03-01T00:00:00.000Z'),
+        endAt: new Date('2018-03-15T00:00:00.000Z'),
+      }),
+      sprint({
+        externalId: 'new',
+        startAt: new Date('2026-08-01T00:00:00.000Z'),
+      }),
+    ]);
+
+    const sprints = await service.ongoingSprints();
+
+    // No project: Efforts reads the whole sprint.
+    expect(planning.listSprints).toHaveBeenCalledWith('tenant-a', [], 'active');
+    expect(sprints.map((s) => s.externalId)).toEqual(['new', 'old']);
+  });
 });

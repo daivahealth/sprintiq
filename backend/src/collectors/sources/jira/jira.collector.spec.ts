@@ -66,6 +66,7 @@ describe('JiraCollector.poll', () => {
       // should have — existing tests that never mention versions must see no
       // version envelopes rather than crash on an unmocked method.
       getProjectVersions: jest.fn().mockResolvedValue(null),
+      getIssueWorklogs: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<JiraClient>;
     connections = {
       setSyncCursors: jest.fn().mockResolvedValue(undefined),
@@ -399,7 +400,132 @@ describe('JiraCollector.poll', () => {
         'resolutiondate',
         'created',
         'updated',
+        'creator',
+        'worklog',
       ],
+    });
+  });
+
+  describe('worklogs and creator (ADR-0014)', () => {
+    const worklog = (id: string, overrides: Record<string, unknown> = {}) => ({
+      id,
+      author: { accountId: `acc-${id}`, displayName: `Person ${id}` },
+      started: '2026-11-20T09:30:00.000+0530',
+      timeSpentSeconds: 3600,
+      updated: '2026-11-20T10:00:00.000+0530',
+      ...overrides,
+    });
+
+    function worklogEnvelopes(envelopes: CanonicalEnvelope[]) {
+      return envelopes.filter((e) => e.eventType === 'planning.issue.worklogs');
+    }
+
+    it('maps the creator onto the story payload', async () => {
+      client.searchIssues.mockResolvedValue({
+        issues: [
+          issue('PAY-1', {
+            creator: { accountId: 'acc-7', displayName: 'Asha Rao' },
+          }),
+        ],
+      });
+      const { envelopes } = await collector.poll(baseConnection());
+      expect(envelopes[0].data).toMatchObject({
+        creatorLogin: 'acc-7',
+        creatorName: 'Asha Rao',
+      });
+    });
+
+    it('emits one complete worklog set right after the story, keyed on its content', async () => {
+      client.searchIssues.mockResolvedValue({
+        issues: [
+          issue('PAY-1', {
+            worklog: {
+              total: 2,
+              maxResults: 20,
+              worklogs: [worklog('2'), worklog('1')],
+            },
+          }),
+        ],
+      });
+      const { envelopes } = await collector.poll(baseConnection());
+
+      expect(envelopes.map((e) => e.eventType)).toEqual([
+        'planning.issue.updated',
+        'planning.issue.worklogs',
+      ]);
+      const [w] = worklogEnvelopes(envelopes);
+      expect(w.idempotencyKey).toMatch(/^jira:worklogs:v1:PAY-1:[0-9a-f]{16}$/);
+      expect(w.data).toMatchObject({
+        externalKey: 'PAY-1',
+        projectKey: 'PAY',
+        complete: true,
+        total: 2,
+      });
+      // Sorted by id, so the same set always hashes alike.
+      expect((w.data.worklogs as { id: string }[]).map((x) => x.id)).toEqual([
+        '1',
+        '2',
+      ]);
+      expect(client.getIssueWorklogs).not.toHaveBeenCalled();
+    });
+
+    it('emits nothing when the issue carried no worklog field — no evidence is not an empty set', async () => {
+      client.searchIssues.mockResolvedValue({ issues: [issue('PAY-1')] });
+      const { envelopes } = await collector.poll(baseConnection());
+      expect(worklogEnvelopes(envelopes)).toHaveLength(0);
+    });
+
+    it('emits an empty complete set when Jira says there are none, so deletions reconcile', async () => {
+      client.searchIssues.mockResolvedValue({
+        issues: [issue('PAY-1', { worklog: { total: 0, worklogs: [] } })],
+      });
+      const { envelopes } = await collector.poll(baseConnection());
+      expect(worklogEnvelopes(envelopes)[0].data).toMatchObject({
+        complete: true,
+        worklogs: [],
+      });
+    });
+
+    it('completes a truncated set with the per-issue fetch', async () => {
+      client.searchIssues.mockResolvedValue({
+        issues: [
+          issue('PAY-1', {
+            worklog: { total: 3, maxResults: 1, worklogs: [worklog('1')] },
+          }),
+        ],
+      });
+      client.getIssueWorklogs.mockResolvedValue([
+        worklog('1'),
+        worklog('2'),
+        worklog('3'),
+      ]);
+      const { envelopes } = await collector.poll(baseConnection());
+      const data = worklogEnvelopes(envelopes)[0].data;
+      expect(client.getIssueWorklogs).toHaveBeenCalledWith(
+        'https://acme.atlassian.net',
+        'admin@acme.com',
+        'tok',
+        'PAY-1',
+      );
+      expect(data).toMatchObject({ complete: true, total: 3 });
+      expect(data.worklogs).toHaveLength(3);
+    });
+
+    it('keeps the embedded entries but marks the set incomplete when completion fails', async () => {
+      client.searchIssues.mockResolvedValue({
+        issues: [
+          issue('PAY-1', {
+            worklog: { total: 3, maxResults: 1, worklogs: [worklog('1')] },
+          }),
+        ],
+      });
+      client.getIssueWorklogs.mockRejectedValue(new Error('ECONNRESET'));
+      const { envelopes } = await collector.poll(baseConnection());
+      expect(worklogEnvelopes(envelopes)[0].data).toMatchObject({
+        complete: false,
+        total: 3,
+        worklogs: [expect.objectContaining({ id: '1' })],
+      });
     });
   });
 

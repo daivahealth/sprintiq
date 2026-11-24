@@ -782,6 +782,76 @@ export function useSprintCheckIns(
   });
 }
 
+/** One tracked developer's row on Sprint Health → Efforts (ADR-0014). */
+export interface EffortRow {
+  developer: string;
+  displayName: string;
+  /** False → no Jira account linked; the series is then `null`, never zeros. */
+  jiraLinked: boolean;
+  /** Seconds logged per day, one entry per `EffortsView.days`. */
+  effortSeconds: number[] | null;
+}
+
+/** Mirrors backend `sprint-efforts.ts#EffortsView`. */
+export interface EffortsView {
+  days: string[];
+  /** A–Z by display name — never ordered by a figure. */
+  rows: EffortRow[];
+  /** Same unit and meaning as `CheckInsView.sprintFrom`/`sprintTo`. */
+  sprintFrom: string | null;
+  sprintTo: string | null;
+  /** The rule the figures are computed from — displayed with them (ADR-0014). */
+  rule: string;
+  roster: {
+    tracked: number;
+    shown: number;
+    unresolved: number;
+    suppressed: number;
+    notShown: number;
+  };
+  disclosures: {
+    itemsInScope: number;
+    itemsWithoutWorklogSnapshot: number;
+    unattributedWorklogs: number;
+  };
+  computedAt: string;
+}
+
+/**
+ * Sprint Health → Efforts' picker (admin only): every ongoing sprint in the
+ * tenant, newest first. No project — Efforts follows people, not projects.
+ */
+export function useEffortsSprints() {
+  return useQuery({
+    queryKey: ['sprint-efforts-sprints'],
+    queryFn: () =>
+      api.get<{ sprints: SprintSummary[]; computedAt: string }>(
+        '/api/dashboards/sprint-health/efforts/sprints',
+      ),
+  });
+}
+
+/**
+ * Sprint Health → Efforts (admin only), across the whole sprint. Paged a week
+ * at a time with `checkInPages`, exactly like `useSprintCheckIns`.
+ */
+export function useSprintEfforts(
+  sprint: string | null,
+  from: string | null,
+  to: string | null,
+) {
+  return useQuery({
+    queryKey: ['sprint-efforts', sprint, from, to],
+    enabled: Boolean(sprint),
+    queryFn: () =>
+      api.get<EffortsView>(
+        `/api/dashboards/sprint-health/efforts?sprint=${sprint}` +
+          (from ? `&from=${from}` : '') +
+          (to ? `&to=${to}` : ''),
+      ),
+  });
+}
+
 /** Per-release scope for the sprint: delivered stories, defect load. */
 export function useSprintReleaseCandidates(
   sprint: string | null,

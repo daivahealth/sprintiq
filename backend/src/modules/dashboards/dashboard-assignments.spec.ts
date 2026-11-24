@@ -35,10 +35,28 @@ describe('dashboardAssignments', () => {
   });
 
   it('omits `children` where there are none', () => {
-    expect(nav.find((d) => d.key === 'sprint-health')).not.toHaveProperty(
+    expect(nav.find((d) => d.key === 'velocity')).not.toHaveProperty(
       'children',
     );
     expect(nav[0].children?.length).toBe(4);
+  });
+
+  it('omits `children` when the role leaves only one — Sprint Health for non-admins', () => {
+    // Efforts is admin-only (ADR-0014). A lone "Board" sub-item would add a
+    // nav row that says nothing, so the entry renders exactly as before.
+    expect(nav.find((d) => d.key === 'sprint-health')).not.toHaveProperty(
+      'children',
+    );
+  });
+
+  it('shows the Sprint Health Efforts subpage to admins only', () => {
+    const sprintHealth = dashboardAssignments([Role.ADMIN]).find(
+      (d) => d.key === 'sprint-health',
+    );
+    expect(sprintHealth?.children?.map((c) => c.path)).toEqual([
+      '/sprint-health',
+      '/sprint-health/efforts',
+    ]);
   });
 
   it('shows the Tracked Developers subpage to admins only, without its roles', () => {

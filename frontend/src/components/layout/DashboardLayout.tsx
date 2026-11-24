@@ -45,7 +45,15 @@ function NavSection({ item }: { item: DashboardAssignment }) {
       {inSection && (
         <div className="mt-1 space-y-0.5 border-l border-border pl-3">
           {children.map((child) => (
-            <NavItem key={child.key} to={child.path} title={child.description}>
+            <NavItem
+              key={child.key}
+              to={child.path}
+              // A child AT the section root (Sprint Health's Board, at
+              // `/sprint-health`) would otherwise match every sibling's URL
+              // too and read as active on Efforts.
+              end={child.path === sectionRoot}
+              title={child.description}
+            >
               {child.title}
             </NavItem>
           ))}
